@@ -1,0 +1,27 @@
+id: F1-PID-RESOLVABLE
+principle: F1
+
+question: >
+  Does the dataset's persistent identifier actually resolve?
+
+check:
+  type: identifier_resolution
+  inputs:
+    - manifest.identifiers
+
+allowed_results: [pass, fail, unknown]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown]
+
+implemented: false
+not_implemented_reason: >
+  Resolving an identifier requires a network request, which this version does
+  not make. No attempt was made, so the result is unknown -- not a pass inferred
+  from the identifier looking well-formed.
+
+notes: >
+  Kept in the registry deliberately. A rule that is dropped because it cannot be
+  run disappears from the denominator; a rule that reports 'unknown' stays
+  visible and countable, which is what unknown-preservation rate measures.

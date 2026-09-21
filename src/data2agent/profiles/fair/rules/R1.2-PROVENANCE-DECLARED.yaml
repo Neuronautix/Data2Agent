@@ -1,0 +1,22 @@
+id: R1.2-PROVENANCE-DECLARED
+principle: R1.2
+
+question: >
+  Is the data associated with detailed provenance -- who produced it, and where
+  it came from?
+
+check:
+  type: provenance_declared
+  inputs:
+    - manifest.metadata_files
+
+allowed_results: [pass, fail, unknown, not_applicable]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown, not_applicable]
+
+notes: >
+  This is about the *dataset's* provenance as stated in its own metadata, not
+  about Data2Agent's provenance.json, which records the ingest run instead. The
+  two are easy to conflate and must not be.

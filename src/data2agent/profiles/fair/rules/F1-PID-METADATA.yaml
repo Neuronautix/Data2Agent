@@ -1,0 +1,22 @@
+id: F1-PID-METADATA
+principle: F1
+
+question: >
+  Does the dataset's metadata carry a globally unique persistent identifier?
+
+check:
+  type: identifier_presence
+  inputs:
+    - manifest.identifiers
+    - manifest.metadata_files
+
+allowed_results: [pass, fail, unknown]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown]
+
+notes: >
+  Presence only. A DOI-shaped string in a metadata file is evidence that an
+  identifier was recorded, not that it resolves or that it is the dataset's own.
+  Resolution is F1-PID-RESOLVABLE, which this version cannot run.

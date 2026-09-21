@@ -1,0 +1,14 @@
+{
+  "Name": "Preclinical minimal example dataset",
+  "BIDSVersion": "1.9.0",
+  "DatasetType": "raw",
+  "License": "CC0-1.0",
+  "Authors": [
+    "Example, A."
+  ],
+  "Acknowledgements": "Synthetic dataset generated for Data2Agent v0.1 acceptance tests.",
+  "HowToAcknowledge": "Cite the Data2Agent repository.",
+  "DatasetDOI": "10.5281/zenodo.0000000",
+  "Species": "Mus musculus",
+  "Notes": "Sex was not recorded for the final cohort. No value is imputed anywhere in this dataset."
+}

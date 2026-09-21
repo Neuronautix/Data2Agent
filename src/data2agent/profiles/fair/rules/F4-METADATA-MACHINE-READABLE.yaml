@@ -1,0 +1,22 @@
+id: F4-METADATA-MACHINE-READABLE
+principle: F4
+
+question: >
+  Is at least some metadata in a structured, machine-readable format rather than
+  prose alone?
+
+check:
+  type: metadata_machine_readable
+  inputs:
+    - manifest.metadata_files
+    - manifest.files
+
+allowed_results: [pass, fail, unknown, not_applicable]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown, not_applicable]
+
+notes: >
+  A README is metadata, but it is not indexable. This rule separates the two
+  without disparaging either.

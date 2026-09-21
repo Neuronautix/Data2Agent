@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Neuronautix/Data2Agent/schemas/fair-rule.schema.json",
+  "title": "Data2Agent assessment rule",
+  "description": "One canonical rule in an assessment profile. This record is the single source from which every projection is generated — prose for a skill, a structured listing, an executable check, a JSON Schema fragment, SHACL shapes. Six independently written rule sets would confound the form of a constraint with its content; one rule with six projections does not.",
+  "type": "object",
+  "required": ["id", "principle", "question", "check"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Za-z0-9.]*-[A-Z0-9-]+$",
+      "description": "Stable across versions. Every projection and every assessment refers to the rule by this id.",
+      "examples": ["F1-PID-METADATA", "R1.3-MISSING-VALUES-DECLARED"]
+    },
+    "principle": {
+      "type": "string",
+      "description": "The FAIR principle this rule tests, e.g. F1, A1.1, R1.3."
+    },
+    "question": {
+      "type": "string",
+      "minLength": 10,
+      "description": "The rule in one plain question. This text is what the prose projection presents to a model."
+    },
+    "check": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Names a deterministic implementation. An unimplemented type must be paired with implemented: false."
+        },
+        "inputs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Manifest fields and evidence the check reads. A check may never open the dataset directly."
+        }
+      }
+    },
+    "allowed_results": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["pass", "fail", "unknown", "not_applicable"] },
+      "contains": { "const": "unknown" },
+      "default": ["pass", "fail", "unknown", "not_applicable"],
+      "description": "Must include 'unknown'. A rule that cannot report uncertainty will manufacture certainty instead."
+    },
+    "inference_allowed": {
+      "type": "boolean",
+      "default": false,
+      "description": "False by default. Setting it true requires a written justification in 'notes'."
+    },
+    "evidence_required": {
+      "type": "boolean",
+      "default": true,
+      "description": "Every result must say what was looked at — 'unknown' and 'not_applicable' included."
+    },
+    "rationale_required_for": {
+      "type": "array",
+      "items": { "enum": ["pass", "fail", "unknown", "not_applicable"] },
+      "default": ["fail", "unknown"],
+      "description": "Outcomes that must carry a written explanation."
+    },
+    "implemented": {
+      "type": "boolean",
+      "default": true,
+      "description": "False keeps the rule in the registry, always returning 'unknown'. A dropped rule leaves the denominator; an unknown one stays countable."
+    },
+    "not_implemented_reason": {
+      "type": "string",
+      "minLength": 10,
+      "description": "Required when implemented is false. Becomes the rationale of every 'unknown' the rule returns."
+    },
+    "notes": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "implemented": { "const": false } }, "required": ["implemented"] },
+      "then": { "required": ["not_implemented_reason"] }
+    },
+    {
+      "if": { "properties": { "inference_allowed": { "const": true } }, "required": ["inference_allowed"] },
+      "then": { "required": ["notes"] }
+    }
+  ]
+}

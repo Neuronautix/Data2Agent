@@ -1,0 +1,228 @@
+"""The six v0.1 tools, plus the integrity guard that protects their answers."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from data2agent.errors import OutputError
+from data2agent.ingest import ingest
+from data2agent.mcp import DatasetService
+
+
+@pytest.fixture
+def service(ingested) -> DatasetService:
+    return DatasetService(ingested.output_dir)
+
+
+def test_dataset_inventory_reports_identity_and_warnings(service, ingested):
+    summary = service.dataset_inventory()
+    assert summary["dataset_id"] == ingested.dataset_id
+    assert summary["file_count"] == 4
+    assert summary["table_count"] == 2
+    assert summary["mode"] == "structured"
+    # "not determined" must be distinguishable from "none".
+    assert summary["relationships_determined"] is False
+
+
+def test_list_files_filters_by_glob_and_format(service):
+    assert {entry["path"] for entry in service.list_files(pattern="*.csv")} == {
+        "animals.csv",
+        "observations.csv",
+    }
+    assert [entry["path"] for entry in service.list_files(file_format="json")] == [
+        "dataset_description.json"
+    ]
+
+
+def test_inspect_file_returns_checksum_and_bounded_preview(service):
+    payload = service.inspect_file("animals.csv", preview_bytes=64)
+    assert payload["sha256"] and payload["integrity"]["matches"] is True
+    assert payload["preview_bytes"] == 64
+    assert payload["preview_truncated"] is True
+    assert payload["preview"].startswith("animal_id,strain")
+
+
+def test_inspect_table_returns_the_recorded_profile(service):
+    profile = service.inspect_table("animals.csv")
+    assert profile["rows"] == 48
+    assert profile["missing"]["sex"] == 12
+    assert profile["integrity"]["matches"] is True
+
+
+def test_inspect_table_refuses_a_non_table(service):
+    with pytest.raises(KeyError, match="not profiled as a table"):
+        service.inspect_table("README.md")
+
+
+def test_get_metadata_lists_then_serves_verbatim(service, example_dataset: Path):
+    listing = service.get_metadata()
+    assert {item["path"] for item in listing["metadata_files"]} == {
+        "README.md",
+        "dataset_description.json",
+    }
+    served = service.get_metadata("dataset_description.json")
+    assert served["content"] == (example_dataset / "dataset_description.json").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_get_metadata_refuses_a_non_metadata_file(service):
+    with pytest.raises(KeyError, match="not a recognised metadata file"):
+        service.get_metadata("animals.csv")
+
+
+def test_get_evidence_queries_by_subject_check_and_id(service):
+    by_check = service.get_evidence(subject="animals.csv", check="table.missing-value-count")
+    assert by_check["total"] >= 1
+    claim_id = by_check["claims"][0]["claim_id"]
+    assert service.get_evidence(claim_id=claim_id)["claims"][0]["claim_id"] == claim_id
+    with pytest.raises(KeyError):
+        service.get_evidence(claim_id="clm_ffffffffffffffff")
+
+
+def test_dataset_inventory_surfaces_the_ingest_timestamp(service, ingested):
+    """The manifest stays timestamp-free; the timestamp is still reachable."""
+    summary = service.dataset_inventory()
+    assert summary["ingested_at"] == ingested.provenance["started_at"]
+    assert summary["ingested_at"].endswith("Z")
+    assert summary["ingest_duration_s"] >= 0
+    assert summary["tool_version"]
+    assert "ingested_at" not in ingested.manifest
+
+
+def test_get_provenance_returns_the_run_not_the_dataset(service, ingested):
+    provenance = service.get_provenance()
+    assert provenance["dataset_id"] == ingested.dataset_id
+    assert provenance["started_at"] and provenance["finished_at"]
+    assert provenance["duration_seconds"] >= 0
+    assert provenance["source_verified_unchanged"] is True
+    assert provenance["tool"]["name"] == "data2agent"
+
+
+def test_dataset_inventory_reports_the_missing_value_convention(service):
+    convention = service.dataset_inventory()["missing_value_convention"]
+    assert convention["id"] == "default-sentinels"
+    assert convention["ambiguous_tokens_resolved"] is False
+
+
+def test_validate_identifier_checks_syntax_and_says_so(ingested):
+    service = DatasetService(ingested.output_dir, mode="fair-deterministic")
+
+    valid = service.validate_identifier("10.5281/zenodo.0000000")
+    assert valid["syntactically_valid"] is True
+    assert valid["schemes"] == ["doi"]
+    assert valid["resolves"] is None and valid["resolution_attempted"] is False
+    assert valid["occurrences"], "the identifier occurs in this dataset"
+
+    assert service.validate_identifier("not-an-identifier")["syntactically_valid"] is False
+    # A well-formed ORCID with a bad check digit is caught without any network call.
+    assert service.validate_identifier("0000-0002-1825-0098")["checksum_valid"] is False
+
+
+def test_resolve_identifier_is_lookup_not_resolution(service):
+    found = service.resolve_identifier("10.5281/zenodo.0000000")
+    assert found["found"] is True
+    assert found["resolved"] is None, "v0.1 must never claim an identifier resolves"
+    assert service.resolve_identifier("10.9999/nope")["found"] is False
+
+
+def test_content_is_withheld_when_the_source_drifts(dataset_copy: Path, tmp_path: Path):
+    """An answer drawn from changed bytes looks exactly like a good answer."""
+    result = ingest(dataset_copy, tmp_path / "out")
+    service = DatasetService(result.output_dir)
+    assert service.inspect_file("animals.csv")["integrity"]["matches"] is True
+
+    (dataset_copy / "animals.csv").write_text("animal_id\nA001\n", encoding="utf-8")
+    payload = service.inspect_file("animals.csv")
+    assert payload["integrity"]["matches"] is False
+    assert payload["preview"] is None
+    assert "re-ingest" in payload["preview_withheld"]
+
+    verification = service.verify_dataset()
+    assert verification["intact"] is False
+    assert verification["mismatched"][0]["path"] == "animals.csv"
+
+
+def test_paths_cannot_escape_the_dataset_root(service):
+    with pytest.raises(KeyError):
+        service.inspect_file("../../etc/passwd")
+
+
+def test_resources_are_served_as_json_text(service):
+    for uri in (
+        "dataset://manifest",
+        "dataset://provenance",
+        "dataset://evidence",
+        "dataset://metadata",
+        "dataset://files/animals.csv",
+    ):
+        assert service.resource(uri).strip().startswith("{")
+    with pytest.raises(KeyError):
+        service.resource("dataset://nope")
+
+
+def test_service_needs_an_ingested_directory(tmp_path: Path):
+    with pytest.raises(OutputError, match="run `data2agent ingest` first"):
+        DatasetService(tmp_path)
+
+
+def test_mismatched_dataset_ids_are_refused(ingested):
+    """An interrupted or half-overwritten output directory would otherwise serve
+    one dataset's evidence under another's id -- a wrong answer shaped exactly
+    like a right one."""
+    evidence_path = ingested.output_dir / "evidence.json"
+    payload = json.loads(evidence_path.read_text())
+    payload["dataset_id"] = "sha256:" + "0" * 64
+    evidence_path.write_text(json.dumps(payload))
+
+    with pytest.raises(OutputError, match="does not describe a single dataset"):
+        DatasetService(ingested.output_dir)
+
+
+def test_mismatched_provenance_id_is_refused(ingested):
+    provenance_path = ingested.output_dir / "provenance.json"
+    payload = json.loads(provenance_path.read_text())
+    payload["dataset_id"] = "sha256:" + "1" * 64
+    provenance_path.write_text(json.dumps(payload))
+
+    with pytest.raises(OutputError, match="does not describe a single dataset"):
+        DatasetService(ingested.output_dir)
+
+
+def test_a_preview_reads_only_the_bytes_it_returns(ingested, monkeypatch):
+    """read_bytes()[:limit] pulled the whole file into memory first, so a 4 KiB
+    preview of a multi-gigabyte file could take the server down."""
+    service = DatasetService(ingested.output_dir)
+    source = service.source_dir / "animals.csv"
+    real_open = Path.open
+    reads: list[int | None] = []
+
+    def recording_open(self, *args, **kwargs):
+        handle = real_open(self, *args, **kwargs)
+        if self == source:
+            real_read = handle.read
+
+            def read(size=-1):
+                reads.append(size)
+                return real_read(size)
+
+            handle.read = read
+        return handle
+
+    monkeypatch.setattr(Path, "open", recording_open)
+    payload = service.inspect_file("animals.csv", preview_bytes=64)
+
+    assert payload["preview_bytes"] == 64
+    assert payload["preview_truncated"] is True
+    assert 64 in reads, "the preview must be read with a bounded read(limit)"
+    assert -1 not in reads, "the whole file must never be pulled into memory for a preview"
+
+
+def test_a_preview_larger_than_the_file_is_not_truncated(ingested):
+    service = DatasetService(ingested.output_dir)
+    payload = service.inspect_file("dataset_description.json", preview_bytes=1_000_000)
+    assert payload["preview_truncated"] is False
+    assert payload["preview_bytes"] == payload["size"]

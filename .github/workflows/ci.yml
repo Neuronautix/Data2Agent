@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e '.[mcp,fair,dev]'
+
+      - name: Lint
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+
+      - name: Test
+        run: pytest -q
+
+      # The core's whole premise is that ingestion needs nothing but the stdlib.
+      # A dependency that creeps into it should break the build, not be noticed
+      # a year later when a dataset must be re-ingested reproducibly.
+      - name: Ingest core has no third-party dependencies
+        run: |
+          python - <<'PY'
+          import ast, pathlib, sys
+
+          allowed = {"data2agent"}
+          stdlib = set(sys.stdlib_module_names)
+          offenders = []
+          for path in sorted(pathlib.Path("src/data2agent/ingest").rglob("*.py")):
+              tree = ast.parse(path.read_text())
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      names = [alias.name.split(".")[0] for alias in node.names]
+                  elif isinstance(node, ast.ImportFrom):
+                      if node.level:  # relative import, inside the package
+                          continue
+                      names = [(node.module or "").split(".")[0]]
+                  else:
+                      continue
+                  for name in names:
+                      if name and name not in stdlib and name not in allowed:
+                          offenders.append(f"{path}: {name}")
+          if offenders:
+              print("third-party imports in the deterministic ingest core:")
+              print("\n".join(offenders))
+              raise SystemExit(1)
+          print("ingest core is stdlib-only")
+          PY
+
+      # A rule is the single source every projection is generated from, so a
+      # malformed one is a defect in all of them at once.
+      - name: Every FAIR rule validates against the rule schema
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          import jsonschema, yaml
+
+          schema = json.loads(pathlib.Path("schemas/fair-rule.schema.json").read_text())
+          jsonschema.Draft202012Validator.check_schema(schema)
+          paths = sorted(pathlib.Path("src/data2agent/profiles/fair/rules").glob("*.yaml"))
+          assert paths, "the FAIR profile ships no rules"
+          for path in paths:
+              jsonschema.validate(yaml.safe_load(path.read_text()), schema)
+          print(f"{len(paths)} rule(s) valid")
+          PY
+
+      # The control condition has to stay a control: if FAIR reaches the core,
+      # `structured` and `fair-*` stop differing in exactly one thing. The
+      # invariant is enforced behaviourally by tests/mcp/test_modes.py (no FAIR
+      # concept anywhere in the structured surface) and structurally by
+      # tests/test_layering.py (the core may not import a profile), both of
+      # which run in the Test step above. A text search over the source cannot
+      # express it -- service.py legitimately carries the thin profile bindings.
+
+      - name: Ingest the example dataset twice and require identical manifests
+        run: |
+          data2agent ingest examples/preclinical-minimal -o /tmp/a
+          data2agent ingest examples/preclinical-minimal -o /tmp/b
+          diff /tmp/a/manifest.json /tmp/b/manifest.json
+          diff /tmp/a/evidence.json /tmp/b/evidence.json
+          git diff --exit-code -- examples/preclinical-minimal
+
+      - name: Assess the example dataset and validate the output
+        run: |
+          data2agent assess /tmp/a
+          python - <<'PY'
+          import json, pathlib
+          import jsonschema
+
+          assessment = json.loads(pathlib.Path("/tmp/a/assessment.json").read_text())
+          jsonschema.validate(
+              assessment, json.loads(pathlib.Path("schemas/assessment.schema.json").read_text())
+          )
+          # Two rules cannot be run from a local snapshot. They must stay in the
+          # results as 'unknown' rather than quietly leaving the denominator.
+          unknown = [r["rule_id"] for r in assessment["results"] if r["result"] == "unknown"]
+          assert len(assessment["results"]) == 12, assessment["summary"]
+          assert len(unknown) >= 2, unknown
+          assert all(r["evidence"] for r in assessment["results"]), "a verdict with no evidence"
+          print("assessment valid:", assessment["summary"])
+          PY

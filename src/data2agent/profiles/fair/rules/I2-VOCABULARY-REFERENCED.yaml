@@ -1,0 +1,23 @@
+id: I2-VOCABULARY-REFERENCED
+principle: I2
+
+question: >
+  Does the metadata reference a controlled vocabulary or ontology that itself
+  follows FAIR principles?
+
+check:
+  type: vocabulary_reference
+  inputs:
+    - manifest.metadata_files
+
+allowed_results: [pass, fail, unknown, not_applicable]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown, not_applicable]
+
+notes: >
+  Detected by matching known vocabulary namespaces against metadata text. This
+  establishes that a vocabulary is *referenced*, not that terms are used
+  correctly or that the reference resolves -- that is v0.4 work (SHACL and
+  vocabulary validation), and this rule must not be read as covering it.

@@ -1,0 +1,21 @@
+id: R1.1-LICENCE-DECLARED
+principle: R1.1
+
+question: >
+  Is the data released with a clear and accessible usage licence?
+
+check:
+  type: license_declared
+  inputs:
+    - manifest.metadata_files
+
+allowed_results: [pass, fail, unknown, not_applicable]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown, not_applicable]
+
+notes: >
+  Presence of a declaration, not its adequacy. A licence field holding an
+  unrecognised string still passes: deciding whether a licence is suitable for a
+  given reuse is a judgement, and this profile does not make judgements.

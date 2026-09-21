@@ -1,0 +1,375 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Neuronautix/Data2Agent/schemas/dataset-manifest.schema.json",
+  "title": "Data2Agent dataset manifest",
+  "description": "What a dataset IS. Contains no timestamps, no absolute paths and no host details, so that repeated ingests of identical bytes produce byte-identical manifests. Run-specific facts belong in provenance.json.",
+  "type": "object",
+  "required": [
+    "manifest_version",
+    "dataset_id",
+    "source",
+    "missing_value_convention",
+    "file_count",
+    "total_bytes",
+    "files",
+    "formats",
+    "tables",
+    "structured",
+    "metadata_files",
+    "identifiers",
+    "relationships",
+    "warnings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "manifest_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+    "dataset_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "SHA-256 fold over the sorted (path, file checksum) pairs."
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "root_name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "root_name": {
+          "type": "string"
+        }
+      }
+    },
+    "missing_value_convention": {
+      "$ref": "#/$defs/missingValueConvention",
+      "description": "How token-valued absences were resolved. Governs how every missing count below should be read."
+    },
+    "file_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "total_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fileEntry"
+      }
+    },
+    "formats": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "tables": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/tableProfile"
+      }
+    },
+    "structured": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "metadata_files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/metadataFile"
+      }
+    },
+    "identifiers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "description": "An empty array means relationships were NOT determined, never that the dataset has none.",
+      "items": {
+        "type": "object"
+      }
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "fileEntry": {
+      "type": "object",
+      "required": [
+        "path",
+        "size",
+        "sha256",
+        "format",
+        "media_type",
+        "detected_by"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "POSIX-style, relative to the dataset root."
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "format": {
+          "type": "string"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "detected_by": {
+          "enum": [
+            "signature",
+            "extension",
+            "none"
+          ]
+        }
+      },
+      "description": "One regular file, as bytes on disk. Symlinks are never inventoried: they are listed in 'skipped' and raised as a warning, because following one would put bytes from outside the dataset boundary into a manifest that claims to describe it."
+    },
+    "tableProfile": {
+      "type": "object",
+      "required": [
+        "path",
+        "encoding",
+        "delimiter",
+        "rows",
+        "columns"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "encoding": {
+          "type": "string"
+        },
+        "delimiter": {
+          "type": "string"
+        },
+        "has_header": {
+          "type": "boolean"
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "column_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/columnProfile"
+          }
+        },
+        "ragged_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "integrity": {
+          "type": "object"
+        },
+        "missing_convention": {
+          "$ref": "#/$defs/missingValueConvention"
+        }
+      }
+    },
+    "columnProfile": {
+      "type": "object",
+      "required": [
+        "name",
+        "position",
+        "dtype",
+        "values",
+        "missing",
+        "missing_empty",
+        "missing_sentinel"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dtype": {
+          "enum": [
+            "empty",
+            "integer",
+            "number",
+            "boolean",
+            "string"
+          ],
+          "description": "The shape of the observed tokens. NOT a statement about what the column means. Cells resolved to missing contribute no type."
+        },
+        "values": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cells holding a value under the active convention. Includes unresolved ambiguous tokens, which are values the file records."
+        },
+        "missing": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "missing_empty + missing_sentinel. Read it together with the manifest's missing_value_convention."
+        },
+        "missing_empty": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cells that are empty."
+        },
+        "missing_sentinel": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cells holding a token the active convention resolves to missing."
+        },
+        "sentinel_tokens_seen": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": "The exact tokens resolved to missing, as written, with counts."
+        },
+        "ambiguous_tokens_seen": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "description": "Tokens such as 'unknown' or '-' that no built-in convention resolves. Counted as values, reported for a human to rule on."
+        },
+        "distinct": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "distinct_exact": {
+          "type": "boolean",
+          "description": "False when the value set exceeded the enumeration cap and 'distinct' is only an upper bound."
+        },
+        "distinct_values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "metadataFile": {
+      "type": "object",
+      "required": [
+        "path",
+        "convention",
+        "note"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "convention": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "identifier": {
+      "type": "object",
+      "required": [
+        "scheme",
+        "value",
+        "source",
+        "line"
+      ],
+      "description": "A pattern match in text. NOT a claim that the identifier resolves or is valid.",
+      "properties": {
+        "scheme": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "missingValueConvention": {
+      "type": "object",
+      "required": [
+        "id",
+        "source",
+        "tokens",
+        "case_sensitive"
+      ],
+      "description": "A named, declared rule for which cell tokens count as missing. Never inferred per dataset.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "'declared' when the dataset states its own convention; otherwise a built-in id such as 'default-sentinels'."
+        },
+        "source": {
+          "type": "string",
+          "description": "Where the convention came from, in plain words."
+        },
+        "tokens": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "case_sensitive": {
+          "type": "boolean"
+        },
+        "ambiguous_tokens_resolved": {
+          "type": "boolean",
+          "description": "Always false: tokens such as 'unknown' or '-' are reported, never resolved to missing."
+        }
+      }
+    }
+  }
+}

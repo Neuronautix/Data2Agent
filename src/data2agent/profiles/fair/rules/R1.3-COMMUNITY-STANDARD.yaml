@@ -1,0 +1,22 @@
+id: R1.3-COMMUNITY-STANDARD
+principle: R1.3
+
+question: >
+  Does the metadata follow a recognised domain-relevant community standard?
+
+check:
+  type: community_standard
+  inputs:
+    - manifest.metadata_files
+
+allowed_results: [pass, fail, unknown, not_applicable]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown, not_applicable]
+
+notes: >
+  A README and a LICENSE are metadata but are not community standards. The
+  standards recognised here are RO-Crate, Frictionless, BIDS, ISA-Tab, CodeMeta
+  and DataCite; recognition is by filename, so conformance to the standard is
+  not established -- only the claim to follow it.
