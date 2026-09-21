@@ -1,218 +1,233 @@
-<p align="center">
-  <img src="./logo/paper2agent_logo.png" alt="Paper2Agent Logo" width="600px" />
-</p>
+# Data2Agent
 
-# Paper2Agent: Reimagining Papers As AI Agents
+**Take an immutable scientific dataset and expose it through a reproducible,
+evidence-preserving MCP interface.**
 
-## 📖 Overview
-`Paper2Agent` is a multi-agent AI system that automatically transforms research papers into interactive AI agents with minimal human input. Explore [demos](#-demos) of Paper2Agent-generated agents, or try it yourself at [paper2agent.ai](https://paper2agent.ai).
+Data2Agent turns a dataset directory into a deterministic manifest, an evidence
+ledger, and a generic MCP server that any coding agent can drive — without an
+agent ever having to guess at the dataset's structure, and without being able to
+invent a value the dataset does not state.
 
-Paper2Agent coordinates parallel specialist agents to turn scientific papers into reliable MCP servers and skills.
+> Architecture inspired by / derived in part from **Paper2Agent**
+> Miao et al., *Nature*, 2026 — see [`NOTICE.md`](NOTICE.md).
 
-## 🚀 Quick Start
+---
 
-### Basic Usage
-
-The simplest way to use Paper2Agent is to ask your coding agent (Claude Code, Codex, etc.) to install the paper2agent skill, then agentify a paper alongside its code repository.
-
-```text
-Read https://github.com/jmiao24/Paper2Agent and install the paper2agent skill
-from skills/paper2agent for this coding agent.
-
-Use the paper2agent skill to agentify this paper and its associated files,
-alongside its code repository if available. Follow the skill instructions
-for the workflow, verification, and final delivery.
-
-Paper and associated files: <PAPER_URL_OR_LOCAL_FILES>
-Code repository (if available): <GITHUB_URL_OR_LOCAL_PATH>
-Output directory: <PROJECT_DIR>
-```
-
-If the skill does not appear after installation, restart your coding agent. For manual installation, see [Installation & Setup](#installation).
-
-See the [skill instructions](skills/paper2agent/SKILL.md) for supported inputs, workflows, and deliverables.
-
-### Advanced Usage
-
-#### Targeted Tasks or Tutorials
-
-Specify the scientific tasks, tutorial title, or source URL to focus on:
+## Status: v0.1 — the deterministic core
 
 ```text
-Use the paper2agent skill to convert <GITHUB_URL> into MCP tools in <PROJECT_DIR>.
-Focus on <TASKS, TUTORIAL_TITLE, or SOURCE_URL>.
+dataset
+  ↓
+deterministic ingest      no LLM · no dependencies · read-only
+  ↓
+Data2MCP                  six tools + resources · host-agnostic
+  ↓
+one agent                 no subagents, on purpose
 ```
 
-#### Repository with API Key
+FAIR assessment, curation, semantics and multi-agent orchestration are specified
+and scheduled, not shipped. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and
+[`docs/BACKLOG.md`](docs/BACKLOG.md).
 
-Make credentials available through your host's secret mechanism or process environment, then tell the agent the variable name:
-
-```text
-Use the paper2agent skill to convert <GITHUB_URL> into MCP tools in <PROJECT_DIR>.
-Read the required API key from the environment variable <VARIABLE_NAME>.
-```
-
-Credentials stay outside generated code, notebooks, reports, and the delivered ZIP.
-
-### Examples
-
-The examples below use Claude Code's `/paper2agent` invocation. In Codex, replace it with `$paper2agent`.
-
-#### TISSUE Agent
-
-Create an AI agent from the [TISSUE](https://github.com/sunericd/TISSUE) research paper codebase for uncertainty-calibrated single-cell spatial transcriptomics analysis:
-
-```text
-/paper2agent Convert https://github.com/sunericd/TISSUE into tested MCP tools in TISSUE_Agent.
-```
-
-#### Scanpy Agent for Preprocessing and Clustering
-
-Create an AI agent from the [Scanpy](https://github.com/scverse/scanpy) research paper codebase for single-cell analysis preprocessing and clustering:
-
-```text
-/paper2agent Convert https://github.com/scverse/scanpy into tested MCP tools in Scanpy_Agent.
-Focus on the "Preprocessing and clustering" tutorial.
-```
-
-You can also provide a tutorial URL:
-
-```text
-/paper2agent Convert https://github.com/scverse/scanpy into tested MCP tools in Scanpy_Agent.
-Focus on https://github.com/scverse/scanpy/blob/main/docs/tutorials/basics/clustering.ipynb.
-```
-
-#### AlphaGenome Agent
-
-Create an AI agent from the [AlphaGenome](https://github.com/google-deepmind/alphagenome) research paper codebase for genomic data interpretation:
-
-```text
-/paper2agent Convert https://github.com/google-deepmind/alphagenome into tested MCP tools in AlphaGenome_Agent.
-Read the API key from the environment variable ALPHAGENOME_API_KEY.
-```
-
-<a id="installation"></a>
-
-## ⚙️ Installation & Setup
-
-### Prerequisites
-
-- **Coding-agent host:** A host with skill support, shell access, and parallel subagent spawning enabled. The coordinator launches specialists and fresh verifier agents through the host.
-- **Runtime access:** Python and Git, plus any R, native CLI, data, API, or GPU requirements of the selected repository. The skill prepares isolated project environments and records tested versions.
-
-### Manual Installation Steps
-
-To have your coding agent install the skill, use the [Quick Start](#-quick-start) prompt. To install it yourself, follow the steps below.
-
-1. **Clone the Paper2Agent repository**
-
-   ```bash
-   git clone https://github.com/jmiao24/Paper2Agent.git
-   cd Paper2Agent
-   ```
-
-2. **Install the entire skill folder for your host**
-
-   Choose the command for your host. Copy the entire folder, including all subdirectories and supporting files.
-
-   **Claude Code** — personal skill location from the [Claude Code skills documentation](https://code.claude.com/docs/en/skills):
-
-   ```bash
-   mkdir -p "$HOME/.claude/skills/paper2agent"
-   cp -R skills/paper2agent/. "$HOME/.claude/skills/paper2agent/"
-   ```
-
-   **Codex** — personal skill location from the [official OpenAI skills documentation](https://learn.chatgpt.com/docs/build-skills):
-
-   ```bash
-   mkdir -p "$HOME/.agents/skills/paper2agent"
-   cp -R skills/paper2agent/. "$HOME/.agents/skills/paper2agent/"
-   ```
-
-3. **Start your coding agent in your analysis workspace**
-
-   Open Claude Code or Codex in the directory where you want to work, then use the [Quick Start](#-quick-start) prompt. If the skill does not appear, restart the coding agent. The skill installs the generated server's dependencies in its project environment during conversion.
-
-## 🤖 How to Create a Paper Agent?
-
-Connect the generated Paper MCP server to an AI coding agent, such as [Claude Code](https://www.anthropic.com/claude-code), Codex, or the [Google Gemini CLI](https://google-gemini.github.io/gemini-cli/), to use its scientific tools in conversation.
-
-### Connect a Generated Local MCP Server
-
-Extract the delivered ZIP and follow its `USAGE.md` to install dependencies and configure your MCP client. The instructions include the tested interpreter, server entry point, required environment variables, and supported platforms.
-
-To have the coding agent configure the connection, explicitly request it after conversion:
-
-```text
-Connect the generated MCP server to my coding-agent client using its USAGE.md.
-```
-
-### Connect a Remote MCP Server Hosted on Hugging Face
-
-You can also use an existing server from [Connectable Paper MCP Servers](#-connectable-paper-mcp-servers). Open the hosted service's instructions for its MCP endpoint, transport, and authentication requirements.
-
-For an HTTP endpoint in Claude Code, follow the [MCP connection documentation](https://code.claude.com/docs/en/mcp):
+## Quick start
 
 ```bash
-claude mcp add --transport http <MCP_NAME> <MCP_ENDPOINT_URL>
+pip install -e '.[mcp,dev]'
+
+# 1. Ingest — deterministic, read-only over the dataset
+data2agent ingest examples/preclinical-minimal -o ./preclinical-agent
+
+# 2. Connect the server (the exact command for your host is in mcp/USAGE.md)
+claude mcp add data2agent -- python -m data2agent.cli serve ./preclinical-agent
+
+# 3. Or check the dataset has not drifted since ingest
+data2agent verify ./preclinical-agent
 ```
 
-For example, the [hosted AlphaGenome MCP server](https://Paper2Agent-alphagenome-mcp.hf.space) can provide tools for genomic data interpretation. Once connected, you can input a query like:
+Output:
 
 ```text
-Analyze heart gene expression data with AlphaGenome MCP to identify the causal gene
-for the variant chr11:116837649:T>G, associated with Hypoalphalipoproteinemia.
+./preclinical-agent/
+├── manifest.json     what the dataset IS   (deterministic; no timestamps)
+├── provenance.json   what this run was     (time, host, tool version)
+├── evidence.json     claim → evidence → file → checksum
+├── mcp/              server definition + USAGE.md for any MCP host
+└── report/           evidence-backed Markdown; every fact carries a claim id
 ```
 
-### Verification
+## What makes it different
 
-In Claude Code, check the server's connection status with:
+### Ingestion carries no language model
+
+`src/data2agent/ingest/` is deterministic, stdlib-only and read-only. Row
+counts, column headers, missingness, checksums and format signatures are
+computable exactly — and an exact answer beats a confident-sounding one. An LLM
+that infers a dataset's structure is an LLM that can invent one.
+
+Repeated ingests of the same bytes produce **byte-identical** manifests. Two
+agent configurations are only comparable at equal `dataset_id`.
+
+### Unknown stays unknown
+
+> Never infer a value the dataset does not state.
+
+Not animal sex, not strain, not acquisition device, not experimental condition.
+Concretely:
+
+- An empty cell is **missing** and is counted.
+- A literal `NA` is **a token**, counted separately — nothing states what it
+  means here, and folding the two together would be inference dressed as
+  arithmetic.
+- `relationships: []` means *not determined*; the API says so explicitly.
+- A detected DOI is a pattern match, never a claim that it resolves.
+- A `distinct` count above the enumeration cap is labelled `distinct_exact: false`.
+
+`tests/evidence/test_no_invented_metadata.py` asserts this negatively, by
+demanding plausible-but-unstated terms are absent from the output.
+
+### Every fact carries its evidence
+
+```text
+claim → evidence → source file → immutable checksum
+```
+
+```json
+{
+  "claim_id": "clm_9f2c4b1a77e0d35c",
+  "claim": "'sex' is missing for 12 of 48 row(s) in 'animals.csv'",
+  "evidence": [{
+    "source": "animals.csv",
+    "source_sha256": "3b1f…",
+    "check": "table.missing-value-count",
+    "result": 12,
+    "field": "sex"
+  }]
+}
+```
+
+A claim with no evidence is rejected at write time, and so is a check id that is
+not in the published registry. That is what makes *unsupported-claim rate* an
+automatically computable metric rather than a matter of reviewer opinion — see
+[`docs/evidence-contract.md`](docs/evidence-contract.md).
+
+### One generic server, not a generated one
+
+Datasets share a small set of useful operations, so v0.1 ships a single fixed
+server whose behaviour is testable and comparable across datasets — rather than
+generating bespoke tools per dataset and inheriting the generator's variance.
+
+## The MCP surface
+
+| Tool | Returns |
+| --- | --- |
+| `dataset_inventory()` | identity, file count, formats, warnings |
+| `list_files(pattern, file_format)` | inventoried files, filtered |
+| `inspect_file(path)` | size, checksum, format, bounded preview |
+| `inspect_table(path)` | rows, columns, observed shapes, missingness |
+| `get_metadata(path)` | recognised metadata files, served verbatim |
+| `get_evidence(...)` | what supports a claim |
+| `resolve_identifier(value)` | where an identifier occurs (no network call) |
+
+Resources: `dataset://manifest`, `dataset://metadata`, `dataset://provenance`,
+`dataset://evidence`, `dataset://files/{path}`.
+
+Every tool re-checksums a file before returning its content, and withholds it on
+a mismatch. An answer drawn from drifted bytes is worse than no answer, because
+it is indistinguishable from a good one.
+
+## Benchmark modes
+
+The experiment is **harness × orchestrator × model × constraint**. The
+constraint axis is built in from v0.1:
 
 ```bash
-claude mcp list
+data2agent modes
 ```
 
-Or use `/mcp` inside Claude Code. A successful connection should appear in the server list; use a tool call to confirm the scientific workflow works with your inputs. The screenshot below shows the AlphaGenome MCP server connected in Claude Code.
+| Mode | Agent is given | Status |
+| --- | --- | --- |
+| `raw` | files only — the control condition | v0.1 |
+| `structured` | the full deterministic surface | v0.1 |
+| `fair-skill` | `structured` + FAIR prose | planned |
+| `fair-rules` | `structured` + machine-readable rules | planned |
+| `fair-deterministic` | `structured` + deterministic FAIR tools | planned |
+| `fair-semantic` | + vocabularies and SHACL | planned |
 
-<img width="620" alt="Claude Code showing the AlphaGenome MCP server connected" src="assets/claude-code-mcp.png" />
+Requesting an unimplemented mode **fails** rather than falling back — a silent
+downgrade would produce a run labelled `fair-rules` whose agent never saw a
+rule. See [`docs/benchmark-contract.md`](docs/benchmark-contract.md).
 
-## 🎬 Demos
-Below, we showcase demos of AI agents created by Paper2Agent, illustrating how each agent applies the tools from its source paper to tackle scientific tasks.
-### 🧬 AlphaGenome Agent for Genomic Data Interpretation
-Example query:
-```
-Analyze heart gene expression data with AlphaGenome MCP to identify the causal gene
-for the variant chr11:116837649:T>G, associated with Hypoalphalipoproteinemia.
-```
+The MCP layer knows nothing about Claude Code, Codex, Goose, Pi or OpenCode.
+That is a correctness requirement: if host-specific behaviour accumulates below
+the boundary, the benchmark stops measuring hosts and starts measuring our
+accommodations of them.
 
-https://github.com/user-attachments/assets/34aad25b-42b3-4feb-b418-db31066e7f7b
+## Using it from a coding agent
 
-### 🗺️ TISSUE Agent for Uncertainty-Aware Spatial Transcriptomics Analysis
-Example query:
-```
-Calculate the 95% prediction interval for the spatial gene expression prediction of gene Acta2 using TISSUE MCP.
+Install the portable skill into any skill-capable host:
 
-This is my data:
-Spatial count matrix: Spatial_count.txt
-Spatial locations: Locations.txt
-scRNA-seq count matrix: scRNA_count.txt
-```
+```bash
+# Claude Code
+mkdir -p "$HOME/.claude/skills/data2agent"
+cp -R skills/data2agent/. "$HOME/.claude/skills/data2agent/"
 
-https://github.com/user-attachments/assets/2c8f6368-fa99-4e6e-b7b5-acc12f741655
-
-### 🧫 Scanpy Agent for Single-Cell Data Preprocessing
-Example query:
-```
-Use Scanpy MCP to preprocess and cluster the single-cell dataset pbmc_all.h5ad.
+# Codex
+mkdir -p "$HOME/.agents/skills/data2agent"
+cp -R skills/data2agent/. "$HOME/.agents/skills/data2agent/"
 ```
 
-## 🔗 Connectable Paper MCP Servers
-* AlphaGenome: https://Paper2Agent-alphagenome-mcp.hf.space
-* Scanpy: https://Paper2Agent-scanpy-mcp.hf.space
-* TISSUE: https://Paper2Agent-tissue-mcp.hf.space
+Then:
 
-## 📚 Citation
+```text
+Use the data2agent skill to ingest this dataset and report what it contains.
+Report only what the evidence ledger supports.
+
+Dataset: <DATASET_DIR>
+Output directory: <OUTPUT_DIR>
 ```
+
+## Documentation
+
+| Document | Covers |
+| --- | --- |
+| [`docs/architecture.md`](docs/architecture.md) | the layers, and why each boundary exists |
+| [`docs/data-contract.md`](docs/data-contract.md) | input/output contract; what every field is allowed to mean |
+| [`docs/evidence-contract.md`](docs/evidence-contract.md) | the claim → evidence invariant and its enforcement |
+| [`docs/benchmark-contract.md`](docs/benchmark-contract.md) | modes, comparability rules, metrics |
+| [`docs/fair-profile-contract.md`](docs/fair-profile-contract.md) | the canonical FAIR rule format (v0.2) |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | v0.1 → v0.6 |
+| [`docs/BACKLOG.md`](docs/BACKLOG.md) | numbered work items with acceptance criteria |
+
+## Development
+
+```bash
+pip install -e '.[mcp,dev]'
+pytest          # 75 tests
+ruff check src tests && ruff format --check src tests
+```
+
+Tests are grouped by layer — `tests/ingestion/`, `tests/evidence/`, `tests/mcp/`
+— and the acceptance criteria for v0.1 map onto them one-to-one in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+## Related repositories
+
+```text
+Data2Agent            this repository: the tool and the instrument
+Data2AgentBench       datasets, tasks, harness adapters, scoring
+FAIR-VCG-Dataspace    the data space itself
+```
+
+Kept separate from the start, following the upstream project's own separation of
+Paper2Agent from Paper2AgentBench.
+
+## Licence and attribution
+
+MIT — see [`LICENSE`](LICENSE) and [`NOTICE.md`](NOTICE.md). The upstream
+Paper2Agent skill is retained unmodified under `skills/paper2agent/` as the
+reference for the v0.5 multi-agent port.
+
+```bibtex
 @article{miao2026paper2agent,
   title={Reimagining research papers as interactive and reliable {AI} agents},
   author={Miao, Jiacheng and Davis, Joe R. and Zhang, Yaohui and Pritchard, Jonathan K. and Zou, James},
@@ -222,4 +237,3 @@ Use Scanpy MCP to preprocess and cluster the single-cell dataset pbmc_all.h5ad.
   url={https://www.nature.com/articles/s41586-026-11044-y}
 }
 ```
-

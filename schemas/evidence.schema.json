@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Neuronautix/Data2Agent/schemas/evidence.schema.json",
+  "title": "Data2Agent evidence ledger",
+  "description": "The claim -> evidence -> source file -> immutable checksum chain. A statement that cannot be reduced to a named check over named bytes is not a claim Data2Agent may make.",
+  "type": "object",
+  "required": ["evidence_version", "dataset_id", "checks", "claims"],
+  "additionalProperties": false,
+  "properties": {
+    "evidence_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "dataset_id": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "checks": {
+      "type": "object",
+      "description": "The registry of deterministic checks: id -> human-readable definition.",
+      "additionalProperties": { "type": "string" },
+      "minProperties": 1
+    },
+    "claims": { "type": "array", "items": { "$ref": "#/$defs/claim" } }
+  },
+  "$defs": {
+    "claim": {
+      "type": "object",
+      "required": ["claim_id", "claim", "subject", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "claim_id": {
+          "type": "string",
+          "pattern": "^clm_[0-9a-f]{16}$",
+          "description": "Content-addressed, so the same dataset yields the same ids on every machine."
+        },
+        "claim": { "type": "string", "minLength": 1 },
+        "subject": {
+          "type": "string",
+          "description": "A dataset-relative file path, or the literal 'dataset'."
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "description": "At least one item: a claim with no evidence is rejected at write time.",
+          "items": { "$ref": "#/$defs/evidenceItem" }
+        }
+      }
+    },
+    "evidenceItem": {
+      "type": "object",
+      "required": ["source", "source_sha256", "check", "result"],
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Dataset-relative path, or empty for dataset-level observations."
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{64})?$",
+          "description": "The checksum of the exact bytes the check ran on."
+        },
+        "check": {
+          "type": "string",
+          "description": "Must be a key of the top-level 'checks' registry."
+        },
+        "result": {
+          "description": "The check's output, verbatim. Any JSON type."
+        },
+        "field": { "type": "string" },
+        "locator": {
+          "type": "string",
+          "description": "Where inside the source, e.g. 'column:sex' or 'line:12'."
+        }
+      }
+    }
+  }
+}

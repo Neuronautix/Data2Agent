@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "data2agent"
+version = "0.1.0"
+description = "Expose immutable scientific datasets through a reproducible, evidence-preserving MCP interface."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+keywords = ["FAIR", "research-data", "MCP", "provenance", "reproducibility"]
+classifiers = [
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering",
+]
+# The deterministic core is intentionally dependency-free: ingestion must be
+# reproducible from a bare CPython install, on any host, forever.
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2.0"]
+dev = ["pytest>=8.0", "ruff>=0.5", "jsonschema>=4.0"]
+
+[project.scripts]
+data2agent = "data2agent.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/data2agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

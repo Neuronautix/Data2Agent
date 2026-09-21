@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Neuronautix/Data2Agent/schemas/dataset-manifest.schema.json",
+  "title": "Data2Agent dataset manifest",
+  "description": "What a dataset IS. Contains no timestamps, no absolute paths and no host details, so that repeated ingests of identical bytes produce byte-identical manifests. Run-specific facts belong in provenance.json.",
+  "type": "object",
+  "required": [
+    "manifest_version",
+    "dataset_id",
+    "source",
+    "file_count",
+    "total_bytes",
+    "files",
+    "formats",
+    "tables",
+    "structured",
+    "metadata_files",
+    "identifiers",
+    "relationships",
+    "warnings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "manifest_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "dataset_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "SHA-256 fold over the sorted (path, file checksum) pairs."
+    },
+    "source": {
+      "type": "object",
+      "required": ["root_name"],
+      "additionalProperties": false,
+      "properties": { "root_name": { "type": "string" } }
+    },
+    "file_count": { "type": "integer", "minimum": 0 },
+    "total_bytes": { "type": "integer", "minimum": 0 },
+    "files": { "type": "array", "items": { "$ref": "#/$defs/fileEntry" } },
+    "formats": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 1 } },
+    "tables": { "type": "object", "additionalProperties": { "$ref": "#/$defs/tableProfile" } },
+    "structured": { "type": "object", "additionalProperties": { "type": "object" } },
+    "metadata_files": { "type": "array", "items": { "$ref": "#/$defs/metadataFile" } },
+    "identifiers": { "type": "array", "items": { "$ref": "#/$defs/identifier" } },
+    "relationships": {
+      "type": "array",
+      "description": "An empty array means relationships were NOT determined, never that the dataset has none.",
+      "items": { "type": "object" }
+    },
+    "skipped": { "type": "array", "items": { "type": "string" } },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "fileEntry": {
+      "type": "object",
+      "required": ["path", "size", "sha256", "format", "media_type", "detected_by"],
+      "properties": {
+        "path": { "type": "string", "description": "POSIX-style, relative to the dataset root." },
+        "size": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "format": { "type": "string" },
+        "media_type": { "type": "string" },
+        "detected_by": { "enum": ["signature", "extension", "none"] },
+        "is_symlink": { "type": "boolean" }
+      }
+    },
+    "tableProfile": {
+      "type": "object",
+      "required": ["path", "encoding", "delimiter", "rows", "columns"],
+      "properties": {
+        "path": { "type": "string" },
+        "encoding": { "type": "string" },
+        "delimiter": { "type": "string" },
+        "has_header": { "type": "boolean" },
+        "rows": { "type": "integer", "minimum": 0 },
+        "column_count": { "type": "integer", "minimum": 0 },
+        "columns": { "type": "array", "items": { "$ref": "#/$defs/columnProfile" } },
+        "ragged_rows": { "type": "integer", "minimum": 0 },
+        "missing": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "integrity": { "type": "object" }
+      }
+    },
+    "columnProfile": {
+      "type": "object",
+      "required": ["name", "position", "dtype", "missing", "null_like_tokens"],
+      "properties": {
+        "name": { "type": "string" },
+        "position": { "type": "integer", "minimum": 0 },
+        "dtype": {
+          "enum": ["empty", "integer", "number", "boolean", "string"],
+          "description": "The shape of the observed tokens. NOT a statement about what the column means."
+        },
+        "non_empty": { "type": "integer", "minimum": 0 },
+        "missing": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Rows whose cell is empty. Null-like tokens are counted separately."
+        },
+        "null_like_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cells holding a conventional sentinel such as NA. Whether these denote missing values is undetermined."
+        },
+        "distinct": { "type": "integer", "minimum": 0 },
+        "distinct_exact": {
+          "type": "boolean",
+          "description": "False when the value set exceeded the enumeration cap and 'distinct' is only an upper bound."
+        },
+        "distinct_values": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "metadataFile": {
+      "type": "object",
+      "required": ["path", "convention", "note"],
+      "properties": {
+        "path": { "type": "string" },
+        "convention": { "type": "string" },
+        "note": { "type": "string" }
+      }
+    },
+    "identifier": {
+      "type": "object",
+      "required": ["scheme", "value", "source", "line"],
+      "description": "A pattern match in text. NOT a claim that the identifier resolves or is valid.",
+      "properties": {
+        "scheme": { "type": "string" },
+        "value": { "type": "string" },
+        "source": { "type": "string" },
+        "line": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,77 @@
+"""The MCP binding.
+
+These tests exercise the real protocol surface in-process: the tools a host
+would see, and the results it would get back. The binding must add no behaviour
+of its own, so anything asserted here should already be true of the service.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+pytest.importorskip("mcp", reason="the MCP binding needs the 'mcp' extra")
+
+from data2agent.mcp import DatasetService  # noqa: E402
+from data2agent.mcp.server import build_server  # noqa: E402
+
+
+@pytest.fixture
+def server(ingested):
+    return build_server(DatasetService(ingested.output_dir))
+
+
+async def _tool_names(server) -> set[str]:
+    return {tool.name for tool in await server.list_tools()}
+
+
+def _text_of(result) -> str:
+    """Pull the text payload out of a tool result, across mcp 1.x and 2.x shapes."""
+    content = getattr(result, "content", None)
+    if content is None:  # mcp 1.x returns (content, structured)
+        content = result[0]
+    return content[0].text
+
+
+@pytest.mark.anyio
+async def test_structured_mode_registers_the_seven_tools(server):
+    assert await _tool_names(server) == {
+        "dataset_inventory",
+        "list_files",
+        "inspect_file",
+        "inspect_table",
+        "get_metadata",
+        "get_evidence",
+        "resolve_identifier",
+    }
+
+
+@pytest.mark.anyio
+async def test_raw_mode_registers_only_two_tools(ingested):
+    server = build_server(DatasetService(ingested.output_dir, mode="raw"))
+    assert await _tool_names(server) == {"list_files", "inspect_file"}
+
+
+@pytest.mark.anyio
+async def test_every_tool_documents_itself(server):
+    for tool in await server.list_tools():
+        assert tool.description and len(tool.description) > 30, (
+            f"{tool.name} needs a usable docstring"
+        )
+
+
+@pytest.mark.anyio
+async def test_calling_inspect_table_over_mcp_returns_the_profile(server):
+    result = await server.call_tool("inspect_table", {"path": "animals.csv"})
+    payload = json.loads(_text_of(result))
+    assert payload["rows"] == 48
+    assert payload["missing"]["sex"] == 12
+
+
+@pytest.mark.anyio
+async def test_resources_are_listed_and_readable(server):
+    uris = {str(resource.uri) for resource in await server.list_resources()}
+    assert {"dataset://manifest", "dataset://evidence", "dataset://provenance"} <= uris
+    contents = await server.read_resource("dataset://manifest")
+    assert json.loads(list(contents)[0].content)["file_count"] == 4

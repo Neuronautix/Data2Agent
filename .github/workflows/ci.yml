@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: pip install -e '.[mcp,dev]'
+
+      - name: Lint
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+
+      - name: Test
+        run: pytest -q
+
+      # The core's whole premise is that ingestion needs nothing but the stdlib.
+      # A dependency that creeps into it should break the build, not be noticed
+      # a year later when a dataset must be re-ingested reproducibly.
+      - name: Ingest core has no third-party dependencies
+        run: |
+          python - <<'PY'
+          import ast, pathlib, sys
+
+          allowed = {"data2agent"}
+          stdlib = set(sys.stdlib_module_names)
+          offenders = []
+          for path in sorted(pathlib.Path("src/data2agent/ingest").rglob("*.py")):
+              tree = ast.parse(path.read_text())
+              for node in ast.walk(tree):
+                  if isinstance(node, ast.Import):
+                      names = [alias.name.split(".")[0] for alias in node.names]
+                  elif isinstance(node, ast.ImportFrom):
+                      if node.level:  # relative import, inside the package
+                          continue
+                      names = [(node.module or "").split(".")[0]]
+                  else:
+                      continue
+                  for name in names:
+                      if name and name not in stdlib and name not in allowed:
+                          offenders.append(f"{path}: {name}")
+          if offenders:
+              print("third-party imports in the deterministic ingest core:")
+              print("\n".join(offenders))
+              raise SystemExit(1)
+          print("ingest core is stdlib-only")
+          PY
+
+      - name: Ingest the example dataset twice and require identical manifests
+        run: |
+          data2agent ingest examples/preclinical-minimal -o /tmp/a
+          data2agent ingest examples/preclinical-minimal -o /tmp/b
+          diff /tmp/a/manifest.json /tmp/b/manifest.json
+          diff /tmp/a/evidence.json /tmp/b/evidence.json
+          git diff --exit-code -- examples/preclinical-minimal
