@@ -47,31 +47,44 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
     server = _server_class()(name)
 
     # -- resources ----------------------------------------------------------
+    #
+    # Registered per mode, exactly as the tools are. Registering them all and
+    # gating only the tools would let a raw-mode client enumerate and read
+    # dataset://manifest and dataset://evidence -- handing the control condition
+    # the structured condition and quietly invalidating the comparison.
 
-    @server.resource("dataset://manifest")
     def manifest() -> str:
         """The dataset manifest: files, checksums, formats, table profiles."""
         return service.resource("dataset://manifest")
 
-    @server.resource("dataset://provenance")
     def provenance() -> str:
         """How, when and with what version this dataset was ingested."""
         return service.resource("dataset://provenance")
 
-    @server.resource("dataset://evidence")
     def evidence() -> str:
         """The full claim -> evidence ledger for this dataset."""
         return service.resource("dataset://evidence")
 
-    @server.resource("dataset://metadata")
     def metadata() -> str:
         """The metadata files recognised in this dataset."""
         return service.resource("dataset://metadata")
 
-    @server.resource("dataset://files/{path}")
     def file_resource(path: str) -> str:
         """One file's manifest record, integrity status and bounded preview."""
         return service.resource(f"dataset://files/{path}")
+
+    resources = {
+        "dataset://manifest": manifest,
+        "dataset://provenance": provenance,
+        "dataset://evidence": evidence,
+        "dataset://metadata": metadata,
+        "dataset://files/{path}": file_resource,
+    }
+    for uri in service.available_resources():
+        implementation = resources.get(uri)
+        if implementation is None:  # pragma: no cover - guarded by the mode registry
+            raise KeyError(f"mode '{service.mode.name}' requests unknown resource '{uri}'")
+        server.resource(uri)(implementation)
 
     # -- tools --------------------------------------------------------------
 

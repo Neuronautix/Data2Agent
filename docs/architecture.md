@@ -59,7 +59,8 @@ So `src/data2agent/ingest/` is:
 
 - **Deterministic** — the same bytes always give the same manifest, byte for byte.
 - **Dependency-free** — stdlib only, so it still runs in ten years.
-- **Read-only** — the source is re-checksummed after every run to prove it.
+- **Read-only** — the tree is re-walked and re-checksummed after every run to
+  prove it, and symlinks are never followed out of the dataset.
 - **Non-interpretive** — it reports shapes, never meanings.
 
 An agent enters the picture *after* this, to reason over a structure it did not

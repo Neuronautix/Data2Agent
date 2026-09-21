@@ -61,6 +61,23 @@ the assessment itself; in `fair-deterministic` the verdicts come from code.
 `fair-deterministic` is therefore the reference condition every other cell is
 scored against.
 
+### Modes gate resources, not only tools
+
+A mode's `resources` are declared alongside its `tools`, and both are enforced in
+`DatasetService` rather than only in the MCP binding — so a harness driving the
+service directly is bound by the same condition as one going through the
+protocol.
+
+| Mode | Resources |
+| --- | --- |
+| `raw` | `dataset://files/{path}` only — the resource form of `inspect_file` |
+| everything else | `+ manifest`, `provenance`, `evidence`, `metadata` |
+
+Gating only the tools would leave `dataset://manifest` and `dataset://evidence`
+registered in `raw`, where a client could enumerate and read them outright. The
+control condition would then contain the structured condition, and every
+`raw`-vs-`structured` comparison drawn from those runs would be void.
+
 ### The control condition stays clean
 
 `structured` exposes no FAIR concept at all — not in its tool list, not in any
@@ -68,6 +85,9 @@ response body. `tests/mcp/test_modes.py::test_structured_mode_exposes_no_fair_co
 asserts it, and `tests/test_layering.py` fails the build if the core ever
 imports a profile. Without those, FAIR vocabulary drifts downward and the
 control quietly stops being a control.
+
+The same holds one rung down: `test_raw_mode_serves_no_structured_resource`
+asserts that `raw` can reach neither the manifest nor the ledger.
 
 ### Unimplemented modes fail loudly
 

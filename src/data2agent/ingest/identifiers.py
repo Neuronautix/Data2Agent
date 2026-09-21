@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from .textio import read_text
+
 # Scheme -> pattern. Conservative by design: a false negative is a warning, a
 # false positive is a fabricated identifier.
 _PATTERNS: dict[str, re.Pattern[str]] = {
@@ -44,11 +46,8 @@ class IdentifierHit:
 
 def scan_text_file(path: Path, relative_path: str) -> list[IdentifierHit]:
     """Scan a text file for identifiers, recording the line each hit came from."""
-    try:
-        with path.open("rb") as handle:
-            raw = handle.read(_MAX_SCAN_BYTES)
-        text = raw.decode("utf-8")
-    except (OSError, UnicodeDecodeError):
+    text, _ = read_text(path, limit=_MAX_SCAN_BYTES)
+    if text is None:
         return []
 
     hits: list[IdentifierHit] = []

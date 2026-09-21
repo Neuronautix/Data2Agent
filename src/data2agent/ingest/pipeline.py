@@ -35,7 +35,7 @@ from . import conventions, formats, identifiers, metadata, structured, tabular
 from .checksum import dataset_id as fold_dataset_id
 from .checksum import hash_file
 from .conventions import DEFAULT_CONVENTION, MissingValueConvention
-from .inventory import DEFAULT_EXCLUDES, FileEntry, Inventory, build
+from .inventory import DEFAULT_EXCLUDES, FileEntry, Inventory, build, walk
 from .provenance import ProvenanceRecord, runtime_fingerprint, tool_fingerprint, utc_now
 
 MANIFEST_FILENAME = "manifest.json"
@@ -167,12 +167,10 @@ def ingest(
                     ],
                 )
 
-    source_unchanged = _verify_source_unchanged(source, inventory)
-    if not source_unchanged:
-        warnings.append(
-            "SOURCE CHANGED DURING INGEST: at least one file's checksum differs from "
-            "the value recorded at the start of the run; this manifest is not trustworthy"
-        )
+    drift = _verify_source_unchanged(source, inventory, excludes)
+    source_unchanged = drift is None
+    if drift is not None:
+        warnings.append(f"SOURCE CHANGED DURING INGEST: {drift}; this manifest is not trustworthy")
 
     manifest = _build_manifest(
         identity=identity,
@@ -465,15 +463,34 @@ def _discover_convention(source: Path, inventory: Inventory) -> MissingValueConv
     return DEFAULT_CONVENTION
 
 
-def _verify_source_unchanged(source: Path, inventory: Inventory) -> bool:
-    """Re-checksum every file to prove ingestion did not touch the source."""
+def _verify_source_unchanged(
+    source: Path, inventory: Inventory, excludes: frozenset[str]
+) -> str | None:
+    """Prove the source is byte-for-byte what we inventoried. ``None`` means it is.
+
+    Re-hashing the known entries is not sufficient on its own: a file created
+    after the walk passed its directory is in neither the inventory nor the
+    re-hash, so every checksum would agree while the manifest silently described
+    less than the directory contains. The path set is therefore compared too --
+    an addition or a removal is drift exactly as a content change is.
+    """
+    recorded = {entry.path for entry in inventory.files}
+    current = {path.relative_to(source).as_posix() for path in walk(source, excludes, [], [])}
+
+    if added := sorted(current - recorded):
+        return f"{len(added)} file(s) appeared after the inventory was taken: {added}"
+    if removed := sorted(recorded - current):
+        return f"{len(removed)} inventoried file(s) disappeared during the run: {removed}"
+
     for entry in inventory.files:
         try:
             if hash_file(source / entry.path) != entry.sha256:
-                return False
-        except OSError:
-            return False
-    return True
+                return (
+                    f"the checksum of '{entry.path}' differs from the value recorded at the start"
+                )
+        except OSError as error:
+            return f"'{entry.path}' could not be re-read: {error}"
+    return None
 
 
 def _write_outputs(result: IngestResult) -> None:

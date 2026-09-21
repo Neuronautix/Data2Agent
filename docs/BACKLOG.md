@@ -68,6 +68,7 @@ everything-converter.
 | D2A-19c | Frictionless `missingValues` read from `datapackage.json` when present | done |
 | D2A-19d | `--missing-tokens` / `--strict-missing` overrides | done |
 | D2A-19e | Every missingness claim cites the convention that produced it | done |
+| D2A-19j | UTF-8 BOM stripped before parsing, encoding reported as `utf-8-sig` | done |
 
 ### Timestamps
 
@@ -91,6 +92,7 @@ everything-converter.
 | D2A-27 | Emit `assessment.json` against the published schema | done |
 | D2A-29 | Leak test: `--mode structured` exposes no FAIR concept | done |
 | D2A-29b | Layering test: the core may not import a profile | done |
+| D2A-29c | Modes gate resources as well as tools; `raw` serves no manifest or ledger | done |
 | D2A-26 | Rule → Markdown Skill projection (for `fair-skill`) | open — v0.3 |
 | D2A-28 | `validate_identifier` resolves over the network, recording the attempt | open — v0.3 |
 | D2A-24b | `validate_metadata_schema` against a declared schema | open — v0.3 |
@@ -187,8 +189,9 @@ orchestration at once, with no reference implementation to compare against.
 | D2A-72 | Keep `unknown` a first-class result everywhere | A layer that cannot say "unknown" will invent an answer. The loader now refuses a rule whose `allowed_results` omit it |
 | D2A-73 | Manifest-version discipline | Any change to manifest bytes for unchanged input is a major version bump |
 | D2A-74 | Performance on large datasets | Currently checksums everything twice (once to hash, once to verify). Acceptable at MVP scale; revisit past ~10 GB |
-| D2A-75 | Symlink policy | Recorded, never followed. Revisit only with a concrete dataset that needs it |
-| D2A-76 | Security review of served content | The service withholds drifted content; it does not yet sandbox previews of hostile files |
+| D2A-75 | Symlink policy | Recorded in `skipped` with a warning, never followed — `is_symlink()` is tested before `is_file()`, which follows links. Revisit only with a concrete dataset that needs internal links (BIDS derivatives do) |
+| D2A-76 | Security review of served content | The service withholds drifted content and bounds preview reads; it does not yet sandbox previews of hostile files |
+| D2A-77 | Partial/interrupted output directories | The service refuses one whose manifest, provenance and evidence disagree on `dataset_id`; ingest does not yet write atomically, so a half-written directory is still possible |
 
 ---
 

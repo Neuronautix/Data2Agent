@@ -148,11 +148,9 @@
             "extension",
             "none"
           ]
-        },
-        "is_symlink": {
-          "type": "boolean"
         }
-      }
+      },
+      "description": "One regular file, as bytes on disk. Symlinks are never inventoried: they are listed in 'skipped' and raised as a warning, because following one would put bytes from outside the dataset boundary into a manifest that claims to describe it."
     },
     "tableProfile": {
       "type": "object",

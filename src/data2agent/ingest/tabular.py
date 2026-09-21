@@ -19,11 +19,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .conventions import AMBIGUOUS, DEFAULT_CONVENTION, SENTINEL, MissingValueConvention
+from .textio import read_text
 
 # Delimiters we are willing to consider, in preference order.
 _CANDIDATE_DELIMITERS = (",", "\t", ";", "|")
 _EXTENSION_DELIMITERS = {".csv": ",", ".tsv": "\t", ".tab": "\t"}
-_ENCODINGS = ("utf-8", "utf-8-sig")
 _SNIFF_LINES = 20
 
 _INTEGER = re.compile(r"^[+-]?\d+$")
@@ -270,14 +270,15 @@ def _header_name(name: str, index: int) -> str:
 
 
 def _read_text(path: Path) -> tuple[str | None, str, str | None]:
-    for encoding in _ENCODINGS:
-        try:
-            return path.read_text(encoding=encoding), encoding, None
-        except UnicodeDecodeError:
-            continue
-        except OSError:
-            return None, "", None
-    return None, "", None
+    text, encoding = read_text(path)
+    if text is None:
+        return None, "", None
+    note = (
+        "file begins with a UTF-8 byte-order mark; it was stripped before parsing"
+        if encoding == "utf-8-sig"
+        else None
+    )
+    return text, encoding, note
 
 
 def _resolve_delimiter(path: Path, text: str) -> tuple[str | None, str | None]:

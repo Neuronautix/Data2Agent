@@ -28,13 +28,23 @@ output:
 
 Rules:
 
-1. **The source is read-only.** Ingestion never writes to it, and re-checksums
-   every file afterwards to prove it (`provenance.source_verified_unchanged`).
+1. **The source is read-only.** Ingestion never writes to it. Afterwards it
+   re-walks the tree and re-checksums every file, so a file that appeared or
+   disappeared mid-run counts as drift exactly as a changed byte does
+   (`provenance.source_verified_unchanged`).
 2. **The output may not live inside the source.** Writing a manifest into the
    dataset would change the thing the manifest describes. This is refused with
    an error, not a warning.
 3. **No metadata file is required.** A dataset that has none is ingested
    normally; the absence is reported, never filled in.
+4. **Symlinks are never followed**, to a file or to a directory. Following one
+   would put bytes from outside the dataset into a manifest that claims to
+   describe it. They appear in `skipped` and raise a warning, so the omission is
+   visible rather than silent.
+5. **A UTF-8 byte-order mark is stripped**, and the encoding is reported as
+   `utf-8-sig`. A BOM decodes cleanly as UTF-8, so without an explicit check it
+   survives into the first column name and every claim about that column —
+   and spreadsheet exports carry one routinely.
 
 ## Dataset identity
 
@@ -89,6 +99,7 @@ The subtle part is what an *empty* or *absent* value means. It is never "none".
 | `format: "unknown"` | no signature or extension matched | the file is corrupt |
 | `detected_by: "extension"` | the *name* said so, the bytes did not | verified format |
 | `warnings: []` | nothing flagged | the dataset is clean |
+| `skipped: [...]` | present in the directory, absent from the manifest | ignorable |
 
 ### Column shape vocabulary
 

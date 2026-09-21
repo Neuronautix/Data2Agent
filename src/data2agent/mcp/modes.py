@@ -20,6 +20,10 @@ class Mode:
     available_since: str | None  # None => specified but not implemented yet
     tools: tuple[str, ...]
     description: str
+    # Resources are part of the condition too. Gating only the tools would let a
+    # raw-mode client read dataset://manifest and dataset://evidence, handing the
+    # control condition the very thing it is a control for.
+    resources: tuple[str, ...] = ()
 
 
 _CORE_TOOLS = (
@@ -37,23 +41,37 @@ _CORE_TOOLS = (
 _FAIR_RULE_TOOLS = ("get_fair_indicator", "list_fair_rules")
 _FAIR_CHECK_TOOLS = ("run_fair_check", "validate_identifier")
 
+# A per-file record is the resource form of inspect_file, so raw may serve it.
+# Everything else is a view of the manifest, the ledger or the run.
+_RAW_RESOURCES = ("dataset://files/{path}",)
+_STRUCTURED_RESOURCES = (
+    "dataset://manifest",
+    "dataset://provenance",
+    "dataset://evidence",
+    "dataset://metadata",
+    *_RAW_RESOURCES,
+)
+
 MODES: dict[str, Mode] = {
     "raw": Mode(
         name="raw",
         available_since="0.1.0",
         tools=("list_files", "inspect_file"),
+        resources=_RAW_RESOURCES,
         description="Files only. The control condition: no profiles, no evidence ledger.",
     ),
     "structured": Mode(
         name="structured",
         available_since="0.1.0",
         tools=(*_CORE_TOOLS, "resolve_identifier"),
+        resources=_STRUCTURED_RESOURCES,
         description="The full deterministic Data2MCP surface over an ingested dataset.",
     ),
     "fair-skill": Mode(
         name="fair-skill",
         available_since=None,
         tools=(*_CORE_TOOLS, "resolve_identifier"),
+        resources=_STRUCTURED_RESOURCES,
         description=(
             "structured + FAIR guidance as prose, generated from the same canonical "
             "rules. Planned for v0.3."
@@ -63,6 +81,7 @@ MODES: dict[str, Mode] = {
         name="fair-rules",
         available_since="0.2.0",
         tools=(*_CORE_TOOLS, "resolve_identifier", *_FAIR_RULE_TOOLS),
+        resources=_STRUCTURED_RESOURCES,
         description=(
             "structured + the machine-readable FAIR rule registry. The agent can read "
             "every canonical rule, but must run the assessment itself."
@@ -72,6 +91,7 @@ MODES: dict[str, Mode] = {
         name="fair-deterministic",
         available_since="0.2.0",
         tools=(*_CORE_TOOLS, "resolve_identifier", *_FAIR_RULE_TOOLS, *_FAIR_CHECK_TOOLS),
+        resources=_STRUCTURED_RESOURCES,
         description=(
             "fair-rules + deterministic implementations of the checks. The reference "
             "condition: verdicts come from code, not from the model."
@@ -88,9 +108,14 @@ MODES: dict[str, Mode] = {
             "validate_vocabulary",
             "validate_shacl",
         ),
+        resources=_STRUCTURED_RESOURCES,
         description="fair-deterministic + vocabularies and SHACL. Planned for v0.4.",
     ),
 }
+
+# Every resource URI the service knows how to serve, in any mode. A URI outside
+# this set does not exist; one inside it may still be withheld by the mode.
+ALL_RESOURCES: frozenset[str] = frozenset(_STRUCTURED_RESOURCES)
 
 DEFAULT_MODE = "structured"
 

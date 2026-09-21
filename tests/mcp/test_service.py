@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -166,3 +167,62 @@ def test_resources_are_served_as_json_text(service):
 def test_service_needs_an_ingested_directory(tmp_path: Path):
     with pytest.raises(OutputError, match="run `data2agent ingest` first"):
         DatasetService(tmp_path)
+
+
+def test_mismatched_dataset_ids_are_refused(ingested):
+    """An interrupted or half-overwritten output directory would otherwise serve
+    one dataset's evidence under another's id -- a wrong answer shaped exactly
+    like a right one."""
+    evidence_path = ingested.output_dir / "evidence.json"
+    payload = json.loads(evidence_path.read_text())
+    payload["dataset_id"] = "sha256:" + "0" * 64
+    evidence_path.write_text(json.dumps(payload))
+
+    with pytest.raises(OutputError, match="does not describe a single dataset"):
+        DatasetService(ingested.output_dir)
+
+
+def test_mismatched_provenance_id_is_refused(ingested):
+    provenance_path = ingested.output_dir / "provenance.json"
+    payload = json.loads(provenance_path.read_text())
+    payload["dataset_id"] = "sha256:" + "1" * 64
+    provenance_path.write_text(json.dumps(payload))
+
+    with pytest.raises(OutputError, match="does not describe a single dataset"):
+        DatasetService(ingested.output_dir)
+
+
+def test_a_preview_reads_only_the_bytes_it_returns(ingested, monkeypatch):
+    """read_bytes()[:limit] pulled the whole file into memory first, so a 4 KiB
+    preview of a multi-gigabyte file could take the server down."""
+    service = DatasetService(ingested.output_dir)
+    source = service.source_dir / "animals.csv"
+    real_open = Path.open
+    reads: list[int | None] = []
+
+    def recording_open(self, *args, **kwargs):
+        handle = real_open(self, *args, **kwargs)
+        if self == source:
+            real_read = handle.read
+
+            def read(size=-1):
+                reads.append(size)
+                return real_read(size)
+
+            handle.read = read
+        return handle
+
+    monkeypatch.setattr(Path, "open", recording_open)
+    payload = service.inspect_file("animals.csv", preview_bytes=64)
+
+    assert payload["preview_bytes"] == 64
+    assert payload["preview_truncated"] is True
+    assert 64 in reads, "the preview must be read with a bounded read(limit)"
+    assert -1 not in reads, "the whole file must never be pulled into memory for a preview"
+
+
+def test_a_preview_larger_than_the_file_is_not_truncated(ingested):
+    service = DatasetService(ingested.output_dir)
+    payload = service.inspect_file("dataset_description.json", preview_bytes=1_000_000)
+    assert payload["preview_truncated"] is False
+    assert payload["preview_bytes"] == payload["size"]

@@ -17,11 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..errors import OutputError
+from ..errors import ModeError, OutputError
 from ..evidence import EvidenceLedger
 from ..ingest.checksum import hash_file
 from ..ingest.pipeline import EVIDENCE_FILENAME, MANIFEST_FILENAME, PROVENANCE_FILENAME
-from .modes import DEFAULT_MODE, Mode, resolve_mode
+from .modes import ALL_RESOURCES, DEFAULT_MODE, Mode, resolve_mode
 
 # Content is served in bounded slices; an agent that wants more asks again.
 _DEFAULT_PREVIEW_BYTES = 4096
@@ -63,7 +63,9 @@ class DatasetService:
 
         self.manifest = _load_json(self.output_dir / MANIFEST_FILENAME)
         self.provenance = _load_json(self.output_dir / PROVENANCE_FILENAME)
-        self.ledger = EvidenceLedger.from_dict(_load_json(self.output_dir / EVIDENCE_FILENAME))
+        evidence = _load_json(self.output_dir / EVIDENCE_FILENAME)
+        _require_one_dataset(self.manifest, self.provenance, evidence)
+        self.ledger = EvidenceLedger.from_dict(evidence)
 
         recorded_source = self.provenance.get("source_path")
         candidate = (
@@ -91,8 +93,19 @@ class DatasetService:
     def available_tools(self) -> list[str]:
         return list(self.mode.tools)
 
+    def available_resources(self) -> list[str]:
+        return list(self.mode.resources)
+
     def supports(self, tool: str) -> bool:
         return tool in self.mode.tools
+
+    def serves(self, uri: str) -> bool:
+        """Whether this mode may serve a resource URI, templates included."""
+        if uri in self.mode.resources:
+            return True
+        return (
+            uri.startswith("dataset://files/") and "dataset://files/{path}" in self.mode.resources
+        )
 
     # -- tools --------------------------------------------------------------
 
@@ -163,7 +176,11 @@ class DatasetService:
             return payload
 
         limit = max(0, min(int(preview_bytes), _MAX_PREVIEW_BYTES))
-        raw = absolute.read_bytes()[:limit]
+        # read(limit), not read_bytes()[:limit]: slicing after the fact would pull
+        # a multi-gigabyte file entirely into memory to hand back 4 KiB of it, and
+        # take the server down with it.
+        with absolute.open("rb") as handle:
+            raw = handle.read(limit)
         try:
             payload["preview"] = raw.decode("utf-8")
             payload["preview_encoding"] = "utf-8"
@@ -393,7 +410,19 @@ class DatasetService:
     # -- resources ----------------------------------------------------------
 
     def resource(self, uri: str) -> str:
-        """Serve a ``dataset://`` resource as text."""
+        """Serve a ``dataset://`` resource as text, subject to the mode's gating.
+
+        Gating lives here rather than only in the MCP binding so that it holds
+        for every caller -- a harness driving the service directly is bound by
+        the same condition as one going through the protocol.
+        """
+        # A URI outside the registry does not exist; one inside it may still be
+        # withheld by the mode. The two are different answers and different errors.
+        if uri not in ALL_RESOURCES and not uri.startswith("dataset://files/"):
+            raise KeyError(f"unknown resource uri: {uri}")
+        if not self.serves(uri):
+            allowed = ", ".join(self.mode.resources) or "none"
+            raise ModeError(f"mode '{self.mode.name}' does not serve {uri!r}; it serves: {allowed}")
         if uri == "dataset://manifest":
             return json.dumps(self.manifest, indent=2, ensure_ascii=False)
         if uri == "dataset://provenance":
@@ -453,6 +482,30 @@ class DatasetService:
         except KeyError:
             return None
         return served.get("content")
+
+
+def _require_one_dataset(
+    manifest: dict[str, Any], provenance: dict[str, Any], evidence: dict[str, Any]
+) -> None:
+    """Refuse an output directory whose three documents describe different datasets.
+
+    They can disagree if an ingest was interrupted between writes, if a directory
+    was partly overwritten by a second run, or if files from two runs were mixed.
+    Serving that state would attach one dataset's evidence to another's manifest
+    and label it with the manifest's id -- a wrong answer wearing the exact shape
+    of a right one, which is the failure this whole design exists to prevent.
+    """
+    ids = {
+        MANIFEST_FILENAME: manifest.get("dataset_id"),
+        PROVENANCE_FILENAME: provenance.get("dataset_id"),
+        EVIDENCE_FILENAME: evidence.get("dataset_id"),
+    }
+    if len(set(ids.values())) > 1:
+        detail = ", ".join(f"{name}={value!r}" for name, value in sorted(ids.items()))
+        raise OutputError(
+            "this output directory does not describe a single dataset: "
+            f"{detail}. Re-run `data2agent ingest` into a clean directory."
+        )
 
 
 def _load_json(path: Path) -> dict[str, Any]:

@@ -26,6 +26,12 @@ async def _tool_names(server) -> set[str]:
     return {tool.name for tool in await server.list_tools()}
 
 
+def _template_uris(templates) -> set[str]:
+    """The field is uriTemplate in mcp 1.x and uri_template in 2.x."""
+    fields = [template.model_dump() for template in templates]
+    return {str(field.get("uri_template") or field["uriTemplate"]) for field in fields}
+
+
 def _text_of(result) -> str:
     """Pull the text payload out of a tool result, across mcp 1.x and 2.x shapes."""
     content = getattr(result, "content", None)
@@ -105,3 +111,27 @@ async def test_resources_are_listed_and_readable(server):
     assert {"dataset://manifest", "dataset://evidence", "dataset://provenance"} <= uris
     contents = await server.read_resource("dataset://manifest")
     assert json.loads(list(contents)[0].content)["file_count"] == 4
+
+
+@pytest.mark.anyio
+async def test_raw_mode_registers_no_structured_resource(ingested):
+    """The binding must gate resources by mode too, or a raw client can simply
+    enumerate dataset://manifest and read the structured condition."""
+    server = build_server(DatasetService(ingested.output_dir, mode="raw"))
+    uris = {str(resource.uri) for resource in await server.list_resources()}
+    assert "dataset://manifest" not in uris
+    assert "dataset://evidence" not in uris
+
+    templates = _template_uris(await server.list_resource_templates())
+    assert "dataset://files/{path}" in templates
+
+
+@pytest.mark.anyio
+async def test_structured_mode_registers_the_structured_resources(server):
+    uris = {str(resource.uri) for resource in await server.list_resources()}
+    assert {
+        "dataset://manifest",
+        "dataset://provenance",
+        "dataset://evidence",
+        "dataset://metadata",
+    } <= uris

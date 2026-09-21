@@ -1,9 +1,14 @@
 """Deterministic file inventory.
 
 The walk is sorted, read-only, and independent of filesystem iteration order, so
-the same dataset always yields the same inventory in the same sequence. Symlinks
-are recorded but never followed: following them would let the "immutable dataset"
-extend past its own boundary.
+the same dataset always yields the same inventory in the same sequence.
+
+Symlinks are recorded but never followed, and the order of the checks below is
+what makes that true: ``Path.is_file()`` follows a symlink and returns True for
+a link to a regular file, so a symlink test placed after it never runs. The
+effect is not cosmetic -- a link pointing outside the dataset would be hashed
+and profiled, putting bytes from beyond the boundary into a manifest that claims
+to describe an immutable dataset. So ``is_symlink()`` is tested first, always.
 """
 
 from __future__ import annotations
@@ -30,18 +35,14 @@ class FileEntry:
     size: int
     sha256: str
     format: formats.FormatInfo
-    is_symlink: bool = False
 
     def as_dict(self) -> dict[str, object]:
-        payload: dict[str, object] = {
+        return {
             "path": self.path,
             "size": self.size,
             "sha256": self.sha256,
             **self.format.as_dict(),
         }
-        if self.is_symlink:
-            payload["is_symlink"] = True
-        return payload
 
 
 @dataclass
@@ -67,8 +68,9 @@ def build(root: Path, excludes: frozenset[str] = DEFAULT_EXCLUDES) -> Inventory:
     entries: list[FileEntry] = []
     skipped: list[str] = []
     warnings: list[str] = []
+    symlinks: list[str] = []
 
-    for path in _walk(root, excludes, skipped):
+    for path in walk(root, excludes, skipped, symlinks):
         relative = path.relative_to(root).as_posix()
         try:
             stat = path.lstat()
@@ -78,24 +80,29 @@ def build(root: Path, excludes: frozenset[str] = DEFAULT_EXCLUDES) -> Inventory:
             continue
         detected, notes = formats.detect(path)
         warnings.extend(f"{relative}: {note}" for note in notes)
-        entries.append(
-            FileEntry(
-                path=relative,
-                size=stat.st_size if not path.is_symlink() else path.stat().st_size,
-                sha256=digest,
-                format=detected,
-                is_symlink=path.is_symlink(),
-            )
-        )
+        entries.append(FileEntry(path=relative, size=stat.st_size, sha256=digest, format=detected))
 
     entries.sort(key=lambda entry: entry.path)
+    if symlinks:
+        # Loud, because a skipped symlink means the manifest describes less than
+        # the directory contains -- and silence would read as "there were none".
+        warnings.append(
+            f"{len(symlinks)} symlink(s) were not followed and are absent from this "
+            f"manifest: {sorted(symlinks)}"
+        )
     if not entries:
         warnings.append("no files found under the dataset source")
     return Inventory(root=root, files=entries, skipped=sorted(skipped), warnings=warnings)
 
 
-def _walk(root: Path, excludes: frozenset[str], skipped: list[str]) -> list[Path]:
-    """Collect files in sorted order, recording anything deliberately skipped."""
+def walk(
+    root: Path, excludes: frozenset[str], skipped: list[str], symlinks: list[str]
+) -> list[Path]:
+    """Collect regular files in sorted order, recording what was skipped and why.
+
+    Public because the pipeline re-walks at the end of a run to prove the source
+    did not gain or lose files while it was being read.
+    """
     found: list[Path] = []
     stack = [root]
     while stack:
@@ -109,13 +116,16 @@ def _walk(root: Path, excludes: frozenset[str], skipped: list[str]) -> list[Path
             if child.name in excludes:
                 skipped.append(child.relative_to(root).as_posix())
                 continue
-            if child.is_dir() and not child.is_symlink():
+            relative = child.relative_to(root).as_posix()
+            # is_symlink() must come first: is_file() and is_dir() both follow
+            # the link, so either would swallow the symlink before we see it.
+            if child.is_symlink():
+                symlinks.append(relative)
+                skipped.append(f"{relative} (symlink not followed)")
+            elif child.is_dir():
                 stack.append(child)
             elif child.is_file():
                 found.append(child)
-            elif child.is_symlink():
-                # A symlink to a directory is a boundary we refuse to cross.
-                skipped.append(f"{child.relative_to(root).as_posix()} (symlink not followed)")
             else:
-                skipped.append(f"{child.relative_to(root).as_posix()} (not a regular file)")
+                skipped.append(f"{relative} (not a regular file)")
     return sorted(found, key=lambda path: path.as_posix())

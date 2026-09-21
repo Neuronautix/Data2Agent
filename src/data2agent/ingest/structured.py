@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .textio import read_text
+
 _MAX_LISTED_KEYS = 200
 
 
@@ -40,10 +42,9 @@ class StructuredProfile:
 
 def profile_json(path: Path, relative_path: str) -> StructuredProfile:
     """Profile a JSON file; a parse failure is reported, never swallowed."""
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
-        return StructuredProfile(relative_path, "invalid", [], None, 0, str(error))
+    document, error = load_json(path)
+    if error is not None:
+        return StructuredProfile(relative_path, "invalid", [], None, 0, error)
 
     if isinstance(document, dict):
         keys = sorted(document.keys())[:_MAX_LISTED_KEYS]
@@ -55,9 +56,12 @@ def profile_json(path: Path, relative_path: str) -> StructuredProfile:
 
 def load_json(path: Path) -> tuple[Any | None, str | None]:
     """Load a JSON document verbatim, returning ``(document, error)``."""
+    text, _ = read_text(path)
+    if text is None:
+        return None, "file could not be read as UTF-8 text"
     try:
-        return json.loads(path.read_text(encoding="utf-8")), None
-    except (UnicodeDecodeError, json.JSONDecodeError, OSError) as error:
+        return json.loads(text), None
+    except json.JSONDecodeError as error:
         return None, str(error)
 
 

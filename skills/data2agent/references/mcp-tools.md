@@ -116,6 +116,10 @@ not evidence that the identifier is valid or resolvable.
 | `dataset://metadata` | recognised metadata files |
 | `dataset://files/<path>` | one file's record, integrity and preview |
 
+Resources are gated by mode just as tools are. In `raw` only
+`dataset://files/<path>` is served; the others raise rather than being served
+outside their condition.
+
 ## FAIR tools (`fair-*` modes only)
 
 ### `list_fair_rules()` and `get_fair_indicator(rule_id)`

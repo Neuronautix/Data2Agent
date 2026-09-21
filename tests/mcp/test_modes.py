@@ -80,3 +80,51 @@ def test_every_declared_mode_lists_its_tools():
     for mode in MODES.values():
         assert mode.tools
         assert mode.description
+
+
+def test_raw_mode_serves_no_structured_resource(ingested):
+    """Gating the tools but not the resources handed the control condition the
+    structured condition: a raw client could read dataset://manifest outright."""
+    service = DatasetService(ingested.output_dir, mode="raw")
+
+    assert service.available_resources() == ["dataset://files/{path}"]
+    for uri in (
+        "dataset://manifest",
+        "dataset://evidence",
+        "dataset://metadata",
+        "dataset://provenance",
+    ):
+        assert not service.serves(uri)
+        with pytest.raises(ModeError, match="does not serve"):
+            service.resource(uri)
+
+    # The per-file record is the resource form of inspect_file, which raw has.
+    assert service.serves("dataset://files/animals.csv")
+    assert service.resource("dataset://files/animals.csv").strip().startswith("{")
+
+
+def test_structured_mode_serves_every_resource(ingested):
+    service = DatasetService(ingested.output_dir, mode="structured")
+    for uri in (
+        "dataset://manifest",
+        "dataset://evidence",
+        "dataset://metadata",
+        "dataset://provenance",
+    ):
+        assert service.serves(uri)
+        assert service.resource(uri).strip().startswith("{")
+
+
+def test_an_unknown_resource_is_not_a_mode_error(ingested):
+    """'does not exist' and 'withheld by this mode' are different answers."""
+    service = DatasetService(ingested.output_dir, mode="raw")
+    with pytest.raises(KeyError, match="unknown resource uri"):
+        service.resource("dataset://nope")
+
+
+def test_every_mode_declares_resources_it_can_actually_serve():
+    from data2agent.mcp.modes import ALL_RESOURCES
+
+    for mode in MODES.values():
+        assert mode.resources, f"{mode.name} declares no resources"
+        assert set(mode.resources) <= ALL_RESOURCES, mode.name
