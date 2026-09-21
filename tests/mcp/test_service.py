@@ -82,6 +82,45 @@ def test_get_evidence_queries_by_subject_check_and_id(service):
         service.get_evidence(claim_id="clm_ffffffffffffffff")
 
 
+def test_dataset_inventory_surfaces_the_ingest_timestamp(service, ingested):
+    """The manifest stays timestamp-free; the timestamp is still reachable."""
+    summary = service.dataset_inventory()
+    assert summary["ingested_at"] == ingested.provenance["started_at"]
+    assert summary["ingested_at"].endswith("Z")
+    assert summary["ingest_duration_s"] >= 0
+    assert summary["tool_version"]
+    assert "ingested_at" not in ingested.manifest
+
+
+def test_get_provenance_returns_the_run_not_the_dataset(service, ingested):
+    provenance = service.get_provenance()
+    assert provenance["dataset_id"] == ingested.dataset_id
+    assert provenance["started_at"] and provenance["finished_at"]
+    assert provenance["duration_seconds"] >= 0
+    assert provenance["source_verified_unchanged"] is True
+    assert provenance["tool"]["name"] == "data2agent"
+
+
+def test_dataset_inventory_reports_the_missing_value_convention(service):
+    convention = service.dataset_inventory()["missing_value_convention"]
+    assert convention["id"] == "default-sentinels"
+    assert convention["ambiguous_tokens_resolved"] is False
+
+
+def test_validate_identifier_checks_syntax_and_says_so(ingested):
+    service = DatasetService(ingested.output_dir, mode="fair-deterministic")
+
+    valid = service.validate_identifier("10.5281/zenodo.0000000")
+    assert valid["syntactically_valid"] is True
+    assert valid["schemes"] == ["doi"]
+    assert valid["resolves"] is None and valid["resolution_attempted"] is False
+    assert valid["occurrences"], "the identifier occurs in this dataset"
+
+    assert service.validate_identifier("not-an-identifier")["syntactically_valid"] is False
+    # A well-formed ORCID with a bad check digit is caught without any network call.
+    assert service.validate_identifier("0000-0002-1825-0098")["checksum_valid"] is False
+
+
 def test_resolve_identifier_is_lookup_not_resolution(service):
     found = service.resolve_identifier("10.5281/zenodo.0000000")
     assert found["found"] is True

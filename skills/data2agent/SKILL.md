@@ -64,7 +64,17 @@ every host.
 | `inspect_table` | rows, columns, observed token shapes, missingness |
 | `get_metadata` | recognised metadata files, served verbatim |
 | `get_evidence` | **what actually supports a statement** |
+| `get_provenance` | when this was ingested, how long it took, with what version |
 | `resolve_identifier` | where an identifier occurs (no network resolution) |
+
+In the `fair-*` modes only:
+
+| Tool | Use for |
+| --- | --- |
+| `list_fair_rules` | the canonical rule registry |
+| `get_fair_indicator` | one rule in full, as authored |
+| `run_fair_check` | a deterministic assessment — verdicts from code |
+| `validate_identifier` | syntax against the scheme; still no network call |
 
 Details and traps: [references/mcp-tools.md](references/mcp-tools.md).
 
@@ -82,24 +92,68 @@ An empty value means *not determined*, never *none*:
 | --- | --- | --- |
 | `relationships: []` | this version does not compute relationships | the dataset has none |
 | `metadata_files: []` | no filename matched a known convention | the dataset has no metadata |
-| `column.missing: 12` | 12 **empty** cells | 12 unknown values |
-| `null_like_tokens: 3` | 3 cells hold a token like `NA` | 3 missing values |
+| `missing: 15` | empty cells **plus** tokens the active convention resolved | a number anyone reproduces without knowing the convention |
+| `missing_sentinel: 3` | 3 cells held a token the convention resolves | 3 cells we judged to look empty |
+| `ambiguous_tokens_seen` | tokens no convention resolves, left for a human | missing values |
 | `distinct_exact: false` | `distinct` is an upper bound | the exact cardinality |
 | `detected_by: "extension"` | the filename said so; the bytes did not | a verified format |
 | `format: "unknown"` | nothing matched | the file is corrupt |
+| a FAIR result of `unknown` | the check could not be run, and says why | the indicator failed |
+| a FAIR result of `pass` | what the rule literally checks held | the dataset is good at that principle |
+
+Always read `missing` together with `missing_value_convention`, which
+`dataset_inventory` returns. The count is only meaningful alongside the rule
+that produced it.
+
+### Missing values
+
+```bash
+data2agent ingest <DATASET> -o <OUT>                          # NA → missing (default)
+data2agent ingest <DATASET> -o <OUT> --strict-missing         # only empty cells
+data2agent ingest <DATASET> -o <OUT> --missing-tokens NA,-,?  # explicit
+```
+
+If the dataset declares its own convention (a Frictionless `missingValues`),
+that is used automatically and `missing_value_convention.source` says so.
+
+Do **not** re-ingest under a different convention to make a number look better.
+Re-ingest when the dataset documents a convention the default does not capture,
+and say in your report which convention the numbers came from.
+
+## FAIR assessment
+
+```bash
+data2agent assess <OUTPUT_DIR>            # writes assessment.json
+data2agent assess <OUTPUT_DIR> --list     # the rules, without running them
+```
+
+Or, connected in a `fair-*` mode, call `run_fair_check`.
+
+The verdicts come from code. Your job is to report them, not to second-guess
+them and not to resolve their `unknown`s:
+
+- **Never turn an `unknown` into a `pass` or a `fail`.** Two rules return
+  `unknown` because they need the network or the dataset's published location.
+  Reasoning about how likely a DOI is to resolve is exactly the failure this
+  system exists to prevent.
+- **Never produce a FAIR verdict yourself in `structured` mode.** That mode has
+  no FAIR tools on purpose. If asked, say the assessment needs a `fair-*` mode.
+- **A `pass` is narrow.** It means the rule's literal check held — not that the
+  dataset is good at that principle. `get_fair_indicator` gives the exact
+  question, and the rule's `notes` say what it does not cover.
 
 ## Scope
 
-In scope today: ingestion, inspection, evidence-bound reporting over local
-dataset directories.
+In scope today: ingestion, inspection, evidence-bound reporting, and
+deterministic FAIR assessment over local dataset directories.
 
 **Out of scope — say so rather than improvising:**
 
-- FAIR assessment and scoring (a separate profile, planned).
 - Resolving or validating identifiers over the network.
 - Controlled vocabularies, ontology mappings, SHACL.
 - Modifying or curating the dataset.
 - Inferring cross-file relationships.
+- Assessing retrievability or any property of where the dataset is published.
 
 If asked for any of these, state that it is not implemented and offer what the
 deterministic layer *can* establish. Do not approximate an unimplemented check

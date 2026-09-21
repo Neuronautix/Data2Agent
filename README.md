@@ -13,34 +13,39 @@ invent a value the dataset does not state.
 
 ---
 
-## Status: v0.1 — the deterministic core
+## Status: v0.2 — deterministic core + FAIR profile
 
 ```text
 dataset
   ↓
 deterministic ingest      no LLM · no dependencies · read-only
   ↓
-Data2MCP                  six tools + resources · host-agnostic
+Data2MCP                  host-agnostic tools + resources
+  ↓
+FAIR profile              12 canonical rules · 10 deterministic checks
   ↓
 one agent                 no subagents, on purpose
 ```
 
-FAIR assessment, curation, semantics and multi-agent orchestration are specified
-and scheduled, not shipped. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and
-[`docs/BACKLOG.md`](docs/BACKLOG.md).
+Curation, semantics (vocabularies, SHACL) and multi-agent orchestration are
+specified and scheduled, not shipped. See [`docs/ROADMAP.md`](docs/ROADMAP.md)
+and [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 ## Quick start
 
 ```bash
-pip install -e '.[mcp,dev]'
+pip install -e '.[mcp,fair,dev]'
 
 # 1. Ingest — deterministic, read-only over the dataset
 data2agent ingest examples/preclinical-minimal -o ./preclinical-agent
 
-# 2. Connect the server (the exact command for your host is in mcp/USAGE.md)
+# 2. Assess it against the FAIR profile — verdicts from code, not from a model
+data2agent assess ./preclinical-agent
+
+# 3. Connect the server (the exact command for your host is in mcp/USAGE.md)
 claude mcp add data2agent -- python -m data2agent.cli serve ./preclinical-agent
 
-# 3. Or check the dataset has not drifted since ingest
+# Check the dataset has not drifted since ingest
 data2agent verify ./preclinical-agent
 ```
 
@@ -49,11 +54,15 @@ Output:
 ```text
 ./preclinical-agent/
 ├── manifest.json     what the dataset IS   (deterministic; no timestamps)
-├── provenance.json   what this run was     (time, host, tool version)
+├── provenance.json   what this run was     (time, duration, tool version)
 ├── evidence.json     claim → evidence → file → checksum
+├── assessment.json   FAIR results, each citing the evidence behind it
 ├── mcp/              server definition + USAGE.md for any MCP host
 └── report/           evidence-backed Markdown; every fact carries a claim id
 ```
+
+The example dataset assesses as 8 pass, 2 fail, 2 unknown. Both failures are
+real and deliberate; both unknowns are questions a local snapshot cannot settle.
 
 ## What makes it different
 
@@ -74,16 +83,61 @@ agent configurations are only comparable at equal `dataset_id`.
 Not animal sex, not strain, not acquisition device, not experimental condition.
 Concretely:
 
-- An empty cell is **missing** and is counted.
-- A literal `NA` is **a token**, counted separately — nothing states what it
-  means here, and folding the two together would be inference dressed as
-  arithmetic.
 - `relationships: []` means *not determined*; the API says so explicitly.
 - A detected DOI is a pattern match, never a claim that it resolves.
 - A `distinct` count above the enumeration cap is labelled `distinct_exact: false`.
+- Two FAIR rules return `unknown` rather than guessing, and stay in the
+  denominator while they do.
 
 `tests/evidence/test_no_invented_metadata.py` asserts this negatively, by
 demanding plausible-but-unstated terms are absent from the output.
+
+### `NA` is missing — by a declared rule, never a judgement call
+
+A blank cell records no value. A cell holding `NA` records a *token*, and
+whether that token means "missing" belongs to the dataset's conventions, not its
+bytes. Data2Agent resolves such tokens through an explicit **named convention**
+that is stored in the manifest and cited by every missingness claim:
+
+```json
+"strain": {
+  "missing": 3,
+  "missing_empty": 0,
+  "missing_sentinel": 3,
+  "sentinel_tokens_seen": { "NA": 3 },
+  "dtype": "string"
+}
+```
+
+```text
+missing_value_convention:
+  id:     default-sentinels
+  source: built-in default (the dataset declares no convention of its own)
+```
+
+Change the convention and the numbers change — visibly, with the reason
+attached:
+
+```bash
+data2agent ingest ./ds -o ./out                          # NA → missing (default)
+data2agent ingest ./ds -o ./out --strict-missing         # only empty cells
+data2agent ingest ./ds -o ./out --missing-tokens NA,-,?  # your call, recorded
+```
+
+If the dataset declares its own convention — a Frictionless `missingValues`, say
+— that is used instead, and `source` says so.
+
+Two consequences worth knowing:
+
+- A resolved sentinel contributes no type, so `weight_g` holding `18, NA, 22` is
+  an `integer` column with one missing value, not a `string` column.
+- `unknown`, `-` and `?` are **not** resolved by any built-in convention. A cell
+  reading `unknown` may be a considered statement rather than an absence, so
+  they are counted in `ambiguous_tokens_seen` and left for a human to rule on.
+
+An undeclared `NA` is a genuine reusability defect — a reader cannot tell "not
+measured" from "measured as zero" from a strain literally named NA. The FAIR
+profile reports it as `R1.3-MISSING-VALUES-DECLARED`.
 
 ### Every fact carries its evidence
 
@@ -110,6 +164,28 @@ not in the published registry. That is what makes *unsupported-claim rate* an
 automatically computable metric rather than a matter of reviewer opinion — see
 [`docs/evidence-contract.md`](docs/evidence-contract.md).
 
+### FAIR is a profile, not a feature
+
+```text
+Core                          Profiles
+├── ingestion                 └── fair/
+├── evidence                      ├── profile.yaml
+└── MCP                           ├── rules/*.yaml   ← the canonical source
+                                  └── checks.py      ← one projection of it
+```
+
+`Data2MCP ≠ FAIR checker`. One canonical rule is projected into a structured
+listing, an executable check, a JSON Schema and (later) prose and SHACL — so the
+benchmark can vary the *form* of a constraint while holding its content fixed.
+Six independently written rule sets would confound the two.
+
+The loader is strict about what a rule may be: `allowed_results` must include
+`unknown` (a rule that cannot report uncertainty will manufacture certainty
+instead), `inference_allowed: true` needs a written justification, and an
+unimplemented rule needs a stated reason. The runner then refuses any verdict
+with no evidence, and any `fail`, `unknown` or `not_applicable` with no
+rationale.
+
 ### One generic server, not a generated one
 
 Datasets share a small set of useful operations, so v0.1 ships a single fixed
@@ -126,10 +202,25 @@ generating bespoke tools per dataset and inheriting the generator's variance.
 | `inspect_table(path)` | rows, columns, observed shapes, missingness |
 | `get_metadata(path)` | recognised metadata files, served verbatim |
 | `get_evidence(...)` | what supports a claim |
+| `get_provenance()` | when, how long, with what version this was ingested |
 | `resolve_identifier(value)` | where an identifier occurs (no network call) |
+
+In the `fair-*` modes only:
+
+| Tool | Returns |
+| --- | --- |
+| `list_fair_rules()` | the canonical rule registry |
+| `get_fair_indicator(rule_id)` | one rule in full, exactly as authored |
+| `run_fair_check(rule_id?)` | a deterministic, evidence-bound assessment |
+| `validate_identifier(value)` | syntax against the scheme; no network call |
 
 Resources: `dataset://manifest`, `dataset://metadata`, `dataset://provenance`,
 `dataset://evidence`, `dataset://files/{path}`.
+
+Timestamps live in `provenance.json` rather than the manifest, so that repeated
+ingests of identical bytes still compare byte-for-byte — but they are surfaced
+by `dataset_inventory()`, `get_provenance()` and the report header. A fact
+nobody can reach is as good as absent.
 
 Every tool re-checksums a file before returning its content, and withholds it on
 a mismatch. An answer drawn from drifted bytes is worse than no answer, because
@@ -148,10 +239,15 @@ data2agent modes
 | --- | --- | --- |
 | `raw` | files only — the control condition | v0.1 |
 | `structured` | the full deterministic surface | v0.1 |
+| `fair-rules` | + the canonical rules, which it must apply itself | v0.2 |
+| `fair-deterministic` | + the checks, run by code — the reference condition | v0.2 |
 | `fair-skill` | `structured` + FAIR prose | planned |
-| `fair-rules` | `structured` + machine-readable rules | planned |
-| `fair-deterministic` | `structured` + deterministic FAIR tools | planned |
 | `fair-semantic` | + vocabularies and SHACL | planned |
+
+Each FAIR mode is a superset of the one before it, so the ladder varies the
+*form* of the constraint while the information underneath stays identical.
+`structured` exposes no FAIR concept at all — a test asserts it, and a layering
+check fails the build if the core ever imports a profile.
 
 Requesting an unimplemented mode **fails** rather than falling back — a silent
 downgrade would produce a run labelled `fair-rules` whose agent never saw a
@@ -194,21 +290,22 @@ Output directory: <OUTPUT_DIR>
 | [`docs/data-contract.md`](docs/data-contract.md) | input/output contract; what every field is allowed to mean |
 | [`docs/evidence-contract.md`](docs/evidence-contract.md) | the claim → evidence invariant and its enforcement |
 | [`docs/benchmark-contract.md`](docs/benchmark-contract.md) | modes, comparability rules, metrics |
-| [`docs/fair-profile-contract.md`](docs/fair-profile-contract.md) | the canonical FAIR rule format (v0.2) |
+| [`docs/fair-profile-contract.md`](docs/fair-profile-contract.md) | the canonical FAIR rule format, the 12 rules, the projections |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | v0.1 → v0.6 |
 | [`docs/BACKLOG.md`](docs/BACKLOG.md) | numbered work items with acceptance criteria |
 
 ## Development
 
 ```bash
-pip install -e '.[mcp,dev]'
-pytest          # 75 tests
+pip install -e '.[mcp,fair,dev]'
+pytest          # 139 tests
 ruff check src tests && ruff format --check src tests
 ```
 
-Tests are grouped by layer — `tests/ingestion/`, `tests/evidence/`, `tests/mcp/`
-— and the acceptance criteria for v0.1 map onto them one-to-one in
-[`docs/ROADMAP.md`](docs/ROADMAP.md).
+Tests are grouped by layer — `tests/ingestion/`, `tests/evidence/`,
+`tests/mcp/`, `tests/fair/` — and the acceptance criteria map onto them
+one-to-one in [`docs/ROADMAP.md`](docs/ROADMAP.md). `tests/test_layering.py`
+asserts the dependency arrows still point one way.
 
 ## Related repositories
 

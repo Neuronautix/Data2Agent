@@ -15,12 +15,17 @@ from .evidence import EvidenceLedger
 from .ingest.pipeline import write_json
 
 
-def write_report(output_dir: Path, manifest: dict[str, Any], ledger: EvidenceLedger) -> Path:
+def write_report(
+    output_dir: Path,
+    manifest: dict[str, Any],
+    ledger: EvidenceLedger,
+    provenance: dict[str, Any] | None = None,
+) -> Path:
     """Write ``report/dataset-report.md`` and return its path."""
     report_dir = output_dir / "report"
     report_dir.mkdir(parents=True, exist_ok=True)
     path = report_dir / "dataset-report.md"
-    path.write_text(_render(manifest, ledger), encoding="utf-8")
+    path.write_text(_render(manifest, ledger, provenance or {}), encoding="utf-8")
     return path
 
 
@@ -47,7 +52,8 @@ def write_mcp_config(
     return mcp_dir
 
 
-def _render(manifest: dict[str, Any], ledger: EvidenceLedger) -> str:
+def _render(manifest: dict[str, Any], ledger: EvidenceLedger, provenance: dict[str, Any]) -> str:
+    convention = manifest.get("missing_value_convention", {})
     lines: list[str] = [
         "# Dataset report",
         "",
@@ -62,6 +68,26 @@ def _render(manifest: dict[str, Any], ledger: EvidenceLedger) -> str:
         f"- Files: {manifest.get('file_count', 0)}",
         f"- Total bytes: {manifest.get('total_bytes', 0)}",
         f"- Manifest version: {manifest.get('manifest_version', '')}",
+        "",
+        "## This ingest run",
+        "",
+        # From provenance.json, not the manifest: the manifest must stay
+        # timestamp-free so repeat ingests compare byte-for-byte.
+        f"- Ingested at: {provenance.get('started_at', 'not recorded')}",
+        f"- Finished at: {provenance.get('finished_at', 'not recorded')}",
+        f"- Duration: {provenance.get('duration_seconds', 'not recorded')} s",
+        f"- Tool: {provenance.get('tool', {}).get('name', 'data2agent')} "
+        f"{provenance.get('tool', {}).get('version', '')}",
+        "- Source verified unchanged: "
+        f"{provenance.get('source_verified_unchanged', 'not recorded')}",
+        "",
+        "## Missing-value convention",
+        "",
+        f"- Applied: `{convention.get('id', 'unknown')}`",
+        f"- Source: {convention.get('source', 'not recorded')}",
+        f"- Tokens resolved to missing: {_token_list(convention)}",
+        "- Tokens such as `unknown`, `-` and `?` are **never** resolved to missing by a "
+        "built-in convention; they are counted separately below.",
         "",
     ]
 
@@ -90,14 +116,20 @@ def _render(manifest: dict[str, Any], ledger: EvidenceLedger) -> str:
                 f"- Rows: {profile.get('rows', 0)}",
                 f"- Columns: {profile.get('column_count', 0)}",
                 "",
-                "| column | observed shape | missing | null-like tokens | claim |",
-                "| --- | --- | --- | --- | --- |",
+                "| column | observed shape | missing | (empty) | (tokens) "
+                "| unresolved tokens | claim |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
             ]
             for column in profile.get("columns", []):
                 claim = _find_claim(ledger, path, "table.column-dtype", column["name"])
+                ambiguous = column.get("ambiguous_tokens_seen", {})
+                unresolved = (
+                    ", ".join(f"`{token}`×{count}" for token, count in ambiguous.items()) or "—"
+                )
                 lines.append(
                     f"| `{column['name']}` | {column['dtype']} | {column['missing']} | "
-                    f"{column.get('null_like_tokens', 0)} | `{claim}` |"
+                    f"{column.get('missing_empty', 0)} | {column.get('missing_sentinel', 0)} | "
+                    f"{unresolved} | `{claim}` |"
                 )
             lines.append("")
 
@@ -106,7 +138,7 @@ def _render(manifest: dict[str, Any], ledger: EvidenceLedger) -> str:
     if identifiers:
         lines.append(
             "Detected by pattern match only. No identifier was resolved; resolution is "
-            "a FAIR check and is not implemented in this version."
+            "a FAIR check; run `data2agent assess` for it."
         )
         lines.append("")
         for hit in identifiers:
@@ -122,9 +154,11 @@ def _render(manifest: dict[str, Any], ledger: EvidenceLedger) -> str:
         "",
         "- Cross-file relationships between tables and metadata records.",
         "- The scientific meaning of any column, including units and controlled terms.",
-        "- Whether null-like tokens (`NA`, `unknown`, ...) denote missing values.",
+        "- Whether unresolved tokens (`unknown`, `-`, `?`, ...) denote missing values. "
+        "Tokens the applied convention *does* resolve are counted in the missing column above.",
         "- Whether any detected identifier resolves, or is correct.",
-        "- Any FAIR indicator. FAIR assessment is a separate profile, planned for v0.2.",
+        "- Any FAIR indicator. Run `data2agent assess <output>` for the FAIR profile; "
+        "it is a separate layer and is not reflected in this report.",
         "",
     ]
 
@@ -134,6 +168,11 @@ def _render(manifest: dict[str, Any], ledger: EvidenceLedger) -> str:
     lines.append("")
     lines += [f"Claims recorded: {len(ledger)}.", ""]
     return "\n".join(lines)
+
+
+def _token_list(convention: dict[str, Any]) -> str:
+    tokens = convention.get("tokens", [])
+    return ", ".join(f"`{token}`" for token in tokens) or "none"
 
 
 def _find_claim(ledger: EvidenceLedger, subject: str, check: str, field: str) -> str:
@@ -185,14 +224,33 @@ Call `dataset_inventory` first, then `inspect_table` / `get_metadata` for
 specifics, and `get_evidence` before asserting anything. A statement with no
 supporting claim is unsupported -- report it as unknown.
 
+## FAIR assessment
+
+FAIR is a separate profile, not part of this server's default surface. Run it
+with:
+
+```bash
+data2agent assess {output_dir}
+```
+
+or start the server in a FAIR mode (`--mode fair-rules` to expose the canonical
+rules, `--mode fair-deterministic` to expose the checks as well). Results marked
+`unknown` are results: they must be reported as unknown, not reasoned into a
+verdict.
+
 ## Output directory
 
 ```
 {output_dir}
 ├── manifest.json     what the dataset is (deterministic; no timestamps)
-├── provenance.json   what this ingest run was
+├── provenance.json   what this ingest run was (time, duration, tool version)
 ├── evidence.json     claim -> evidence -> file -> checksum
+├── assessment.json   written by `data2agent assess`
 ├── mcp/              this directory
 └── report/           evidence-backed Markdown report
 ```
+
+Timestamps are kept out of the manifest so that repeated ingests of identical
+bytes compare byte-for-byte. They are still reachable: `dataset_inventory`,
+`get_provenance`, and `dataset://provenance`.
 """

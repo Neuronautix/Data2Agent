@@ -1,11 +1,14 @@
 """Delimited-table profiling.
 
-This module answers only questions the bytes can answer: how many rows, what the
-header says, which cells are empty, and what shape the observed tokens have. It
-never decides what a column *means*, and it never decides that a sentinel string
-such as ``NA`` represents a missing value -- that is a dataset-specific
-convention, so we count such tokens separately and let a human or a downstream
-profile rule on them.
+This module answers only questions the bytes can answer, plus one question the
+bytes cannot: whether a token such as ``NA`` means "missing". That question is
+resolved by an explicit :mod:`~data2agent.ingest.conventions` record rather than
+by judgement, the convention travels with the profile, and every missingness
+claim cites it. Change the convention and the numbers change, visibly.
+
+What is still never decided here: what a column *means*. ``birth_date`` holds
+string-shaped tokens because nothing declares a date format, and no column
+acquires units, a controlled term or a scientific type from this module.
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ import csv
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .conventions import AMBIGUOUS, DEFAULT_CONVENTION, SENTINEL, MissingValueConvention
 
 # Delimiters we are willing to consider, in preference order.
 _CANDIDATE_DELIMITERS = (",", "\t", ";", "|")
@@ -25,24 +30,24 @@ _INTEGER = re.compile(r"^[+-]?\d+$")
 _NUMBER = re.compile(r"^[+-]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][+-]?\d+)?$")
 _BOOLEAN = {"true", "false"}
 
-# Tokens that datasets *often* use for "no value" -- reported, never assumed.
-NULL_LIKE_TOKENS = frozenset({"na", "n/a", "nan", "null", "none", "nil", ".", "-", "?", "unknown"})
-
 # Distinct values are only enumerated below this cardinality; above it a column
-# is treated as free-form and only its count is kept.
+# is treated as free-form and only an upper bound on the count is kept.
 _MAX_ENUMERATED_DISTINCT = 25
 
 
 @dataclass
 class ColumnProfile:
-    """Observed, non-interpretive properties of one column."""
+    """Observed properties of one column, under a named missing-value convention."""
 
     name: str
     position: int
     dtype: str = "empty"
-    non_empty: int = 0
+    values: int = 0
     missing: int = 0
-    null_like: int = 0
+    missing_empty: int = 0
+    missing_sentinel: int = 0
+    sentinel_tokens_seen: dict[str, int] = field(default_factory=dict)
+    ambiguous_tokens_seen: dict[str, int] = field(default_factory=dict)
     distinct: int = 0
     distinct_exact: bool = True
     distinct_values: list[str] | None = None
@@ -54,9 +59,15 @@ class ColumnProfile:
             "name": self.name,
             "position": self.position,
             "dtype": self.dtype,
-            "non_empty": self.non_empty,
+            "values": self.values,
+            # missing == missing_empty + missing_sentinel, always.
             "missing": self.missing,
-            "null_like_tokens": self.null_like,
+            "missing_empty": self.missing_empty,
+            "missing_sentinel": self.missing_sentinel,
+            "sentinel_tokens_seen": dict(sorted(self.sentinel_tokens_seen.items())),
+            # Observed, deliberately NOT resolved to missing. A cell reading
+            # 'unknown' may be a considered statement rather than an absence.
+            "ambiguous_tokens_seen": dict(sorted(self.ambiguous_tokens_seen.items())),
             "distinct": self.distinct,
             # Above the enumeration cap we stop tracking the value set, so the
             # count becomes an upper bound. Saying which it is keeps the number
@@ -79,6 +90,7 @@ class TableProfile:
     rows: int
     columns: list[ColumnProfile]
     ragged_rows: int
+    convention: MissingValueConvention
     warnings: list[str]
 
     def as_dict(self) -> dict[str, object]:
@@ -89,6 +101,7 @@ class TableProfile:
             "has_header": self.has_header,
             "rows": self.rows,
             "column_count": len(self.columns),
+            "missing_convention": self.convention.as_dict(),
             "columns": [column.as_dict() for column in self.columns],
             "ragged_rows": self.ragged_rows,
             "missing": {column.name: column.missing for column in self.columns},
@@ -96,7 +109,11 @@ class TableProfile:
         }
 
 
-def profile_table(path: Path, relative_path: str) -> TableProfile | None:
+def profile_table(
+    path: Path,
+    relative_path: str,
+    convention: MissingValueConvention = DEFAULT_CONVENTION,
+) -> TableProfile | None:
     """Profile a delimited file, or return ``None`` when it cannot be read as one.
 
     Returning ``None`` is a legitimate outcome: a file whose delimiter cannot be
@@ -121,7 +138,15 @@ def profile_table(path: Path, relative_path: str) -> TableProfile | None:
         header = next(reader)
     except StopIteration:
         return TableProfile(
-            relative_path, encoding, delimiter, False, 0, [], 0, warnings + ["file is empty"]
+            relative_path,
+            encoding,
+            delimiter,
+            False,
+            0,
+            [],
+            0,
+            convention,
+            [*warnings, "file is empty"],
         )
 
     columns = [
@@ -142,33 +167,41 @@ def profile_table(path: Path, relative_path: str) -> TableProfile | None:
         for index, raw in enumerate(record):
             if index >= len(columns):
                 continue  # Extra fields are counted via ``ragged``, not invented into columns.
-            _observe(columns[index], raw)
+            _observe(columns[index], raw, convention)
 
     for column in columns:
-        column.missing = rows - column.non_empty
+        # Any cell not seen at all (a short row) is an absent value, not a value.
+        column.missing_empty = rows - column.values - column.missing_sentinel
+        column.missing = column.missing_empty + column.missing_sentinel
         if not column._overflowed:
             column.distinct = len(column._seen)
             column.distinct_values = sorted(column._seen)
 
+    warnings.extend(_convention_warnings(columns, convention))
     if ragged:
         warnings.append(f"{ragged} row(s) do not have {len(columns)} fields")
-    for column in columns:
-        if column.null_like:
-            warnings.append(
-                f"column '{column.name}' contains {column.null_like} null-like token(s) "
-                f"(e.g. 'NA'); these are counted separately and NOT treated as missing"
-            )
 
-    return TableProfile(relative_path, encoding, delimiter, True, rows, columns, ragged, warnings)
+    return TableProfile(
+        relative_path, encoding, delimiter, True, rows, columns, ragged, convention, warnings
+    )
 
 
-def _observe(column: ColumnProfile, raw: str) -> None:
+def _observe(column: ColumnProfile, raw: str, convention: MissingValueConvention) -> None:
     value = raw.strip()
     if value == "":
-        return  # Empty cell: counted as missing via ``rows - non_empty``.
-    column.non_empty += 1
-    if value.lower() in NULL_LIKE_TOKENS:
-        column.null_like += 1
+        return  # Empty cell: folded into missing_empty once the row count is known.
+
+    classification = convention.classify(value)
+    if classification == SENTINEL:
+        column.missing_sentinel += 1
+        column.sentinel_tokens_seen[value] = column.sentinel_tokens_seen.get(value, 0) + 1
+        return  # A resolved sentinel is missing: it is not a value, and has no type.
+
+    if classification == AMBIGUOUS:
+        column.ambiguous_tokens_seen[value] = column.ambiguous_tokens_seen.get(value, 0) + 1
+        # Falls through: an unresolved token is still a value the file records.
+
+    column.values += 1
     column.dtype = _promote(column.dtype, _token_type(value))
     if not column._overflowed:
         column._seen.add(value)
@@ -179,6 +212,28 @@ def _observe(column: ColumnProfile, raw: str) -> None:
             column._seen.clear()
     else:
         column.distinct += 1  # Upper bound: see ``distinct_exact``.
+
+
+def _convention_warnings(
+    columns: list[ColumnProfile], convention: MissingValueConvention
+) -> list[str]:
+    warnings: list[str] = []
+    for column in columns:
+        if column.sentinel_tokens_seen:
+            tokens = ", ".join(sorted(column.sentinel_tokens_seen))
+            warnings.append(
+                f"column '{column.name}': {column.missing_sentinel} cell(s) holding "
+                f"{tokens} resolved to missing by the '{convention.id}' convention "
+                f"({convention.source})"
+            )
+        if column.ambiguous_tokens_seen:
+            tokens = ", ".join(sorted(column.ambiguous_tokens_seen))
+            total = sum(column.ambiguous_tokens_seen.values())
+            warnings.append(
+                f"column '{column.name}': {total} cell(s) holding {tokens} were NOT "
+                f"resolved to missing; declare a missing-value convention if they should be"
+            )
+    return warnings
 
 
 def _token_type(value: str) -> str:

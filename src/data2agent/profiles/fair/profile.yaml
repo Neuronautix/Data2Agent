@@ -1,0 +1,30 @@
+id: fair
+version: 0.1.0
+title: FAIR data assessment profile
+
+description: >
+  Deterministic, evidence-bound checks for the FAIR principles, computed over a
+  Data2Agent manifest and evidence ledger. Every rule is authored once, here,
+  and projected into whatever form a given benchmark mode requires: prose, a
+  structured listing, an executable check, a JSON Schema fragment, SHACL shapes.
+  Six independently written rule sets would confound the form of a constraint
+  with its content; one canonical rule with six projections does not.
+
+  Scope is deliberately narrow. These rules assess a LOCAL SNAPSHOT of a
+  dataset. Anything that requires the network, a repository API, or knowledge of
+  where the dataset is published returns 'unknown' and says so, rather than
+  guessing from what is on disk.
+
+rules:
+  - F1-PID-METADATA
+  - F1-PID-RESOLVABLE
+  - F2-METADATA-PRESENT
+  - F3-METADATA-LINKS-DATA
+  - F4-METADATA-MACHINE-READABLE
+  - A1-RETRIEVAL-PROTOCOL
+  - I1-DATA-FORMATS-OPEN
+  - I2-VOCABULARY-REFERENCED
+  - R1.1-LICENCE-DECLARED
+  - R1.2-PROVENANCE-DECLARED
+  - R1.3-COMMUNITY-STANDARD
+  - R1.3-MISSING-VALUES-DECLARED

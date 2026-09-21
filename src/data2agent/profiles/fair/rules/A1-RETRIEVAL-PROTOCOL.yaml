@@ -1,0 +1,27 @@
+id: A1-RETRIEVAL-PROTOCOL
+principle: A1
+
+question: >
+  Is the data retrievable by its identifier using a standardised, open protocol?
+
+check:
+  type: retrieval_protocol
+  inputs:
+    - manifest.identifiers
+
+allowed_results: [pass, fail, unknown]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown]
+
+implemented: false
+not_implemented_reason: >
+  Retrievability is a property of where the dataset is published, not of a local
+  snapshot of it. Nothing on disk can establish it, and a local HTTPS URL in a
+  README is not evidence that the data is served over one.
+
+notes: >
+  Assessable once Data2Agent accepts a DOI or repository URL as input (v0.3),
+  because the ingest will then have made the retrieval itself and can record it
+  as provenance.

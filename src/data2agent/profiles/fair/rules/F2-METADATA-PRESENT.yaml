@@ -1,0 +1,22 @@
+id: F2-METADATA-PRESENT
+principle: F2
+
+question: >
+  Is the data described by metadata at all?
+
+check:
+  type: metadata_presence
+  inputs:
+    - manifest.metadata_files
+
+allowed_results: [pass, fail, unknown, not_applicable]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown, not_applicable]
+
+notes: >
+  Recognition is by filename convention only (RO-Crate, Frictionless, BIDS,
+  ISA-Tab, CodeMeta, DataCite, README, LICENSE). A file that holds excellent
+  metadata under an unrecognised name will not be counted -- a false negative,
+  which is the safer direction to err.

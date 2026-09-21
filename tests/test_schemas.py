@@ -30,6 +30,39 @@ def test_schemas_are_themselves_valid():
         jsonschema.Draft202012Validator.check_schema(schema)
 
 
+def test_every_fair_rule_validates_against_the_rule_schema():
+    yaml = pytest.importorskip("yaml", reason="profiles need the 'fair' extra")
+    schema = _schema("fair-rule.schema.json")
+    rules_dir = SCHEMA_DIR.parent / "src" / "data2agent" / "profiles" / "fair" / "rules"
+    paths = sorted(rules_dir.glob("*.yaml"))
+    assert paths, "the FAIR profile must ship rules"
+    for path in paths:
+        jsonschema.validate(yaml.safe_load(path.read_text(encoding="utf-8")), schema)
+
+
+def test_the_rule_schema_rejects_a_rule_that_cannot_say_unknown():
+    schema = _schema("fair-rule.schema.json")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            {
+                "id": "X1-RULE",
+                "principle": "F1",
+                "question": "Does the thing hold?",
+                "check": {"type": "metadata_presence"},
+                "allowed_results": ["pass", "fail"],
+            },
+            schema,
+        )
+
+
+def test_a_real_assessment_validates_against_the_assessment_schema(ingested):
+    pytest.importorskip("yaml", reason="profiles need the 'fair' extra")
+    from data2agent.mcp import DatasetService
+
+    service = DatasetService(ingested.output_dir, mode="fair-deterministic")
+    jsonschema.validate(service.run_fair_check(), _schema("assessment.schema.json"))
+
+
 def test_assessment_schema_rejects_an_unsourced_result():
     """The v0.2 contract must not allow a FAIR verdict with no evidence."""
     schema = _schema("assessment.schema.json")

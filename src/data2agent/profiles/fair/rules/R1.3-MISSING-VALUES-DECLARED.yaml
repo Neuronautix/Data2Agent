@@ -1,0 +1,27 @@
+id: R1.3-MISSING-VALUES-DECLARED
+principle: R1.3
+
+question: >
+  Where the data uses tokens such as NA to stand for absent values, does the
+  dataset declare that convention?
+
+check:
+  type: missing_value_convention_declared
+  inputs:
+    - manifest.tables
+    - manifest.missing_value_convention
+
+allowed_results: [pass, fail, unknown, not_applicable]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown, not_applicable]
+
+notes: >
+  An undeclared NA is a genuine reusability defect: a reader cannot tell "not
+  measured" from "measured as zero" from a strain literally named NA, and every
+  downstream tool will guess differently. Data2Agent resolves such tokens under
+  a named convention so that its own numbers are reproducible -- but resolving
+  them under a built-in default is exactly the situation this rule flags. The
+  fix is for the dataset to state its convention, for example via a Frictionless
+  'missingValues' declaration.

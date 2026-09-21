@@ -50,10 +50,22 @@ a check id means.
 and 12 have no recorded sex, the 12 are *unknown*. Not "likely male", not
 "probably the same cohort".
 
-**`NA` is a token, not a missing value.** It is counted in
-`null_like_tokens`, separately from `missing`, because nothing in most datasets
-defines what `NA` means there. Do not merge the two counts, and do not report
-"15 missing" when the manifest says 12 missing and 3 null-like.
+**`NA` counts as missing — under a named convention, which you must quote.**
+The manifest records which convention resolved it and where that convention came
+from. "3 missing" is only reproducible by someone who knows the rule, so report
+it as "3 missing (0 empty, 3 resolved from `NA` under `default-sentinels`)".
+Every missingness claim in the ledger cites the convention; carry that citation
+through.
+
+**`unknown`, `-` and `?` are not resolved by any built-in convention.** They
+appear in `ambiguous_tokens_seen`, and they count as *values*, not as missing. A
+cell reading `unknown` may be a deliberate statement. Do not fold them into the
+missing count on your own judgement; if the dataset documents them as missing,
+the fix is to re-ingest with `--missing-tokens`, and to say that you did.
+
+**A convention is a reading, not a fact about the bytes.** `dataset_id` does not
+change when the convention changes. Two reports with the same `dataset_id` and
+different conventions are describing the same bytes differently — quote both.
 
 **A detected identifier is a pattern match.** `resolve_identifier` reports
 occurrences. It does not resolve anything, and finding a DOI-shaped string is
@@ -74,6 +86,15 @@ a cached earlier value.
 **An empty list means "not determined".** `relationships: []` is not "this
 dataset has no relationships". `dataset_inventory` returns
 `relationships_determined: false` so you never have to guess which it is.
+
+**A FAIR `unknown` is a result, not a gap for you to fill.** Two rules cannot be
+run from a local snapshot. Report them as unknown with the reason the assessment
+gives. Reasoning about how likely a DOI is to resolve is the exact failure this
+system is built to prevent.
+
+**A FAIR `pass` is narrow.** It means the rule's literal check held. Call
+`get_fair_indicator` for the rule's own question and `notes`, which state what
+it does not cover, and do not promote a `pass` into "this dataset is findable".
 
 ## The phrasing that is always available
 

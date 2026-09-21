@@ -22,21 +22,29 @@ workflows — is a layer *on top of* that, and is separable from it by design.
                                     │
                     ┌───────────────┴───────────────┐
                     │                               │
-              evidence layer                  profiles (v0.2+)
-        (src/data2agent/evidence/)          fair/ · domain/ · …
-        claim → evidence → file → sha256
-                    │
+              evidence layer                  profiles
+        (src/data2agent/evidence/)      (src/data2agent/profiles/)
+        claim → evidence → file → sha256      fair/ · domain/ (later)
+                    │                    rules · loader · runner · checks
+                    │                               │
+                    └───────────────┬───────────────┘
+                                    │
               deterministic ingest  (src/data2agent/ingest/)
-        inventory · checksum · formats · tabular · structured
+        inventory · checksum · formats · tabular · structured · conventions
         · identifiers · metadata · provenance · pipeline
-                    │
+                                    │
               immutable dataset  (read-only, never written to)
 ```
 
-Arrows point downward only. Nothing in `ingest/` knows about MCP; nothing in
-`evidence/` knows about FAIR; nothing below the MCP boundary knows which host
-started it. Those three facts are what make the benchmark in
-`benchmark-contract.md` possible at all.
+Arrows point downward only. Nothing in `ingest/` knows about MCP or about
+profiles; nothing in `evidence/` knows about FAIR; `profiles/` knows nothing
+about MCP; nothing below the MCP boundary knows which host started it. Those
+facts are what make the benchmark in `benchmark-contract.md` possible at all,
+and `tests/test_layering.py` fails the build if any of them stops being true.
+
+A profile reads the manifest, the evidence ledger and the text of recognised
+metadata files — and nothing else. A check that could re-open the dataset could
+reach a conclusion the evidence ledger cannot account for.
 
 ## Why ingestion has no language model
 
@@ -106,10 +114,14 @@ The rule that constrains every layer:
 Not animal sex, not strain, not acquisition device, not experimental condition,
 not units — however plausible. Concretely, in v0.1:
 
-- An empty cell is **missing**, and is counted.
-- A literal `NA` token is **a token**, counted separately, because no dataset in
-  this example states what `NA` means. Folding the two together would be an
-  inference dressed as arithmetic.
+- An empty cell is **missing**, and is counted as `missing_empty`.
+- A literal `NA` is resolved to missing **under a named convention** that is
+  stored in the manifest and cited by every missingness claim. The resolution is
+  a declared rule, not a judgement: change the convention and the numbers
+  change, visibly, with the reason attached.
+- `unknown`, `-` and `?` are **not** resolved by any built-in convention. They
+  are counted and reported so a human can rule on them — a cell reading
+  `unknown` may be a considered statement rather than an absence.
 - `relationships: []` means *not determined*, and the API says so explicitly via
   `relationships_determined: false`.
 - A detected DOI is a **pattern match**, never a claim that it resolves.
@@ -129,6 +141,8 @@ Data2Agent/
 ├── src/data2agent/
 │   ├── ingest/              deterministic scanning
 │   ├── evidence/            claim → evidence → file → checksum
+│   ├── profiles/            rule registries + deterministic checks
+│   │   └── fair/            profile.yaml · rules/*.yaml · checks.py
 │   ├── mcp/                 service (behaviour) + server (binding) + modes
 │   ├── report.py            evidence-backed Markdown + host connection files
 │   └── cli.py
@@ -138,7 +152,6 @@ Data2Agent/
 └── docs/
 ```
 
-Directories named in the long-term plan but absent today (`profiles/fair/`,
-`validation/`, `export/`) are absent on purpose: an empty package that promises
-behaviour is worse than a backlog entry that schedules it. See
-`BACKLOG.md`.
+Directories named in the long-term plan but absent today (`validation/`,
+`export/`) are absent on purpose: an empty package that promises behaviour is
+worse than a backlog entry that schedules it. See `BACKLOG.md`.

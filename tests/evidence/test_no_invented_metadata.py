@@ -48,12 +48,37 @@ def test_identifiers_are_never_reported_as_resolved(ingested):
         assert "valid" not in hit
 
 
-def test_null_like_tokens_are_not_folded_into_missingness(ingested):
+def test_resolved_tokens_stay_attributable_to_a_named_convention(ingested):
+    """NA reads as missing -- but never silently. The rule that did it is on the record."""
     strain = next(
         column
         for column in ingested.manifest["tables"]["animals.csv"]["columns"]
         if column["name"] == "strain"
     )
-    assert strain["null_like_tokens"] == 3
-    assert strain["missing"] == 0
-    assert any("null-like" in warning for warning in ingested.manifest["warnings"])
+    assert strain["missing"] == 3
+    assert strain["missing_empty"] == 0
+    assert strain["missing_sentinel"] == 3
+    assert strain["sentinel_tokens_seen"] == {"NA": 3}
+
+    convention = ingested.manifest["missing_value_convention"]
+    assert convention["id"] == "default-sentinels"
+    assert "built-in default" in convention["source"]
+    assert any("default-sentinels" in warning for warning in ingested.manifest["warnings"])
+
+
+def test_ambiguous_tokens_are_never_resolved_by_a_built_in_convention(dataset_copy, tmp_path):
+    """A cell reading 'unknown' may be a deliberate statement. We report, not decide."""
+    from data2agent.ingest import ingest
+
+    target = dataset_copy / "animals.csv"
+    target.write_text(target.read_text().replace(",F,", ",unknown,", 1), encoding="utf-8")
+    result = ingest(dataset_copy, tmp_path / "out")
+
+    sex = next(
+        column
+        for column in result.manifest["tables"]["animals.csv"]["columns"]
+        if column["name"] == "sex"
+    )
+    assert sex["ambiguous_tokens_seen"] == {"unknown": 1}
+    assert sex["missing"] == 12, "the ambiguous token must not join the missing count"
+    assert any("NOT resolved to missing" in warning for warning in result.manifest["warnings"])

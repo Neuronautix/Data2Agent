@@ -75,12 +75,18 @@ class DatasetService:
             )
         self.source_dir = candidate.expanduser().resolve()
         self._by_path = {entry["path"]: entry for entry in self.manifest.get("files", [])}
+        self._profiles: dict[str, Any] = {}
 
     # -- capability surface -------------------------------------------------
 
     @property
     def dataset_id(self) -> str:
         return self.manifest.get("dataset_id", "")
+
+    @property
+    def ingested_at(self) -> str | None:
+        """When the ingest that produced this output began reading the bytes."""
+        return self.provenance.get("started_at")
 
     def available_tools(self) -> list[str]:
         return list(self.mode.tools)
@@ -96,6 +102,13 @@ class DatasetService:
             "dataset_id": self.dataset_id,
             "manifest_version": self.manifest.get("manifest_version"),
             "root_name": self.manifest.get("source", {}).get("root_name"),
+            # Run-specific, so it lives in provenance.json rather than the
+            # manifest -- but surfaced here, because "when was this ingested?"
+            # is the first thing anyone asks.
+            "ingested_at": self.ingested_at,
+            "ingest_duration_s": self.provenance.get("duration_seconds"),
+            "tool_version": self.provenance.get("tool", {}).get("version"),
+            "missing_value_convention": self.manifest.get("missing_value_convention", {}),
             "file_count": self.manifest.get("file_count", 0),
             "total_bytes": self.manifest.get("total_bytes", 0),
             "formats": self.manifest.get("formats", {}),
@@ -206,6 +219,30 @@ class DatasetService:
             payload["content_encoding"] = "binary"
         return payload
 
+    def get_provenance(self) -> dict[str, Any]:
+        """Return when, where and with what this dataset was ingested.
+
+        Separate from the manifest by design, and separate from
+        ``dataset_inventory`` because provenance answers a different question:
+        not what the dataset is, but what this run of the tool was.
+        """
+        return {
+            "dataset_id": self.dataset_id,
+            "ingested_at": self.ingested_at,
+            "started_at": self.provenance.get("started_at"),
+            "finished_at": self.provenance.get("finished_at"),
+            "duration_seconds": self.provenance.get("duration_seconds"),
+            "tool": self.provenance.get("tool", {}),
+            "runtime": self.provenance.get("runtime", {}),
+            "configuration": self.provenance.get("configuration", {}),
+            "source_verified_unchanged": self.provenance.get("source_verified_unchanged"),
+            "source_mutated": self.provenance.get("source_mutated"),
+            "note": (
+                "timestamps describe this ingest run, not the dataset; manifest.json "
+                "is timestamp-free so repeated ingests of the same bytes compare equal"
+            ),
+        }
+
     def get_evidence(
         self,
         *,
@@ -236,7 +273,8 @@ class DatasetService:
 
         This is occurrence lookup, not resolution: no network call is made, and a
         hit is never evidence that the identifier resolves or is valid. Actual
-        resolution is a FAIR-profile check, planned for v0.2.
+        resolution needs the network, which no check in this version makes;
+        `validate_identifier` in a fair-* mode checks syntax only.
         """
         needle = value.strip().lower()
         occurrences = [
@@ -249,6 +287,108 @@ class DatasetService:
             "resolved": None,
             "note": "occurrence lookup only; no resolution was attempted",
         }
+
+    # -- profile tools (fair-* modes only) ----------------------------------
+
+    def profile_context(self):
+        """Build the read-only view a profile check is allowed to see.
+
+        Deliberately narrow: the manifest, the evidence ledger, and the text of
+        recognised metadata files. A check that could re-read the dataset could
+        reach a conclusion the evidence ledger cannot account for.
+        """
+        from ..profiles.model import ProfileContext
+
+        return ProfileContext(
+            manifest=self.manifest,
+            ledger=self.ledger,
+            read_metadata=self._metadata_text,
+        )
+
+    def load_profile(self, profile_id: str = "fair"):
+        """Load and cache an assessment profile."""
+        from ..profiles.loader import load_profile
+
+        if profile_id not in self._profiles:
+            self._profiles[profile_id] = load_profile(profile_id)
+        return self._profiles[profile_id]
+
+    def list_fair_rules(self) -> dict[str, Any]:
+        """List the canonical FAIR rules: id, principle, question, implementation status."""
+        profile = self.load_profile("fair")
+        return {
+            "profile": {"id": profile.id, "version": profile.version, "title": profile.title},
+            "description": profile.description,
+            "rules": [
+                {
+                    "id": rule.id,
+                    "principle": rule.principle,
+                    "question": rule.question,
+                    "check": rule.check_type,
+                    "implemented": rule.implemented,
+                    "allowed_results": list(rule.allowed_results),
+                }
+                for rule in profile.rules
+            ],
+        }
+
+    def get_fair_indicator(self, rule_id: str) -> dict[str, Any]:
+        """Return one canonical FAIR rule in full, exactly as authored."""
+        return self.load_profile("fair").rule(rule_id).as_dict()
+
+    def run_fair_check(
+        self,
+        rule_id: str | None = None,
+        *,
+        host: str | None = None,
+        model: str | None = None,
+        orchestrator: str | None = None,
+    ) -> dict[str, Any]:
+        """Run the deterministic FAIR checks and return an assessment.
+
+        The verdicts come from code, not from a model. ``unknown`` results are
+        preserved rather than resolved: a rule this version cannot run reports
+        unknown and stays in the denominator.
+        """
+        from ..profiles.fair import CHECKS
+        from ..profiles.runner import run
+
+        profile = self.load_profile("fair")
+        generator: dict[str, Any] = {
+            "mode": self.mode.name,
+            "orchestrator": orchestrator or "deterministic",
+        }
+        if host:
+            generator["host"] = host
+        if model:
+            generator["model"] = model
+
+        assessment = run(
+            profile, self.profile_context(), CHECKS, generator=generator, rule_id=rule_id
+        )
+        payload = assessment.as_dict()
+        payload["summary"] = assessment.summary()
+        return payload
+
+    def validate_identifier(self, value: str) -> dict[str, Any]:
+        """Check an identifier's syntax against its scheme. No network request is made.
+
+        Syntactic validity is not resolution. A well-formed DOI that points at
+        nothing still passes here, and the response says so explicitly so the
+        distinction cannot be lost downstream.
+        """
+        from ..ingest.identifiers import validate
+
+        result = validate(value)
+        result["resolution_attempted"] = False
+        result["resolves"] = None
+        result["note"] = (
+            "syntax only; whether this identifier resolves was not checked and must not "
+            "be inferred from a valid syntax"
+        )
+        occurrences = self.resolve_identifier(value)
+        result["occurrences"] = occurrences["occurrences"]
+        return result
 
     # -- resources ----------------------------------------------------------
 
@@ -305,6 +445,14 @@ class DatasetService:
         if absolute != self.source_dir and self.source_dir not in absolute.parents:
             raise OutputError(f"path escapes the dataset root: {path}")
         return absolute
+
+    def _metadata_text(self, path: str) -> str | None:
+        """Read a recognised metadata file as text, or return None."""
+        try:
+            served = self.get_metadata(path)
+        except KeyError:
+            return None
+        return served.get("content")
 
 
 def _load_json(path: Path) -> dict[str, Any]:

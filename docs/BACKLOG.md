@@ -18,7 +18,7 @@ depends on it.
 | D2A-01 | Repository fork with Paper2Agent lineage preserved (`NOTICE.md`, MIT notice retained in `LICENSE`) | done |
 | D2A-02 | Deterministic inventory + checksums + `dataset_id` fold | done |
 | D2A-03 | Format detection by magic bytes and extension; unknown stays unknown | done |
-| D2A-04 | Delimited-table profiling: schema, row counts, missingness, null-like tokens | done |
+| D2A-04 | Delimited-table profiling: schema, row counts, missingness | done |
 | D2A-05 | JSON shape profiling | done |
 | D2A-06 | Metadata-file recognition by published naming convention | done |
 | D2A-07 | Persistent-identifier detection with source and line | done |
@@ -28,7 +28,7 @@ depends on it.
 | D2A-11 | Host-agnostic service separated from the MCP binding | done |
 | D2A-12 | Benchmark mode gating, with loud failure on unimplemented modes | done |
 | D2A-13 | Published JSON Schemas for manifest, evidence and assessment | done |
-| D2A-14 | Worked example dataset + acceptance tests (75 tests) | done |
+| D2A-14 | Worked example dataset + acceptance tests | done |
 | D2A-15 | **Manual two-host check: connect the generated server from both Claude Code and Codex** | open |
 | D2A-16 | CI: tests, lint, determinism re-check, stdlib-only guard | done |
 | D2A-17 | Replace the synthetic example with one real preclinical dataset | open |
@@ -56,38 +56,81 @@ everything-converter.
 
 ---
 
-## v0.2 — FAIR as a separable profile
+## v0.2 — conventions, timestamps, FAIR · shipped
 
-| id | Item | Acceptance |
+### Missing-value conventions
+
+| id | Item | Status |
 | --- | --- | --- |
-| D2A-20 | `profiles/fair/profile.yaml` + rule registry in YAML | Every rule validates against a published rule schema |
-| D2A-21 | Rule schema (`schemas/fair-rule.schema.json`) | Requires `id`, `principle`, `question`, `check`, `allowed_results`, `inference_allowed` |
-| D2A-22 | Registry covers F, A, I and R with at least one rule each | Rule ids stable and referenced by every mode |
-| D2A-23 | Deterministic check implementations for identifier presence, licence presence, metadata-schema presence, vocabulary reference presence | Each returns one of `pass`/`fail`/`unknown`/`not_applicable` with evidence |
-| D2A-24 | MCP tools `run_fair_check`, `get_fair_indicator`, `validate_identifier`, `validate_metadata_schema` | Exposed only in `fair-*` modes |
-| D2A-25 | Enable modes `fair-skill`, `fair-rules`, `fair-deterministic` | `data2agent modes` reports them available; mode-gating tests updated |
-| D2A-26 | Rule → Markdown Skill projection (for `fair-skill`) | Generated from the canonical rule, never hand-written |
-| D2A-27 | Emit `assessment.json` against the existing schema | Schema validation in CI |
-| D2A-28 | `validate_identifier` records its network attempt in provenance | Endpoint, status and timestamp stored; the only non-reproducible check |
-| D2A-29 | Leak test: `--mode structured` exposes no FAIR concept | Assert the tool list and every response body are FAIR-free |
+| D2A-18 | Named missing-value conventions; `NA` resolves to missing under a declared rule | done |
+| D2A-19a | `missing` / `missing_empty` / `missing_sentinel` breakdown, plus the tokens as written | done |
+| D2A-19b | Ambiguous tokens (`unknown`, `-`, `?`) counted, never resolved | done |
+| D2A-19c | Frictionless `missingValues` read from `datapackage.json` when present | done |
+| D2A-19d | `--missing-tokens` / `--strict-missing` overrides | done |
+| D2A-19e | Every missingness claim cites the convention that produced it | done |
 
-D2A-29 is the one that protects the experiment. Without it, FAIR vocabulary
-drifts into the core and the control condition quietly stops being a control.
+### Timestamps
+
+| id | Item | Status |
+| --- | --- | --- |
+| D2A-19f | `duration_seconds` recorded in provenance | done |
+| D2A-19g | `ingested_at` surfaced via `dataset_inventory()` and the report header | done |
+| D2A-19h | `get_provenance()` tool + `dataset://provenance` resource | done |
+| D2A-19i | Manifest stays timestamp-free; byte-identical repeat ingest preserved | done |
+
+### FAIR profile
+
+| id | Item | Status |
+| --- | --- | --- |
+| D2A-20 | `profiles/fair/profile.yaml` + rule registry in YAML | done |
+| D2A-21 | Rule schema (`schemas/fair-rule.schema.json`), validated in CI | done |
+| D2A-22 | Registry covers F, A, I and R — 12 rules | done |
+| D2A-23 | Deterministic check implementations | done — 10 of 12 |
+| D2A-24 | MCP tools `list_fair_rules`, `get_fair_indicator`, `run_fair_check`, `validate_identifier` | done |
+| D2A-25 | Enable modes `fair-rules`, `fair-deterministic` | done |
+| D2A-27 | Emit `assessment.json` against the published schema | done |
+| D2A-29 | Leak test: `--mode structured` exposes no FAIR concept | done |
+| D2A-29b | Layering test: the core may not import a profile | done |
+| D2A-26 | Rule → Markdown Skill projection (for `fair-skill`) | open — v0.3 |
+| D2A-28 | `validate_identifier` resolves over the network, recording the attempt | open — v0.3 |
+| D2A-24b | `validate_metadata_schema` against a declared schema | open — v0.3 |
+
+D2A-29 and D2A-29b are the ones that protect the experiment. Without them, FAIR
+vocabulary drifts into the core and the control condition quietly stops being a
+control.
+
+### D2A-26 — the prose projection
+
+`fair-skill` needs Markdown generated *from* the canonical rules, not written
+alongside them. Hand-writing the prose would confound the form of a constraint
+with its content and make prose-vs-rules uninterpretable — the whole reason the
+registry is canonical in the first place.
+
+### D2A-28 — network resolution
+
+`F1-PID-RESOLVABLE` and `A1-RETRIEVAL-PROTOCOL` return `unknown` today because
+neither can be settled from a local snapshot. When resolution arrives it must
+record endpoint, status and timestamp in `provenance.json`: it is the only check
+in the system that is not reproducible from the dataset bytes alone, and that
+has to be visible rather than assumed.
 
 ---
 
-## v0.3 — curation, export and remote sources
+## v0.3 — prose projection, curation, export, remote sources
 
 | id | Item | Acceptance |
 | --- | --- | --- |
+| D2A-26 | Generate the `fair-skill` Markdown from the canonical rules | Three FAIR modes live; prose-vs-rules-vs-deterministic runnable |
 | D2A-30 | Accept a DOI, repository URL or archive as `dataset.source` | Remote source snapshotted locally before any other step; `dataset_id` computed from the snapshot |
 | D2A-31 | Curated export with a new `dataset_id` | The export never overwrites the source |
 | D2A-32 | Every modification carries provenance | Each change records what, why, by whom, from which prior `dataset_id` |
 | D2A-33 | Round-trip test: curated export re-ingests cleanly | Manifest of the export is itself deterministic |
 | D2A-34 | Diff two manifests | Reports added/removed/changed files and changed profiles |
-| D2A-35 | YAML metadata parsing | Requires a parser dependency — keep it optional so the core stays stdlib-only |
+| D2A-35 | YAML metadata parsing | PyYAML is already an optional `fair` extra; the ingest core must stay stdlib-only |
 | D2A-36 | Excel/`.xlsx` table profiling | Optional dependency; same profile shape as CSV |
 | D2A-37 | Exact distinct counts above the enumeration cap | Currently reported as an upper bound with `distinct_exact: false` |
+| D2A-38 | Per-column missing-value conventions | Frictionless allows a per-resource declaration; we apply one convention per dataset |
+| D2A-39 | Promote an ambiguous token on documented evidence | A dataset that documents `unknown` in prose should be able to resolve it, with that text as evidence |
 
 ---
 
@@ -141,7 +184,7 @@ orchestration at once, with no reference implementation to compare against.
 | --- | --- | --- |
 | D2A-70 | Keep the ingest core dependency-free | Every proposed dependency goes in an optional extra. Ten-year reproducibility is the requirement |
 | D2A-71 | Keep the MCP boundary host-agnostic | No host-specific behaviour below `server.py`, ever |
-| D2A-72 | Keep `unknown` a first-class result everywhere | A layer that cannot say "unknown" will invent an answer |
+| D2A-72 | Keep `unknown` a first-class result everywhere | A layer that cannot say "unknown" will invent an answer. The loader now refuses a rule whose `allowed_results` omit it |
 | D2A-73 | Manifest-version discipline | Any change to manifest bytes for unchanged input is a major version bump |
 | D2A-74 | Performance on large datasets | Currently checksums everything twice (once to hash, once to verify). Acceptable at MVP scale; revisit past ~10 GB |
 | D2A-75 | Symlink policy | Recorded, never followed. Revisit only with a concrete dataset that needs it |
@@ -158,4 +201,5 @@ orchestration at once, with no reference implementation to compare against.
 | Hard-coding FAIR into Data2MCP | Destroys the control condition the study depends on |
 | An LLM anywhere in the ingest path | An LLM that infers a dataset's structure is an LLM that can invent one |
 | Building a FAIR ontology before the rule registry | Encodes guesses about which questions matter, before knowing |
-| Treating `NA` as missing by default | A dataset-specific convention. Counted separately until something in the dataset documents it |
+| Treating `NA` as missing **silently** | Resolving it is fine, and is now the default. Resolving it without naming the convention, storing it in the manifest and citing it in every claim is not: the number stops being reproducible by anyone who does not share our assumptions |
+| Resolving `unknown`, `-` or `?` by default | Not standard sentinels. A cell reading `unknown` may be a considered statement; a dataset that means it as missing can declare it |

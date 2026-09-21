@@ -16,6 +16,8 @@ from pathlib import Path
 from . import __version__
 from .errors import Data2AgentError
 from .ingest import ingest
+from .ingest.conventions import STRICT_CONVENTION, custom
+from .ingest.pipeline import write_json
 from .mcp.modes import DEFAULT_MODE, MODES
 from .mcp.service import DatasetService
 from .report import write_mcp_config, write_report
@@ -49,6 +51,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="mode recorded in the MCP config",
     )
     ingest_parser.add_argument("--no-report", action="store_true", help="skip report/ and mcp/")
+    missing = ingest_parser.add_mutually_exclusive_group()
+    missing.add_argument(
+        "--missing-tokens",
+        default=None,
+        metavar="NA,null,...",
+        help=(
+            "comma-separated tokens to resolve to missing, overriding both the dataset's "
+            "own declaration and the built-in default"
+        ),
+    )
+    missing.add_argument(
+        "--strict-missing",
+        action="store_true",
+        help="treat only empty cells as missing; resolve no tokens at all",
+    )
     ingest_parser.set_defaults(handler=_cmd_ingest)
 
     verify_parser = subparsers.add_parser(
@@ -59,6 +76,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--source", type=Path, default=None, help="override the recorded source"
     )
     verify_parser.set_defaults(handler=_cmd_verify)
+
+    assess_parser = subparsers.add_parser("assess", help="run a profile's deterministic checks")
+    assess_parser.add_argument("output", type=Path, help="an ingest output directory")
+    assess_parser.add_argument("--profile", default="fair", help="profile id (default: fair)")
+    assess_parser.add_argument("--rule", default=None, help="run a single rule by id")
+    assess_parser.add_argument(
+        "--list", action="store_true", help="list the profile's rules and exit"
+    )
+    assess_parser.add_argument(
+        "--source", type=Path, default=None, help="override the recorded source"
+    )
+    assess_parser.set_defaults(handler=_cmd_assess)
 
     serve_parser = subparsers.add_parser("serve", help="run the Data2MCP server")
     serve_parser.add_argument("output", type=Path, help="an ingest output directory")
@@ -75,9 +104,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_ingest(args: argparse.Namespace) -> int:
-    result = ingest(args.source, args.output)
+    convention = None
+    if args.strict_missing:
+        convention = STRICT_CONVENTION
+    elif args.missing_tokens:
+        convention = custom(args.missing_tokens.split(","))
+
+    result = ingest(args.source, args.output, convention=convention)
     if not args.no_report:
-        write_report(result.output_dir, result.manifest, result.evidence)
+        write_report(result.output_dir, result.manifest, result.evidence, result.provenance)
         write_mcp_config(
             result.output_dir,
             source_dir=Path(result.provenance["source_path"]),
@@ -89,6 +124,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     print(f"files      : {result.manifest['file_count']}")
     print(f"tables     : {len(result.manifest['tables'])}")
     print(f"claims     : {len(result.evidence)}")
+    applied = result.manifest["missing_value_convention"]
+    print(f"missing    : resolved under '{applied['id']}' ({applied['source']})")
     print(f"output     : {result.output_dir}")
     if not result.provenance.get("source_verified_unchanged", True):
         print("WARNING: the source changed during ingest; this manifest is not trustworthy")
@@ -102,6 +139,40 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     report = service.verify_dataset()
     print(json.dumps(report, indent=2))
     return 0 if report["intact"] else 1
+
+
+def _cmd_assess(args: argparse.Namespace) -> int:
+    # fair-deterministic is the reference condition: the verdicts below come
+    # from code, so the mode label on the assessment must say so.
+    service = DatasetService(args.output, source_dir=args.source, mode="fair-deterministic")
+
+    if args.list:
+        listing = service.list_fair_rules()
+        print(f"{listing['profile']['id']} {listing['profile']['version']}")
+        for rule in listing["rules"]:
+            status = "" if rule["implemented"] else "  [NOT IMPLEMENTED -> always unknown]"
+            print(f"  {rule['id']:<32} {rule['principle']:<6} {rule['check']}{status}")
+            print(f"  {'':<32} {rule['question'].strip()}")
+        return 0
+
+    assessment = service.run_fair_check(args.rule, orchestrator="deterministic")
+    destination = Path(args.output) / "assessment.json"
+    write_json(destination, assessment)
+
+    summary = assessment["summary"]
+    print(f"dataset_id : {assessment['dataset_id']}")
+    print(f"profile    : {assessment['profile']['id']} {assessment['profile']['version']}")
+    print(
+        "results    : " + ", ".join(f"{count} {name}" for name, count in summary.items() if count)
+    )
+    print(f"written    : {destination}")
+    print()
+    for result in assessment["results"]:
+        print(f"  {result['rule_id']:<32} {result['result']}")
+        if result.get("rationale"):
+            print(f"  {'':<32} {' '.join(result['rationale'].split())}")
+    # A failed indicator is a finding about the dataset, not a tool error.
+    return 0
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:

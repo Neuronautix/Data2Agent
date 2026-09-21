@@ -130,6 +130,47 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         """Find where an identifier occurs in the dataset. No network resolution is attempted."""
         return service.resolve_identifier(value)
 
+    def get_provenance() -> dict[str, Any]:
+        """When, where and with what version this dataset was ingested.
+
+        Timestamps live here rather than in the manifest, so that repeated
+        ingests of identical bytes still produce identical manifests.
+        """
+        return service.get_provenance()
+
+    def list_fair_rules() -> dict[str, Any]:
+        """List the canonical FAIR rules: id, principle, question, implementation status."""
+        return service.list_fair_rules()
+
+    def get_fair_indicator(rule_id: str) -> dict[str, Any]:
+        """Return one canonical FAIR rule in full: its question, check, and allowed results.
+
+        'unknown' is always among the allowed results. A rule that cannot report
+        uncertainty would manufacture certainty instead.
+        """
+        return service.get_fair_indicator(rule_id)
+
+    def run_fair_check(
+        rule_id: str | None = None,
+        host: str | None = None,
+        model: str | None = None,
+        orchestrator: str | None = None,
+    ) -> dict[str, Any]:
+        """Run the deterministic FAIR checks, returning an evidence-bound assessment.
+
+        Verdicts come from code, not from a model. Results marked 'unknown' are
+        preserved as unknown and must not be resolved by reasoning over them.
+        """
+        return service.run_fair_check(rule_id, host=host, model=model, orchestrator=orchestrator)
+
+    def validate_identifier(value: str) -> dict[str, Any]:
+        """Validate an identifier's syntax against its scheme. Makes no network request.
+
+        A syntactically valid identifier is not a resolvable one; the response
+        says so, and that distinction must be preserved when reporting.
+        """
+        return service.validate_identifier(value)
+
     implementations = {
         "dataset_inventory": dataset_inventory,
         "list_files": list_files,
@@ -138,6 +179,11 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         "get_metadata": get_metadata,
         "get_evidence": get_evidence,
         "resolve_identifier": resolve_identifier,
+        "get_provenance": get_provenance,
+        "list_fair_rules": list_fair_rules,
+        "get_fair_indicator": get_fair_indicator,
+        "run_fair_check": run_fair_check,
+        "validate_identifier": validate_identifier,
     }
     for tool_name in service.available_tools():
         implementation = implementations.get(tool_name)

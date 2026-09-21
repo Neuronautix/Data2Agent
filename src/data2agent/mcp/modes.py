@@ -29,7 +29,13 @@ _CORE_TOOLS = (
     "inspect_table",
     "get_metadata",
     "get_evidence",
+    "get_provenance",
 )
+
+# Each FAIR mode is a superset of the one before it: the ladder varies the form
+# of the constraint, never the information underneath.
+_FAIR_RULE_TOOLS = ("get_fair_indicator", "list_fair_rules")
+_FAIR_CHECK_TOOLS = ("run_fair_check", "validate_identifier")
 
 MODES: dict[str, Mode] = {
     "raw": Mode(
@@ -48,19 +54,28 @@ MODES: dict[str, Mode] = {
         name="fair-skill",
         available_since=None,
         tools=(*_CORE_TOOLS, "resolve_identifier"),
-        description="structured + FAIR guidance as prose. Planned for v0.2.",
+        description=(
+            "structured + FAIR guidance as prose, generated from the same canonical "
+            "rules. Planned for v0.3."
+        ),
     ),
     "fair-rules": Mode(
         name="fair-rules",
-        available_since=None,
-        tools=(*_CORE_TOOLS, "resolve_identifier", "get_fair_indicator"),
-        description="structured + the machine-readable FAIR rule registry. Planned for v0.2.",
+        available_since="0.2.0",
+        tools=(*_CORE_TOOLS, "resolve_identifier", *_FAIR_RULE_TOOLS),
+        description=(
+            "structured + the machine-readable FAIR rule registry. The agent can read "
+            "every canonical rule, but must run the assessment itself."
+        ),
     ),
     "fair-deterministic": Mode(
         name="fair-deterministic",
-        available_since=None,
-        tools=(*_CORE_TOOLS, "resolve_identifier", "run_fair_check", "validate_identifier"),
-        description="structured + deterministic FAIR check tools. Planned for v0.2.",
+        available_since="0.2.0",
+        tools=(*_CORE_TOOLS, "resolve_identifier", *_FAIR_RULE_TOOLS, *_FAIR_CHECK_TOOLS),
+        description=(
+            "fair-rules + deterministic implementations of the checks. The reference "
+            "condition: verdicts come from code, not from the model."
+        ),
     ),
     "fair-semantic": Mode(
         name="fair-semantic",
@@ -68,7 +83,8 @@ MODES: dict[str, Mode] = {
         tools=(
             *_CORE_TOOLS,
             "resolve_identifier",
-            "run_fair_check",
+            *_FAIR_RULE_TOOLS,
+            *_FAIR_CHECK_TOOLS,
             "validate_vocabulary",
             "validate_shacl",
         ),

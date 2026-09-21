@@ -1,0 +1,22 @@
+id: I1-DATA-FORMATS-OPEN
+principle: I1
+
+question: >
+  Are the data files in open, documented formats?
+
+check:
+  type: format_openness
+  inputs:
+    - manifest.files
+    - manifest.formats
+
+allowed_results: [pass, fail, unknown, not_applicable]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown, not_applicable]
+
+notes: >
+  Judged against an explicit list of formats, not a guess about openness. A
+  format the ingest could not identify makes the whole rule 'unknown': one
+  unidentified file is enough to make "all formats are open" unsupportable.

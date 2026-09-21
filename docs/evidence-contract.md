@@ -69,14 +69,43 @@ named and implemented — adding one is a visible, reviewable act.
 | `file.format-detection` | Format from magic bytes and/or extension |
 | `dataset.file-count` | Files inventoried under the root |
 | `dataset.identity` | The SHA-256 fold over sorted `(path, checksum)` pairs |
+| `convention.missing-values` | The named missing-value convention applied, and its source |
 | `table.row-count` | Data rows after the header |
 | `table.column-list` | Header names, in order |
 | `table.column-dtype` | Least upper bound of observed token shapes |
-| `table.missing-value-count` | Rows whose cell is empty |
-| `table.null-like-token-count` | Cells holding a conventional sentinel |
+| `table.missing-value-count` | Rows whose cell is empty **or** holds a resolved token |
+| `table.missing-empty-count` | Rows whose cell is empty |
+| `table.missing-sentinel-count` | Cells holding a token the convention resolves to missing |
+| `table.ambiguous-token-count` | Cells holding a token that no convention resolves |
 | `json.shape` | Top-level type, keys, nesting depth |
 | `metadata.file-convention` | Filename matches a published convention |
 | `identifier.detected` | A persistent-identifier pattern matched in text |
+
+### Missingness claims carry their rule
+
+A missing count is only meaningful alongside the rule that produced it, so every
+`table.missing-value-count` claim cites four evidence items: the total, its two
+components, and the `convention.missing-values` record that resolved the tokens.
+
+```json
+{
+  "claim": "'strain' is missing for 3 of 48 row(s) in 'animals.csv' (0 empty, 3 resolved from tokens by the 'default-sentinels' convention)",
+  "evidence": [
+    { "check": "table.missing-value-count",    "result": 3 },
+    { "check": "table.missing-empty-count",    "result": 0 },
+    { "check": "table.missing-sentinel-count", "result": 3 },
+    { "check": "convention.missing-values",
+      "result": { "id": "default-sentinels", "source": "built-in default (...)",
+                  "tokens": ["na", "n/a", "null", "..."],
+                  "ambiguous_tokens_resolved": false } }
+  ]
+}
+```
+
+A reader who disagrees with the convention can see precisely what to change, and
+re-ingesting under a different one produces a different, equally sourced number.
+`tests/evidence/test_ledger.py` asserts that no missingness claim can be recorded
+without its convention.
 
 ## How an agent is expected to use it
 
@@ -100,7 +129,9 @@ curation edit — it must:
 
 A profile assessment (`schemas/assessment.schema.json`) cites claim ids from
 `evidence.json` rather than restating their content, so a FAIR verdict is always
-traceable to bytes without duplicating them.
+traceable to bytes without duplicating them. The runner enforces the same
+discipline one level up: it refuses a verdict the rule did not permit, a verdict
+with no evidence, and a `fail`, `unknown` or `not_applicable` with no rationale.
 
 ## What evidence does *not* do
 

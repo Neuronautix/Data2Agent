@@ -4,10 +4,19 @@
   "title": "Data2Agent profile assessment",
   "description": "The output contract for any assessment profile (FAIR first). Declared in v0.1 and NOT produced by v0.1: the contract exists before the reasoning so that prose, rules, deterministic checks and SHACL can all be scored against one shape. Constraining the output shape is itself an experimental variable, so it must not be invented per profile.",
   "type": "object",
-  "required": ["assessment_version", "dataset_id", "profile", "generator", "results"],
+  "required": [
+    "assessment_version",
+    "dataset_id",
+    "profile",
+    "generator",
+    "results"
+  ],
   "additionalProperties": false,
   "properties": {
-    "assessment_version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "assessment_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
     "dataset_id": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -15,51 +24,142 @@
     },
     "profile": {
       "type": "object",
-      "required": ["id", "version"],
+      "required": [
+        "id",
+        "version"
+      ],
       "properties": {
-        "id": { "type": "string", "examples": ["fair"] },
-        "version": { "type": "string" }
+        "id": {
+          "type": "string",
+          "examples": [
+            "fair"
+          ]
+        },
+        "version": {
+          "type": "string"
+        }
       }
     },
     "generator": {
       "type": "object",
-      "required": ["mode"],
+      "required": [
+        "mode"
+      ],
       "description": "The experimental condition that produced this assessment.",
       "properties": {
         "mode": {
-          "enum": ["raw", "structured", "fair-skill", "fair-rules", "fair-deterministic", "fair-semantic"]
+          "enum": [
+            "raw",
+            "structured",
+            "fair-skill",
+            "fair-rules",
+            "fair-deterministic",
+            "fair-semantic"
+          ]
         },
-        "host": { "type": "string", "examples": ["claude-code", "codex", "goose", "pi"] },
-        "orchestrator": { "type": "string", "examples": ["single-agent", "assessor-verifier", "specialist-team"] },
-        "model": { "type": "string" }
+        "host": {
+          "type": "string",
+          "examples": [
+            "claude-code",
+            "codex",
+            "goose",
+            "pi"
+          ]
+        },
+        "orchestrator": {
+          "type": "string",
+          "examples": [
+            "single-agent",
+            "assessor-verifier",
+            "specialist-team"
+          ]
+        },
+        "model": {
+          "type": "string"
+        }
       }
     },
-    "results": { "type": "array", "items": { "$ref": "#/$defs/result" } },
+    "results": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/result"
+      }
+    },
     "unsupported_claims": {
       "type": "array",
       "description": "Statements the generator made that no evidence item supports. The primary error metric.",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Derived count of results by outcome. Convenience only; the results array is authoritative.",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
     }
   },
   "$defs": {
     "result": {
       "type": "object",
-      "required": ["rule_id", "principle", "result", "evidence"],
+      "required": [
+        "rule_id",
+        "principle",
+        "result",
+        "evidence"
+      ],
       "additionalProperties": false,
       "properties": {
-        "rule_id": { "type": "string", "examples": ["F1-PID-METADATA"] },
-        "principle": { "enum": ["F1", "F2", "F3", "F4", "A1", "A1.1", "A1.2", "A2", "I1", "I2", "I3", "R1", "R1.1", "R1.2", "R1.3"] },
+        "rule_id": {
+          "type": "string",
+          "examples": [
+            "F1-PID-METADATA"
+          ]
+        },
+        "principle": {
+          "enum": [
+            "F1",
+            "F2",
+            "F3",
+            "F4",
+            "A1",
+            "A1.1",
+            "A1.2",
+            "A2",
+            "I1",
+            "I2",
+            "I3",
+            "R1",
+            "R1.1",
+            "R1.2",
+            "R1.3"
+          ]
+        },
         "result": {
-          "enum": ["pass", "fail", "unknown", "not_applicable"],
+          "enum": [
+            "pass",
+            "fail",
+            "unknown",
+            "not_applicable"
+          ],
           "description": "'unknown' is a first-class outcome. A profile may never resolve an unknown by inference."
         },
         "evidence": {
           "type": "array",
           "minItems": 1,
           "description": "Evidence items, or claim ids from evidence.json. An 'unknown' result must still cite what was checked.",
-          "items": { "type": ["object", "string"] }
+          "items": {
+            "type": [
+              "object",
+              "string"
+            ]
+          }
         },
-        "rationale": { "type": "string" },
+        "rationale": {
+          "type": "string"
+        },
         "inferred": {
           "type": "boolean",
           "default": false,

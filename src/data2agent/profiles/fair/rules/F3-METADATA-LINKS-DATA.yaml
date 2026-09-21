@@ -1,0 +1,24 @@
+id: F3-METADATA-LINKS-DATA
+principle: F3
+
+question: >
+  Does the metadata explicitly reference the data files it describes?
+
+check:
+  type: metadata_references_data
+  inputs:
+    - manifest.files
+    - manifest.metadata_files
+
+allowed_results: [pass, fail, unknown, not_applicable]
+
+inference_allowed: false
+evidence_required: true
+rationale_required_for: [fail, unknown, not_applicable]
+
+notes: >
+  A file is 'referenced' when its name appears in the text of a recognised
+  metadata file. This is a literal string search, so a metadata record that
+  refers to its data by a pattern or an external identifier will read as a fail;
+  the rationale lists exactly which files were not found, so the finding can be
+  checked rather than taken on faith.

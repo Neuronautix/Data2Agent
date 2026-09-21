@@ -26,11 +26,23 @@ CHECKS: dict[str, str] = {
     "file.format-detection": "Format determined from magic bytes and/or filename extension",
     "dataset.file-count": "Number of files inventoried under the dataset root",
     "dataset.identity": "SHA-256 fold over the sorted (path, file checksum) pairs",
+    "convention.missing-values": (
+        "The named missing-value convention applied when classifying cells, and its source"
+    ),
     "table.row-count": "Number of data rows after the header row",
     "table.column-list": "Column names read from the header row, in order",
     "table.column-dtype": "Least upper bound of the token shapes observed in a column",
-    "table.missing-value-count": "Number of rows whose cell in this column is empty",
-    "table.null-like-token-count": "Number of cells holding a conventional null-like token",
+    "table.missing-value-count": (
+        "Number of rows whose cell is empty, or holds a token the active "
+        "missing-value convention resolves to missing"
+    ),
+    "table.missing-empty-count": "Number of rows whose cell in this column is empty",
+    "table.missing-sentinel-count": (
+        "Number of cells holding a token resolved to missing by the active convention"
+    ),
+    "table.ambiguous-token-count": (
+        "Number of cells holding a token that was NOT resolved to missing by any convention"
+    ),
     "json.shape": "Top-level type, keys and nesting depth of a JSON document",
     "metadata.file-convention": "Filename matches a published metadata convention",
     "identifier.detected": "A persistent-identifier pattern matched in file text",

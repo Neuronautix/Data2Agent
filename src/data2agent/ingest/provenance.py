@@ -5,6 +5,11 @@ byte-identical across repeated ingests of the same bytes -- which it cannot be i
 it carries a wall-clock timestamp -- so everything run-specific (when, where,
 with what version, how long) lives here instead. The two documents are joined by
 ``dataset_id``.
+
+Keeping the timestamps out of the manifest is not the same as hiding them: they
+are surfaced by ``dataset_inventory()``, by the ``get_provenance()`` tool, by the
+``dataset://provenance`` resource and in the generated report header. A fact
+nobody can reach is as good as absent.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ class ProvenanceRecord:
     output_path: str
     started_at: str
     finished_at: str
+    duration_seconds: float = 0.0
     tool: dict[str, str] = field(default_factory=dict)
     runtime: dict[str, str] = field(default_factory=dict)
     configuration: dict[str, Any] = field(default_factory=dict)
@@ -46,6 +52,7 @@ class ProvenanceRecord:
             "output_path": self.output_path,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
+            "duration_seconds": self.duration_seconds,
             "tool": self.tool,
             "runtime": self.runtime,
             "configuration": self.configuration,

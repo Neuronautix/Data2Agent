@@ -8,8 +8,8 @@ before the next is allowed to depend on it.
 v0.1  deterministic core ····································· shipped
       dataset → deterministic ingest → Data2MCP → one agent
 
-v0.2  + FAIR profile, rule registry, deterministic FAIR checks
-v0.3  + curated export, provenance of every modification, remote sources
+v0.2  + FAIR profile, rule registry, deterministic FAIR checks ··· shipped
+v0.3  + prose projection (fair-skill), curated export, remote sources
 v0.4  + controlled vocabularies, ontology mappings, SHACL
 v0.5  + multi-agent workflow (the Paper2Agent pattern, ported)
 v0.6  + benchmark harness adapters (in Data2AgentBench)
@@ -30,7 +30,7 @@ one agent                 no subagents, no orchestration
 Six tools: `dataset_inventory`, `list_files`, `inspect_file`, `inspect_table`,
 `get_metadata`, `get_evidence` (plus `resolve_identifier`).
 
-Acceptance tests, all green (`tests/`, 75 tests):
+Acceptance tests, all green (`tests/`, 139 tests across v0.1 and v0.2):
 
 | ✓ | Criterion | Covered by |
 | --- | --- | --- |
@@ -38,18 +38,35 @@ Acceptance tests, all green (`tests/`, 75 tests):
 | ✓ | every source file checksummed | `ingestion/test_immutability.py` |
 | ✓ | deterministic repeated ingest gives the same manifest | `ingestion/test_determinism.py` |
 | ✓ | table schema correctly extracted | `ingestion/test_tabular.py` |
-| ✓ | missingness correctly calculated | `ingestion/test_tabular.py` |
+| ✓ | missingness correctly calculated | `ingestion/test_tabular.py`, `ingestion/test_conventions.py` |
 | ✓ | no invented metadata | `evidence/test_no_invented_metadata.py` |
 | ✓ | every reported fact references evidence | `evidence/test_ledger.py` |
 | ~ | MCP works from both Codex and Claude Code | `mcp/test_server_binding.py` covers the protocol surface in-process; the two-host manual check is **D2A-15**, still open |
 
-## v0.2 — FAIR as a separable profile
+## v0.2 — FAIR as a separable profile · shipped
 
-The rule registry is the hard part and comes first; the ontology work does not
-start here. `Data2MCP ≠ FAIR checker` must still hold when this ships: adding
-`--mode structured` must expose no FAIR concept at all.
+12 canonical rules in `src/data2agent/profiles/fair/rules/`, 10 deterministic
+implementations, the `fair-rules` and `fair-deterministic` modes, and
+`data2agent assess`. `Data2MCP ≠ FAIR checker` still holds: `--mode structured`
+exposes no FAIR concept, asserted by a test and by an import-layering check.
 
-## v0.3 — curation and remote sources
+The two rules that need the network or the dataset's published location stay in
+the registry and return `unknown`. A dropped rule leaves the denominator; an
+unknown one stays countable.
+
+Also in v0.2, from the same release:
+
+- Missing-value conventions. `NA` now reads as missing, under a **named**
+  convention that is stored in the manifest and cited by every missingness
+  claim — a declared rule rather than a judgement call.
+- Ingest timestamps surfaced through `dataset_inventory()`, `get_provenance()`,
+  `dataset://provenance` and the report, while `manifest.json` stays
+  timestamp-free so repeat ingests still compare byte-for-byte.
+
+## v0.3 — prose projection, curation, remote sources
+
+Generate the `fair-skill` Markdown from the same canonical rules, so three of the
+four FAIR modes go live and prose-vs-rules-vs-deterministic becomes runnable.
 
 Export a curated dataset where **every modification carries provenance**. Accept
 a DOI, repository URL or archive as input, snapshotted to an immutable local

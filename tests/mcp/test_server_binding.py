@@ -35,7 +35,7 @@ def _text_of(result) -> str:
 
 
 @pytest.mark.anyio
-async def test_structured_mode_registers_the_seven_tools(server):
+async def test_structured_mode_registers_the_deterministic_surface(server):
     assert await _tool_names(server) == {
         "dataset_inventory",
         "list_files",
@@ -43,8 +43,38 @@ async def test_structured_mode_registers_the_seven_tools(server):
         "inspect_table",
         "get_metadata",
         "get_evidence",
+        "get_provenance",
         "resolve_identifier",
     }
+
+
+@pytest.mark.anyio
+async def test_fair_deterministic_mode_adds_the_profile_tools(ingested):
+    server = build_server(DatasetService(ingested.output_dir, mode="fair-deterministic"))
+    names = await _tool_names(server)
+    assert {
+        "list_fair_rules",
+        "get_fair_indicator",
+        "run_fair_check",
+        "validate_identifier",
+    } <= names
+
+
+@pytest.mark.anyio
+async def test_calling_run_fair_check_over_mcp_returns_an_assessment(ingested):
+    server = build_server(DatasetService(ingested.output_dir, mode="fair-deterministic"))
+    result = await server.call_tool("run_fair_check", {})
+    payload = json.loads(_text_of(result))
+    assert payload["profile"]["id"] == "fair"
+    assert payload["summary"]["unknown"] >= 2, "unimplemented rules must survive as unknown"
+
+
+@pytest.mark.anyio
+async def test_calling_get_provenance_over_mcp_returns_the_timestamps(server):
+    result = await server.call_tool("get_provenance", {})
+    payload = json.loads(_text_of(result))
+    assert payload["ingested_at"].endswith("Z")
+    assert payload["duration_seconds"] >= 0
 
 
 @pytest.mark.anyio

@@ -5,14 +5,19 @@
 Follow the shape of the generated `report/dataset-report.md`:
 
 ```text
-Identity          dataset_id, file count, total bytes
-Formats           what was detected, and on what basis
-Metadata files    recognised by convention
-Tables            per column: shape, missing, null-like tokens, claim id
-Identifiers       detected by pattern, with file and line
-Not determined    ← the section people skip; do not skip it
-Warnings          everything the checks flagged
+Identity              dataset_id, file count, total bytes
+This ingest run       when, how long, which tool version
+Missing-value         which convention was applied, and where it came from
+Formats               what was detected, and on what basis
+Metadata files        recognised by convention
+Tables                per column: shape, missing (empty/tokens), unresolved, claim id
+Identifiers           detected by pattern, with file and line
+Not determined        ← the section people skip; do not skip it
+Warnings              everything the checks flagged
 ```
+
+If you ran a FAIR assessment, add a section for it — results, rationales, and
+the `unknown`s left as unknown.
 
 ## Rules
 
@@ -28,23 +33,30 @@ contents:
 
 - cross-file relationships between tables and metadata records;
 - the meaning of any column, including units and controlled terms;
-- whether null-like tokens denote missing values;
+- whether *unresolved* tokens (`unknown`, `-`, `?`) denote missing values;
 - whether any detected identifier resolves;
 - any FAIR indicator — FAIR assessment is a separate, unimplemented profile.
 
 **Report warnings as findings, not as noise.** An unrecognised format, a ragged
 row, a decode failure and a `.csv` whose bytes are a PNG are all substantive.
 
-**Separate the three missingness states.** Empty cells, null-like tokens, and
-values. Merging them loses the distinction that matters most for data quality.
+**Separate the missingness states, and name the convention.** Empty cells,
+resolved sentinel tokens, unresolved ambiguous tokens, and values. "3 missing" is
+not reproducible on its own; "3 missing (0 empty, 3 resolved from `NA` under
+`default-sentinels`)" is.
+
+**Never report a FAIR `unknown` as anything else.** Nor a `pass` as broader than
+the rule's own question.
 
 ## Phrasings that keep you honest
 
 | Instead of | Write |
 | --- | --- |
 | "the dataset has 48 male and female mice" | "`animals.csv` has 48 rows; `sex` is recorded for 36 and empty for 12 [clm_…]" |
-| "strain is C57BL/6J" | "`strain` holds `C57BL/6J` in 45 rows and the token `NA` in 3; what `NA` denotes is not stated [clm_…]" |
-| "the dataset is FAIR-compliant" | "FAIR assessment is not implemented in this version. A DOI-shaped identifier appears in `README.md:33` [clm_…]; whether it resolves was not checked" |
+| "strain is C57BL/6J, 3 missing" | "`strain` holds `C57BL/6J` in 45 rows; 3 hold `NA`, resolved to missing under the `default-sentinels` convention because the dataset declares none of its own [clm_…]" |
+| "15 values are missing" | "12 missing (empty cells) in `sex`, 3 missing (resolved `NA`) in `strain` — two different columns and two different reasons" |
+| "the dataset is FAIR-compliant" | "the FAIR profile returns 8 pass, 2 fail, 2 unknown. `I2-VOCABULARY-REFERENCED` and `R1.3-MISSING-VALUES-DECLARED` fail; `F1-PID-RESOLVABLE` and `A1-RETRIEVAL-PROTOCOL` are unknown because neither can be settled from a local snapshot" |
+| "the DOI is probably fine" | "`F1-PID-RESOLVABLE` returned `unknown`: no network request was made. The identifier is syntactically valid [clm_…]" |
 | "no metadata is available" | "no filename matched a recognised metadata convention; `README.md` and `dataset_description.json` were recognised [clm_…]" |
 | "columns are typed correctly" | "`weight_g` holds integer-shaped tokens; `birth_date` holds string-shaped tokens, as no date format is declared [clm_…]" |
 
@@ -52,8 +64,11 @@ values. Merging them loses the distinction that matters most for data quality.
 
 - [ ] Every number carries a claim id.
 - [ ] The `dataset_id` appears.
+- [ ] Every missingness figure names the convention that produced it.
 - [ ] The "Not determined" section is present and honest.
 - [ ] No value appears that is absent from the dataset's bytes.
 - [ ] Warnings are reported.
-- [ ] Nothing implies a FAIR verdict, an identifier resolution, or a vocabulary
-      mapping — none of those are implemented.
+- [ ] Every FAIR `unknown` is still an unknown, with its reason.
+- [ ] No FAIR `pass` has been widened beyond the rule's own question.
+- [ ] Nothing implies an identifier resolution, a vocabulary mapping or a SHACL
+      validation — none of those are implemented.

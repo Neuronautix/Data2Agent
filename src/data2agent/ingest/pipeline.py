@@ -25,14 +25,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from .. import MANIFEST_VERSION
 from ..errors import OutputError
 from ..evidence import EvidenceItem, EvidenceLedger
-from . import formats, identifiers, metadata, structured, tabular
+from . import conventions, formats, identifiers, metadata, structured, tabular
 from .checksum import dataset_id as fold_dataset_id
 from .checksum import hash_file
+from .conventions import DEFAULT_CONVENTION, MissingValueConvention
 from .inventory import DEFAULT_EXCLUDES, FileEntry, Inventory, build
 from .provenance import ProvenanceRecord, runtime_fingerprint, tool_fingerprint, utc_now
 
@@ -65,10 +67,18 @@ def ingest(
     output: Path,
     *,
     excludes: frozenset[str] = DEFAULT_EXCLUDES,
+    convention: MissingValueConvention | None = None,
     write: bool = True,
 ) -> IngestResult:
-    """Ingest ``source`` into ``output``, leaving ``source`` untouched."""
+    """Ingest ``source`` into ``output``, leaving ``source`` untouched.
+
+    ``convention`` overrides how missing-value tokens are resolved. Left unset,
+    the dataset's own declaration is used when it makes one, and the built-in
+    default otherwise -- in every case the choice is recorded in the manifest
+    and cited by each missingness claim.
+    """
     started_at = utc_now()
+    started_monotonic = perf_counter()
     source = Path(source).expanduser().resolve()
     output = Path(output).expanduser().resolve()
 
@@ -80,6 +90,7 @@ def ingest(
 
     inventory = build(source, excludes=excludes)
     identity = fold_dataset_id((entry.path, entry.sha256) for entry in inventory.files)
+    active_convention = convention or _discover_convention(source, inventory)
 
     ledger = EvidenceLedger(identity)
     warnings = list(inventory.warnings)
@@ -89,7 +100,7 @@ def ingest(
     metadata_files: list[dict[str, str]] = []
     identifier_hits: list[dict[str, Any]] = []
 
-    _record_dataset_claims(ledger, identity, inventory)
+    _record_dataset_claims(ledger, identity, inventory, active_convention)
 
     for entry in inventory.files:
         absolute = source / entry.path
@@ -112,13 +123,13 @@ def ingest(
             )
 
         if entry.format.format_id in formats.TABULAR_FORMATS:
-            profile = tabular.profile_table(absolute, entry.path)
+            profile = tabular.profile_table(absolute, entry.path, active_convention)
             if profile is None:
                 warnings.append(f"{entry.path}: could not be read as a delimited table")
             else:
                 tables[entry.path] = profile.as_dict()
                 warnings.extend(f"{entry.path}: {note}" for note in profile.warnings)
-                _record_table_claims(ledger, entry, profile)
+                _record_table_claims(ledger, entry, profile, active_convention)
 
         elif entry.format.format_id in formats.STRUCTURED_FORMATS:
             profile = structured.profile_json(absolute, entry.path)
@@ -167,6 +178,7 @@ def ingest(
         identity=identity,
         source=source,
         inventory=inventory,
+        convention=active_convention,
         tables=tables,
         structured_docs=structured_docs,
         metadata_files=metadata_files,
@@ -180,9 +192,14 @@ def ingest(
         output_path=str(output),
         started_at=started_at,
         finished_at=utc_now(),
+        duration_seconds=round(perf_counter() - started_monotonic, 3),
         tool=tool_fingerprint(),
         runtime=runtime_fingerprint(),
-        configuration={"excludes": sorted(excludes), "manifest_version": MANIFEST_VERSION},
+        configuration={
+            "excludes": sorted(excludes),
+            "manifest_version": MANIFEST_VERSION,
+            "missing_value_convention": active_convention.as_dict(),
+        },
     ).as_dict()
     provenance["source_verified_unchanged"] = source_unchanged
 
@@ -197,6 +214,7 @@ def _build_manifest(
     identity: str,
     source: Path,
     inventory: Inventory,
+    convention: MissingValueConvention,
     tables: dict[str, Any],
     structured_docs: dict[str, Any],
     metadata_files: list[dict[str, str]],
@@ -213,6 +231,9 @@ def _build_manifest(
         # Only the directory's own name: an absolute path would make the manifest
         # machine-specific, and the manifest must not be.
         "source": {"root_name": source.name},
+        # Declared at the top level because it governs how every missingness
+        # number below should be read.
+        "missing_value_convention": convention.as_dict(),
         "file_count": len(inventory.files),
         "total_bytes": inventory.total_bytes,
         "files": [entry.as_dict() for entry in inventory.files],
@@ -232,7 +253,12 @@ def _build_manifest(
     }
 
 
-def _record_dataset_claims(ledger: EvidenceLedger, identity: str, inventory: Inventory) -> None:
+def _record_dataset_claims(
+    ledger: EvidenceLedger,
+    identity: str,
+    inventory: Inventory,
+    convention: MissingValueConvention,
+) -> None:
     ledger.record(
         f"the dataset contains {len(inventory.files)} file(s)",
         subject="dataset",
@@ -293,8 +319,20 @@ def _record_file_claims(ledger: EvidenceLedger, entry: FileEntry) -> None:
 
 
 def _record_table_claims(
-    ledger: EvidenceLedger, entry: FileEntry, profile: tabular.TableProfile
+    ledger: EvidenceLedger,
+    entry: FileEntry,
+    profile: tabular.TableProfile,
+    convention: MissingValueConvention,
 ) -> None:
+    # Cited alongside every missingness count, so a reader can always see which
+    # rule produced the number rather than having to assume one.
+    convention_evidence = EvidenceItem(
+        source="",
+        source_sha256="",
+        check="convention.missing-values",
+        result=convention.as_dict(),
+    )
+
     ledger.record(
         f"'{entry.path}' has {profile.rows} data row(s)",
         subject=entry.path,
@@ -337,7 +375,8 @@ def _record_table_claims(
         if column.missing:
             ledger.record(
                 f"'{column.name}' is missing for {column.missing} of {profile.rows} row(s) "
-                f"in '{entry.path}'",
+                f"in '{entry.path}' ({column.missing_empty} empty, {column.missing_sentinel} "
+                f"resolved from tokens by the '{convention.id}' convention)",
                 subject=entry.path,
                 evidence=[
                     EvidenceItem(
@@ -347,25 +386,83 @@ def _record_table_claims(
                         result=column.missing,
                         field=column.name,
                         locator=f"column:{column.name}",
-                    )
+                    ),
+                    EvidenceItem(
+                        source=entry.path,
+                        source_sha256=entry.sha256,
+                        check="table.missing-empty-count",
+                        result=column.missing_empty,
+                        field=column.name,
+                        locator=f"column:{column.name}",
+                    ),
+                    EvidenceItem(
+                        source=entry.path,
+                        source_sha256=entry.sha256,
+                        check="table.missing-sentinel-count",
+                        result=column.missing_sentinel,
+                        field=column.name,
+                        locator=f"column:{column.name}",
+                    ),
+                    convention_evidence,
                 ],
             )
-        if column.null_like:
+        if column.sentinel_tokens_seen:
+            tokens = ", ".join(sorted(column.sentinel_tokens_seen))
             ledger.record(
-                f"'{column.name}' in '{entry.path}' holds {column.null_like} null-like token(s); "
-                f"whether they denote missing values is undetermined",
+                f"'{column.name}' in '{entry.path}' holds {column.missing_sentinel} cell(s) "
+                f"with the token(s) {tokens}, resolved to missing by the "
+                f"'{convention.id}' convention ({convention.source})",
                 subject=entry.path,
                 evidence=[
                     EvidenceItem(
                         source=entry.path,
                         source_sha256=entry.sha256,
-                        check="table.null-like-token-count",
-                        result=column.null_like,
+                        check="table.missing-sentinel-count",
+                        result=dict(sorted(column.sentinel_tokens_seen.items())),
                         field=column.name,
                         locator=f"column:{column.name}",
-                    )
+                    ),
+                    convention_evidence,
                 ],
             )
+        if column.ambiguous_tokens_seen:
+            total = sum(column.ambiguous_tokens_seen.values())
+            tokens = ", ".join(sorted(column.ambiguous_tokens_seen))
+            ledger.record(
+                f"'{column.name}' in '{entry.path}' holds {total} cell(s) with the "
+                f"token(s) {tokens}, which no convention resolves to missing; "
+                f"whether they denote absence is undetermined",
+                subject=entry.path,
+                evidence=[
+                    EvidenceItem(
+                        source=entry.path,
+                        source_sha256=entry.sha256,
+                        check="table.ambiguous-token-count",
+                        result=dict(sorted(column.ambiguous_tokens_seen.items())),
+                        field=column.name,
+                        locator=f"column:{column.name}",
+                    ),
+                    convention_evidence,
+                ],
+            )
+
+
+def _discover_convention(source: Path, inventory: Inventory) -> MissingValueConvention:
+    """Use the dataset's own declared missing-value convention when it makes one.
+
+    A declared convention is evidence; the built-in default is a fallback, and
+    the manifest says which of the two was used.
+    """
+    for entry in inventory.files:
+        if entry.path.rsplit("/", 1)[-1].lower() != "datapackage.json":
+            continue
+        document, error = structured.load_json(source / entry.path)
+        if error or not isinstance(document, dict):
+            continue
+        declared = conventions.from_datapackage(document, path=entry.path)
+        if declared is not None:
+            return declared
+    return DEFAULT_CONVENTION
 
 
 def _verify_source_unchanged(source: Path, inventory: Inventory) -> bool:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from data2agent.ingest import conventions
 from data2agent.ingest.tabular import profile_table
 
 
@@ -26,14 +27,68 @@ def test_schema_is_read_from_the_header(example_dataset: Path):
     assert profile.ragged_rows == 0
 
 
-def test_missingness_counts_empty_cells_only(example_dataset: Path):
+def test_missingness_separates_empty_cells_from_resolved_tokens(example_dataset: Path):
     columns = _columns(profile_table(example_dataset / "animals.csv", "animals.csv"))
+
     assert columns["sex"].missing == 12
-    assert columns["sex"].non_empty == 36
-    # 'strain' holds three literal 'NA' tokens. They are NOT missing values --
-    # nothing in the dataset says what 'NA' means here.
+    assert columns["sex"].missing_empty == 12
+    assert columns["sex"].missing_sentinel == 0
+    assert columns["sex"].values == 36
+
+    # 'strain' holds three literal 'NA' tokens. The default convention resolves
+    # them to missing -- and records that it did, and which tokens they were.
+    assert columns["strain"].missing == 3
+    assert columns["strain"].missing_empty == 0
+    assert columns["strain"].missing_sentinel == 3
+    assert columns["strain"].sentinel_tokens_seen == {"NA": 3}
+
+
+def test_the_strict_convention_resolves_nothing(example_dataset: Path):
+    """Change the convention and the numbers change -- visibly, with a reason."""
+    columns = _columns(
+        profile_table(example_dataset / "animals.csv", "animals.csv", conventions.STRICT_CONVENTION)
+    )
     assert columns["strain"].missing == 0
-    assert columns["strain"].null_like == 3
+    assert columns["strain"].missing_sentinel == 0
+    # The token is still reported; it is simply not resolved.
+    assert columns["strain"].ambiguous_tokens_seen == {}
+    assert "NA" in (columns["strain"].distinct_values or [])
+
+
+def test_a_custom_convention_resolves_the_tokens_it_names(tmp_path: Path):
+    path = tmp_path / "c.csv"
+    path.write_text("v\n1\nmissing\n3\n", encoding="utf-8")
+
+    default = _columns(profile_table(path, "c.csv"))["v"]
+    assert default.missing == 0, "'missing' is not a built-in sentinel"
+
+    declared = _columns(profile_table(path, "c.csv", conventions.custom(["missing"])))["v"]
+    assert declared.missing == 1
+    assert declared.sentinel_tokens_seen == {"missing": 1}
+    # With the token resolved away, the column's real shape becomes visible.
+    assert declared.dtype == "integer"
+
+
+def test_ambiguous_tokens_are_reported_but_never_resolved(tmp_path: Path):
+    """'unknown' may be a considered statement, not an absence. We do not decide."""
+    path = tmp_path / "a.csv"
+    path.write_text("v\nM\nunknown\n?\nF\n", encoding="utf-8")
+    column = _columns(profile_table(path, "a.csv"))["v"]
+
+    assert column.missing == 0
+    assert column.missing_sentinel == 0
+    assert column.ambiguous_tokens_seen == {"unknown": 1, "?": 1}
+    assert column.values == 4
+
+
+def test_a_resolved_sentinel_contributes_no_type(tmp_path: Path):
+    """A cell resolved to missing is absent, so it cannot make a column 'string'."""
+    path = tmp_path / "w.csv"
+    path.write_text("weight_g\n18\nNA\n22\n", encoding="utf-8")
+    column = _columns(profile_table(path, "w.csv"))["weight_g"]
+    assert column.dtype == "integer"
+    assert column.missing == 1
+    assert column.distinct_values == ["18", "22"]
 
 
 def test_dtype_describes_token_shape_not_meaning(example_dataset: Path):

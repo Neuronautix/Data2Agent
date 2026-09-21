@@ -20,7 +20,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install
-        run: pip install -e '.[mcp,dev]'
+        run: pip install -e '.[mcp,fair,dev]'
 
       - name: Lint
         run: |
@@ -62,6 +62,29 @@ jobs:
           print("ingest core is stdlib-only")
           PY
 
+      # A rule is the single source every projection is generated from, so a
+      # malformed one is a defect in all of them at once.
+      - name: Every FAIR rule validates against the rule schema
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          import jsonschema, yaml
+
+          schema = json.loads(pathlib.Path("schemas/fair-rule.schema.json").read_text())
+          jsonschema.Draft202012Validator.check_schema(schema)
+          paths = sorted(pathlib.Path("src/data2agent/profiles/fair/rules").glob("*.yaml"))
+          assert paths, "the FAIR profile ships no rules"
+          for path in paths:
+              jsonschema.validate(yaml.safe_load(path.read_text()), schema)
+          print(f"{len(paths)} rule(s) valid")
+          PY
+
+      # The control condition has to stay a control. If FAIR vocabulary reaches
+      # the core, `structured` and `fair-*` stop differing in exactly one thing.
+      - name: FAIR does not leak into the core
+        run: |
+          ! grep -rniE 'fair|findable|interoperable|reusable'             src/data2agent/ingest src/data2agent/evidence src/data2agent/mcp/service.py             --include='*.py' | grep -v 'profiles' ||             (echo "FAIR vocabulary found in the deterministic core" && exit 1)
+
       - name: Ingest the example dataset twice and require identical manifests
         run: |
           data2agent ingest examples/preclinical-minimal -o /tmp/a
@@ -69,3 +92,23 @@ jobs:
           diff /tmp/a/manifest.json /tmp/b/manifest.json
           diff /tmp/a/evidence.json /tmp/b/evidence.json
           git diff --exit-code -- examples/preclinical-minimal
+
+      - name: Assess the example dataset and validate the output
+        run: |
+          data2agent assess /tmp/a
+          python - <<'PY'
+          import json, pathlib
+          import jsonschema
+
+          assessment = json.loads(pathlib.Path("/tmp/a/assessment.json").read_text())
+          jsonschema.validate(
+              assessment, json.loads(pathlib.Path("schemas/assessment.schema.json").read_text())
+          )
+          # Two rules cannot be run from a local snapshot. They must stay in the
+          # results as 'unknown' rather than quietly leaving the denominator.
+          unknown = [r["rule_id"] for r in assessment["results"] if r["result"] == "unknown"]
+          assert len(assessment["results"]) == 12, assessment["summary"]
+          assert len(unknown) >= 2, unknown
+          assert all(r["evidence"] for r in assessment["results"]), "a verdict with no evidence"
+          print("assessment valid:", assessment["summary"])
+          PY

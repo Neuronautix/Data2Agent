@@ -67,6 +67,30 @@ def test_every_evidence_item_names_a_registered_check(ingested):
             assert item.check in CHECKS
 
 
+def test_every_missingness_claim_cites_the_convention_that_produced_it(ingested):
+    """The number is only meaningful alongside the rule that generated it."""
+    claims = ingested.evidence.query(check="table.missing-value-count")
+    assert claims
+    for claim in claims:
+        checks = {item.check for item in claim.evidence}
+        assert "convention.missing-values" in checks, (
+            f"missingness claim {claim.claim_id} does not cite the convention it used"
+        )
+        convention = next(
+            item for item in claim.evidence if item.check == "convention.missing-values"
+        )
+        assert convention.result["id"] == "default-sentinels"
+        assert convention.result["ambiguous_tokens_resolved"] is False
+
+
+def test_missing_total_equals_its_two_components(ingested):
+    for claim in ingested.evidence.query(check="table.missing-value-count"):
+        by_check = {item.check: item.result for item in claim.evidence}
+        assert by_check["table.missing-value-count"] == (
+            by_check["table.missing-empty-count"] + by_check["table.missing-sentinel-count"]
+        )
+
+
 def test_file_level_evidence_carries_the_files_checksum(ingested):
     checksums = {entry["path"]: entry["sha256"] for entry in ingested.manifest["files"]}
     for claim in ingested.evidence.claims:
@@ -88,10 +112,13 @@ def test_no_claim_asserts_a_value_for_a_missing_cell(ingested):
             assert item.check in {
                 "table.column-dtype",
                 "table.missing-value-count",
-                "table.null-like-token-count",
+                "table.missing-empty-count",
+                "table.missing-sentinel-count",
+                "table.ambiguous-token-count",
                 "table.column-list",
+                "convention.missing-values",
             }
-    missing = [claim for claim in sex_claims if "missing" in claim.claim]
+    missing = [claim for claim in sex_claims if "is missing for" in claim.claim]
     assert len(missing) == 1
     assert missing[0].evidence[0].result == 12
 
