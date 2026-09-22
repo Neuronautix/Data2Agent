@@ -20,6 +20,9 @@ dataset_id: "sha256:d0bd1a8ea46e797a28517b2cb90319eb848a5dde7de4e58b09c54b28a50c
 # These are owner decisions, not engineering ones. They are false today, which
 # is why no artifact below carries decision: cleared.
 # ---------------------------------------------------------------------------
+# Package-level gates govern a BULK release. They remain false: XP14 as a whole
+# has no documented licence. An individual artifact may still be released via
+# per_artifact_clearance below, which is the narrower path and the one in use.
 clearance:
   licence_or_owner_permission_documented: false
   owner_reviewed_gold_tables: false
@@ -32,6 +35,29 @@ clearance:
     evidence locators disclose, the correct state is that nothing is cleared.
 
 default: deny
+
+# ---------------------------------------------------------------------------
+# Per-artifact clearance. An artifact listed here with decision: cleared is
+# releasable on its own signature, without the package-level gates. This exists
+# because package-level gates force all-or-nothing, which would block releasing
+# a single demonstrably safe artifact.
+#
+# Each entry records WHO cleared it and WHEN. An artifact cleared here must
+# still pass every leak check; clearance does not override a finding.
+# ---------------------------------------------------------------------------
+per_artifact_clearance:
+  - path: "gold/fair_expected.json"
+    cleared_by: "Damien Huzard — dataset owner"
+    cleared_at: "2026-09-22"
+    scope_of_permission: >-
+      This artifact only. Not a precedent for the package, and not a statement
+      about the licence status of XP14 as a whole.
+    justification: >-
+      Contains no facility identifiers, no design-encoding source paths, no
+      personal names and no measurements. It records expected FAIR verdicts and
+      where data2agent v0.1 diverges from them -- a statement about tool
+      behaviour on this dataset rather than about the animals in it. The only
+      pending artifact with zero leak findings.
 
 # ---------------------------------------------------------------------------
 # Transforms available to an artifact. None is applied unless named.
@@ -108,7 +134,7 @@ artifacts:
 
   # --- gold standard -------------------------------------------------------
   - path: "gold/fair_expected.json"
-    decision: pending_review
+    decision: cleared
     rationale: >-
       The most releasable gold artifact. Contains no facility identifiers and
       no design-encoding paths: it is a statement about tool behaviour on this

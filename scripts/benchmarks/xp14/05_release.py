@@ -111,6 +111,7 @@ def main() -> int:
                 f"package.\n  package: {PKG}\n  staging: {out}"
             )
 
+    per_artifact = {e["path"]: e for e in man.get("per_artifact_clearance", [])}
     ok, failed = gates_pass(man)
     print(f"benchmark : {man['benchmark_id']}")
     print(f"dataset_id: {man['dataset_id']}")
@@ -186,8 +187,14 @@ def main() -> int:
         print(f"{DIM}--check: nothing written{RESET}")
         return 1 if blocked else 0
 
-    if not ok:
-        sys.exit(f"{RED}refusing to materialise:{RESET} clearance gates not satisfied")
+    # An artifact cleared individually does not need the package gates. Anything
+    # else does.
+    uncovered = [rel for _, rel, _ in cleared if rel not in per_artifact]
+    if not ok and uncovered:
+        sys.exit(
+            f"{RED}refusing to materialise:{RESET} package clearance gates not satisfied, "
+            f"and these cleared artifacts have no per-artifact clearance: {uncovered}"
+        )
     if blocked and not args.force:
         sys.exit(f"{RED}refusing to materialise:{RESET} leak findings in cleared artifacts")
     if not cleared:
@@ -203,7 +210,9 @@ def main() -> int:
         shutil.copy2(src, dst)
         t = entry.get("transforms")
         note = f"  (declared transforms: {', '.join(t)} — NOT YET IMPLEMENTED)" if t else ""
-        print(f"  {GREEN}+{RESET} {rel}{note}")
+        pac = per_artifact.get(rel)
+        who = f"  [cleared by {pac['cleared_by']}, {pac['cleared_at']}]" if pac else ""
+        print(f"  {GREEN}+{RESET} {rel}{note}{who}")
     print(f"\nmaterialised {len(cleared)} artifact(s) to {out}")
     print(f"{DIM}private package untouched: {PKG}{RESET}")
     return 0
