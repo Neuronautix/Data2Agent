@@ -199,15 +199,33 @@ class DatasetService:
         return payload
 
     def inspect_table(self, path: str) -> dict[str, Any]:
-        """Return the recorded profile of a delimited table."""
-        self._require_entry(path)
-        profile = self.manifest.get("tables", {}).get(path)
+        """Return the recorded profile of a table, delimited or a worksheet.
+
+        A worksheet is keyed ``<workbook path>#<sheet name>`` because one file
+        yields many tables. That key is not an inventoried path, so integrity is
+        verified against the workbook that backs it -- checking the key itself
+        would fail, and returning the profile without checking anything would
+        hand back content whose provenance was never confirmed.
+        """
+        tables = self.manifest.get("tables", {})
+        profile = tables.get(path)
+        backing = profile.get("workbook") if isinstance(profile, dict) else None
+        if backing is None and "#" in path:
+            backing = path.split("#", 1)[0]
+        self._require_entry(backing or path)
+
         if profile is None:
+            if "#" not in path and any(key.startswith(f"{path}#") for key in tables):
+                sheets = sorted(k for k in tables if k.startswith(f"{path}#"))
+                raise KeyError(
+                    f"'{path}' is a workbook holding {len(sheets)} sheet(s); "
+                    f"inspect one of {sheets}"
+                )
             raise KeyError(
                 f"'{path}' was not profiled as a table; "
                 "call inspect_file for its format and preview"
             )
-        return {**profile, "integrity": self.verify_file(path).as_dict()}
+        return {**profile, "integrity": self.verify_file(backing or path).as_dict()}
 
     def get_metadata(self, path: str | None = None) -> dict[str, Any]:
         """Serve recognised metadata files verbatim.

@@ -380,6 +380,24 @@ def _record_sheet_claims(
     )
     locator = {"workbook": sheet.workbook, "sheet": sheet.sheet, "header_row": sheet.header_row}
 
+    if not sheet.profiled:
+        # Content that could not be read has no row count. Asserting zero would
+        # turn an inability to profile into a positive finding about the data.
+        ledger.record(
+            f"'{entry.path}' holds content that could not be profiled: "
+            f"{'; '.join(sheet.warnings) or 'no reason recorded'}",
+            subject=sheet.path,
+            evidence=[
+                EvidenceItem(
+                    source=entry.path,
+                    source_sha256=entry.sha256,
+                    check="workbook.unprofiled",
+                    result={"reason": sheet.warnings, **locator},
+                )
+            ],
+        )
+        return
+
     ledger.record(
         f"sheet '{sheet.sheet}' of '{entry.path}' has {sheet.rows} data row(s)",
         subject=sheet.path,

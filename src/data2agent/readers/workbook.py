@@ -55,7 +55,11 @@ class SheetProfile:
     sheet_state: str  # "visible" | "hidden" | "veryHidden"
     header_row: int | None
     has_header: bool
-    rows: int
+    # None, never 0, when the content was not observed. Zero rows is a finding
+    # about a sheet that was read; an unreadable file has no row count at all,
+    # and reporting one turns an inability to profile into false evidence.
+    profiled: bool
+    rows: int | None
     columns: list[ColumnProfile]
     merged_ranges: int
     convention: MissingValueConvention
@@ -70,6 +74,7 @@ class SheetProfile:
             "sheet_state": self.sheet_state,
             "header_row": self.header_row,
             "has_header": self.has_header,
+            "profiled": self.profiled,
             "rows": self.rows,
             "column_count": len(self.columns),
             "merged_ranges": self.merged_ranges,
@@ -107,24 +112,21 @@ def profile_workbook(
             "reading OOXML workbooks requires the 'xlsx' extra: pip install 'data2agent[xlsx]'"
         ) from exc
 
-    # Opened from bytes, not from a path: openpyxl dispatches on the file
-    # extension and refuses an OOXML workbook named '.xls', which is precisely
-    # the case D2A-46 identified in XP14. The bytes are what we already
-    # established the format from.
-    import io
-
-    raw = path.read_bytes()
-
+    # Opened from a file handle, not a path: openpyxl dispatches on the
+    # extension and refuses an OOXML workbook named '.xls', which is the case
+    # D2A-46 identified in XP14. A handle is both extension-independent and
+    # seekable, so read_only streaming still applies -- reading the archive into
+    # memory first would defeat it on exactly the large files it protects.
+    handle = path.open("rb")
     try:
         book = openpyxl.load_workbook(
-            io.BytesIO(raw),
+            handle,
             read_only=True,  # streaming: a large workbook must not be held whole
             data_only=True,  # cached values, not formula text; see module note
         )
     except Exception as exc:  # openpyxl raises a wide range on malformed input
-        return [
-            _unreadable(relative_path, convention, f"{type(exc).__name__}: {exc}"),
-        ]
+        handle.close()
+        return [_unreadable(relative_path, convention, f"{type(exc).__name__}: {exc}")]
 
     profiles: list[SheetProfile] = []
     try:
@@ -140,14 +142,36 @@ def profile_workbook(
                     )
                 )
                 break
-            profiles.append(_profile_sheet(book[name], relative_path, index, convention))
+            try:
+                profiles.append(_profile_sheet(book[name], relative_path, index, convention))
+            except Exception as exc:
+                # read_only defers XML parsing until the rows are iterated, so a
+                # sheet can fail long after the workbook opened cleanly. One bad
+                # sheet must not abort the ingest of the whole dataset.
+                profiles.append(
+                    _unreadable(
+                        f"{relative_path}#{name}",
+                        convention,
+                        f"sheet '{name}' could not be read: {type(exc).__name__}: {exc}",
+                        workbook=relative_path,
+                        sheet=name,
+                    )
+                )
     finally:
         book.close()
+        handle.close()
 
     return profiles
 
 
-def _unreadable(relative_path: str, convention: MissingValueConvention, note: str) -> SheetProfile:
+def _unreadable(
+    relative_path: str,
+    convention: MissingValueConvention,
+    note: str,
+    *,
+    workbook: str | None = None,
+    sheet: str = "",
+) -> SheetProfile:
     """A placeholder recording that a workbook exists and was not profiled.
 
     Emitted rather than returning nothing, because an absent table and an
@@ -156,13 +180,14 @@ def _unreadable(relative_path: str, convention: MissingValueConvention, note: st
     """
     return SheetProfile(
         path=relative_path,
-        workbook=relative_path,
-        sheet="",
+        workbook=workbook if workbook is not None else relative_path,
+        sheet=sheet,
         sheet_index=-1,
         sheet_state="unknown",
         header_row=None,
         has_header=False,
-        rows=0,
+        profiled=False,
+        rows=None,
         columns=[],
         merged_ranges=0,
         convention=convention,
@@ -232,6 +257,7 @@ def _profile_sheet(sheet, workbook_path: str, index: int, convention: MissingVal
         sheet_state=state,
         header_row=header_row_index,
         has_header=header_row_index is not None,
+        profiled=True,
         rows=data_rows,
         columns=columns,
         merged_ranges=merged,
@@ -253,17 +279,21 @@ def _header_names(cells: list[str], warnings: list[str], sheet: str, row: int) -
     """
     names: list[str] = []
     blanks = 0
-    seen: dict[str, int] = {}
+    # Tracks what has been EMITTED, not what was read. Suffixing against the
+    # original labels lets ['id', 'id', 'id.1'] collapse to two identical
+    # 'id.1' entries, which then collide in the name-keyed missing map.
+    emitted: set[str] = set()
     for position, cell in enumerate(cells):
         label = cell.strip()
         if not label:
             blanks += 1
             label = _column_letter(position)
-        if label in seen:
-            seen[label] += 1
-            label = f"{label}.{seen[label]}"
-        else:
-            seen[label] = 0
+        if label in emitted:
+            base, suffix = label, 1
+            while f"{base}.{suffix}" in emitted:
+                suffix += 1
+            label = f"{base}.{suffix}"
+        emitted.add(label)
         names.append(label)
 
     while names and names[-1] == _column_letter(len(names) - 1):

@@ -55,6 +55,10 @@ CHECKS: dict[str, str] = {
         "Number of rows whose cell is empty, or holds a token the active "
         "missing-value convention resolves to missing, for one column of one worksheet"
     ),
+    "workbook.unprofiled": (
+        "A workbook or worksheet was identified but its content could not be "
+        "read; it carries no row count, because none was observed"
+    ),
     "workbook.reader-unavailable": (
         "A file was identified as a workbook but not profiled, because the "
         "optional reader for that format is not installed"
