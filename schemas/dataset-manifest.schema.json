@@ -145,9 +145,19 @@
         "detected_by": {
           "enum": [
             "signature",
+            "container",
             "extension",
             "none"
-          ]
+          ],
+          "description": "How the format was established. 'container' means the archive's own member list identified it, e.g. OOXML part paths inside a ZIP."
+        },
+        "extension_format": {
+          "type": "string",
+          "description": "What the file's extension claimed, recorded separately from what the bytes showed. Present only when the extension matched a known format."
+        },
+        "extension_conflict": {
+          "type": "boolean",
+          "description": "True when the extension's claim contradicts the observed content. The extension is never rewritten; both statements are kept."
         }
       },
       "description": "One regular file, as bytes on disk. Symlinks are never inventoried: they are listed in 'skipped' and raised as a warning, because following one would put bytes from outside the dataset boundary into a manifest that claims to describe it."
