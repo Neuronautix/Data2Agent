@@ -9,6 +9,16 @@ obvious — the reasoning behind it.
 Ordering principle, from `ROADMAP.md`: stabilise one layer before the next
 depends on it.
 
+**Identifier authority.** Where an item has a GitHub issue, the issue is
+authoritative for its id, scope and acceptance criteria; this file is the
+narrative. Issue numbers are given as `#n`. Items with no issue are marked
+*(no issue)* and exist only here.
+
+**Id ranges.** `01–39` shipped work. `46–49` gaps found by the first real
+dataset. `50–54` multi-agent. `60–65` benchmark harness. `70–77` cross-cutting.
+`80–90` the semantic layer. `40–45` is **retired** — see *Superseded
+identifiers* at the foot of this file.
+
 ---
 
 ## v0.1 — deterministic core
@@ -29,9 +39,9 @@ depends on it.
 | D2A-12 | Benchmark mode gating, with loud failure on unimplemented modes | done |
 | D2A-13 | Published JSON Schemas for manifest, evidence and assessment | done |
 | D2A-14 | Worked example dataset + acceptance tests | done |
-| D2A-15 | **Manual two-host check: connect the generated server from both Claude Code and Codex** | open |
+| D2A-15 | **Manual two-host check: connect the generated server from both Claude Code and Codex** (#14) | open |
 | D2A-16 | CI: tests, lint, determinism re-check, stdlib-only guard | done |
-| D2A-17 | Replace the synthetic example with one real preclinical dataset | in progress — XP14 frozen, gold drafted, 4 owner questions open |
+| D2A-17 | Replace the synthetic example with one real preclinical dataset (#16) | in progress — XP14 frozen, gold drafted, 4 owner questions open |
 
 ### D2A-15 — two-host verification
 
@@ -173,17 +183,37 @@ has to be visible rather than assumed.
 
 ## v0.4 — semantics
 
-| id | Item | Acceptance |
-| --- | --- | --- |
-| D2A-40 | Controlled vocabulary registry | Terms resolvable offline from a pinned snapshot |
-| D2A-41 | `validate_vocabulary` MCP tool | Unmapped terms return `unknown`, never a nearest match |
-| D2A-42 | RDF parsing (Turtle, JSON-LD, RDF/XML) | Detection exists today; parsing does not |
-| D2A-43 | SHACL shapes generated from the canonical rules | Shapes are a projection, not a reimplementation |
-| D2A-44 | `validate_shacl` MCP tool; enable `fair-semantic` | Violations carry the shape id and the offending triple |
-| D2A-45 | Ontology mappings for one domain (preclinical) | Mappings are evidence-bearing and reversible |
+Epic: **#2 — evidence-preserving semantic layer**. Renumbered from the former
+`D2A-40–45` range, which is retired; the mapping is at the foot of this file.
 
-D2A-41 matters more than it looks: fuzzy-matching an unmapped term to its
-nearest vocabulary entry is inference wearing a lookup's clothes.
+| id | Item | Issue | Acceptance |
+| --- | --- | --- | --- |
+| D2A-80 | Semantic boundary + canonical LinkML contract | #3 | Manifest/evidence stay byte-identical with semantics disabled; CI fails on dependency-direction violations |
+| D2A-81 | Rosetta-compatible evidence-bearing statement store | #4 | Every statement requires at least one evidence reference |
+| D2A-82 | Pinned vocabulary registry + ontology grounding | #5 | Terms resolvable offline from a pinned snapshot; unmapped terms return `unknown` |
+| D2A-83 | Deterministic preclinical mapping to candidate statements | #6 | Mappings are evidence-bearing and reversible |
+| D2A-84 | Optional OntoGPT extractor for free-text metadata | #7 | Candidate generation only; never promoted without validation |
+| D2A-85 | SHACL promotion gate for semantic statements | #8 | Shapes are a projection of the canonical source, not a reimplementation |
+| D2A-86 | RDF parsing + deterministic RDF/JSON-LD export | #9 | Detection exists today; parsing does not |
+| D2A-87 | Semantic inspection and validation through Data2MCP | #10 | Violations carry the shape id and the offending triple |
+| D2A-88 | Separate the semantic axis from the FAIR-constraint axis | #11 | The two vary independently in the run matrix |
+| D2A-89 | Semantic regression fixtures and scoring hooks | #12 | See below — XP14 supplies the first real fixture |
+| D2A-90 | Experimental ontology induction, candidate-generation only | #13 | Induced terms are never asserted as mappings |
+
+The architectural rule, from #2: ingest must not import semantics; semantics
+must not depend on FAIR; FAIR may consume validated semantic results through an
+explicit interface. Semantics stay optional.
+
+D2A-82 matters more than it looks: fuzzy-matching an unmapped term to its
+nearest vocabulary entry is inference wearing a lookup's clothes. The same
+applies to D2A-84 and D2A-90 — both generate candidates, and a candidate that
+skips the D2A-85 gate is a guess with provenance attached.
+
+**D2A-89 no longer needs a synthetic fixture.** XP14 (D2A-17, #16) already
+carries 162 gold semantic statements with layered evidence and explicit
+`unknown` / `absent_from_dataset` states, of which 30 deliberately carry no
+value. That is a real semantic reference rather than a hypothetical one, and it
+exercises abstention — which a synthetic fixture built to be answerable cannot.
 
 ---
 
@@ -234,13 +264,21 @@ orchestration at once, with no reference implementation to compare against.
 
 Each was exposed by ingesting XP14 (D2A-17). None is hypothetical.
 
-| id | Item | Status |
+| id | Item | Issue | Status |
+| --- | --- | --- | --- |
+| D2A-46 | Classify mis-extensioned OOXML workbooks by observed format | #17 | open |
+| D2A-47 | Profile OOXML workbook tables; expose missingness to FAIR checks | #18 | open |
+| D2A-48 | Recognise `.pzfx` (GraphPad XML) | *(no issue)* | open |
+| D2A-49a | Recognise metadata by content, not only by filename convention | *(no issue)* | open |
+| D2A-49b | File-role classification in the manifest | *(no issue)* | open |
+
+Two further XP14 decisions are tracked as issues without a `D2A-nn` id, because
+they are benchmark-packaging choices rather than library work:
+
+| Item | Issue | Status |
 | --- | --- | --- |
-| D2A-46 | Report extension/signature disagreement as a finding, not only a resolved format | open |
-| D2A-47 | Profile tables inside OOXML workbooks | open |
-| D2A-48 | Recognise `.pzfx` (GraphPad XML) | open |
-| D2A-49a | Recognise metadata by content, not only by filename convention | open |
-| D2A-49b | File-role classification in the manifest | open |
+| XP14 public/private release boundary — publish-by-manifest, not a blanket ignore | #19 | open |
+| XP14 perturbations as immutable derived cases, one `dataset_id` each | #20 | open |
 
 ### D2A-46 — extension/signature disagreement
 
@@ -300,6 +338,32 @@ sole carrier of experimental metadata. Classify by observed role — `data`,
 `metadata`, `protocol_evidence`, `analysis_output`, `presentation_artifact` —
 and keep an assertion separate from the artifact layer it came from, so a fact
 read off a slide is usable without being laundered into the data.
+
+---
+
+## Superseded identifiers
+
+The semantic work was renumbered out of `D2A-40–45` into `D2A-80–90` when it was
+broken into issues (#2 and its children). The old ids appear in earlier commits
+and in review history, so the mapping is kept rather than the range silently
+reused. **`D2A-40–45` must not be reissued.**
+
+| Retired | Now | Issue | Note |
+| --- | --- | --- | --- |
+| D2A-40 Controlled vocabulary registry | D2A-82 | #5 | Widened to include ontology grounding |
+| D2A-41 `validate_vocabulary` MCP tool | D2A-87 | #10 | Folded into one semantic MCP surface |
+| D2A-42 RDF parsing | D2A-86 | #9 | Now also covers deterministic RDF/JSON-LD export |
+| D2A-43 SHACL shapes from canonical rules | D2A-85 | #8 | Reframed as a promotion gate, not only shape generation |
+| D2A-44 `validate_shacl`; enable `fair-semantic` | D2A-85 + D2A-87 | #8, #10 | Split: the gate and its exposure are separate concerns |
+| D2A-45 Ontology mappings for preclinical | D2A-82 + D2A-83 | #5, #6 | Split: the registry and the domain mapping are separate concerns |
+
+Six items in the new range have no predecessor, which is why this is an
+expansion rather than a rename: **D2A-80** (LinkML contract), **D2A-81**
+(statement store), **D2A-84** (OntoGPT candidates), **D2A-88** (axis
+separation), **D2A-89** (regression fixtures), **D2A-90** (ontology induction).
+
+`docs/ROADMAP.md` describes v0.4 in prose and carries no `D2A-4x` semantic ids,
+so it needed no change. Checked 2026-09-22.
 
 ---
 
