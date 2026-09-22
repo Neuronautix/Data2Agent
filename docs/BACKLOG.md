@@ -39,7 +39,7 @@ identifiers* at the foot of this file.
 | D2A-12 | Benchmark mode gating, with loud failure on unimplemented modes | done |
 | D2A-13 | Published JSON Schemas for manifest, evidence and assessment | done |
 | D2A-14 | Worked example dataset + acceptance tests | done |
-| D2A-15 | **Manual two-host check: connect the generated server from both Claude Code and Codex** (#14) | open |
+| D2A-15 | **Manual two-host check: connect the generated server from both Claude Code and Codex** (#14) | done — 2026-09-22, both hosts |
 | D2A-16 | CI: tests, lint, determinism re-check, stdlib-only guard | done |
 | D2A-17 | Replace the synthetic example with one real preclinical dataset (#16) | in progress — XP14 frozen, gold drafted, 4 owner questions open |
 
