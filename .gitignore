@@ -15,3 +15,34 @@ venv/
 .env.*
 !.env.example
 !.env.template
+
+# Local-only preclinical source datasets and their audits. These are
+# unpublished experimental data belonging to the dataset owner and must not
+# reach the public repository.
+/Shank3-experiments/
+/local-data/
+/local-audits/
+
+# Frozen benchmark packages. The whole tree stays local by default: source/
+# holds the unpublished dataset bytes, and gold/ and adjudication/ carry real
+# animal identifiers derived from them. Publication is deliberate and
+# per-artifact -- see the publish-by-manifest model in issue #19.
+# The generators that rebuild these packages are public, under
+# scripts/benchmarks/, and contain no data.
+/benchmarks/
+
+# Belt-and-braces against dropping a real workbook elsewhere in the tree.
+# Scoped so it cannot block committed test fixtures: D2A-47 (OOXML profiling)
+# needs small synthetic .xlsx files under tests/ and examples/.
+*.xls
+*.xlsx
+*.xlsm
+*.pzfx
+*.prism
+*.pptx
+!tests/**/*.xls
+!tests/**/*.xlsx
+!tests/**/*.xlsm
+!examples/**/*.xls
+!examples/**/*.xlsx
+!examples/**/*.xlsm
