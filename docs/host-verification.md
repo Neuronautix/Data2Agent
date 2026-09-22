@@ -163,19 +163,25 @@ Copy this table into issue #14 with the completed values.
 
 | Field | Claude Code | Codex |
 | --- | --- | --- |
-| Host version | 2.1.278 | **not installed** |
-| Server registered | yes | not attempted |
-| Server connected in `/mcp` | yes, 8 tools | not attempted |
-| `dataset_inventory` succeeds | yes | not attempted |
-| dataset_id matches ingest | yes | not attempted |
-| `inspect_table("animals.csv")` | yes | not attempted |
-| rows = 48 | 48 | not attempted |
-| missing sex = 12 | 12 (12 empty, 0 sentinel) | not attempted |
-| `get_evidence` returns claim | `clm_2ff8a77fb78e1d95` | not attempted |
-| resource read | not exercised | not attempted |
-| observed errors/warnings | none once registered from WSL; see finding 1 | n/a |
+| Host version | 2.1.278 | codex-cli 0.155.1 |
+| Server registered | yes | yes |
+| Server connected in `/mcp` | yes, 8 tools | yes, 8 tools |
+| `dataset_inventory` succeeds | yes | yes |
+| dataset_id matches ingest | yes | yes |
+| `inspect_table("animals.csv")` | yes | yes |
+| rows = 48 | 48 | 48 |
+| missing sex = 12 | 12 (12 empty, 0 sentinel) | 12 |
+| `get_evidence` returns claim | `clm_2ff8a77fb78e1d95` | `clm_2ff8a77fb78e1d95` |
+| resource read | not exercised | not exercised |
+| observed errors/warnings | none once registered from WSL; see finding 1 | see finding 4 |
 
-Run date: 2026-09-22. Claude Code column complete; Codex column blocked.
+Run date: 2026-09-22. **Both columns complete.**
+
+Both hosts independently returned the **same** `claim_id` for the same question,
+from separate processes with separate server launches. The evidence ledger is
+therefore deterministic and host-independent, not merely internally consistent --
+which is what makes an agent's cited claim id comparable across the benchmark's
+harness axis.
 
 The returned claim was checked against the ledger rather than taken on trust:
 
@@ -242,11 +248,41 @@ sha256:23233f557fec10d951a2185d38efddcef231aa2c35ad32d2c1c0ed59ab4de62c
 clock and absolute path". This demonstrates it across two operating systems and
 two Python patch versions, which the determinism tests do not cover.
 
-### Finding 3 -- Codex blocks completion
+### Finding 3 -- identical claim id across hosts
 
-Codex is installed in neither WSL nor Windows on this machine, so section 4 could
-not be attempted. Under the completion rule below, D2A-15 stays open and the v0.1
-acceptance list stays 7/8.
+Claude Code and Codex each retrieved `clm_2ff8a77fb78e1d95` for the missing-sex
+result, in separate sessions against separately launched server processes. The id
+is content-derived, so this demonstrates that a claim id cited by an agent under
+one harness refers to the same evidence under another. Without that property the
+benchmark could not compare cited evidence across the harness axis at all.
+
+### Finding 4 -- a host binary can register a server it cannot call
+
+Codex 0.155.1 dispatches MCP tool calls through a **separate** executable,
+`codex-code-mode-host`. Installing only the `codex-x86_64-unknown-linux-musl`
+archive -- rather than the `codex-package-*` bundle that carries the companions --
+produces a host that registers the server, reports it `enabled` in
+`codex mcp list`, connects, and then fails closed on every tool call:
+
+```text
+Code Mode is unavailable because failed to spawn code-mode host
+/home/dhuzard/.local/bin/codex-code-mode-host: host executable was not found.
+Code mode will fail closed.
+```
+
+Installing the companion binary resolved it completely and section 4 passed.
+
+Two lessons for this procedure. First, `mcp list` showing `enabled`, and even
+`/mcp` showing *connected*, does not establish that tools are callable -- which is
+why the completion rule already demands real tool calls rather than a successful
+listing. This run is a concrete instance of that rule earning its place. Second,
+in-process binding tests cannot detect this class of failure at all: the missing
+component is part of the *host*, outside the MCP boundary entirely.
+
+Note also that a second, unrelated MCP server (`playwright`, registered to launch
+via an `npx` that is not installed) was configured throughout. It was initially
+suspected of poisoning the dispatcher; it did not. It connected normally once the
+code-mode host was present, so the missing companion binary was the sole cause.
 
 ## Completion rule
 
