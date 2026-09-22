@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 
 import openpyxl
+import yaml
 
 
 def _repo_root() -> Path:
@@ -40,6 +41,17 @@ B1 = "230807-11_APA-1_3M-3F-dCdC (By M Marias)"
 B2 = "230904-08_APA-2_3M++-6M-dCdC"
 IDS = SRC / "Batch APA-1&2 Results" / "IDs Batch Sex Group.xlsx"
 BW = SRC / B2 / "APA_Batch2_BW_IDs.xlsx"
+
+# Owner adjudication. Facts the source files cannot settle are read from here,
+# never inferred. A question still `open` leaves its PENDING marker in place.
+DECISIONS = yaml.safe_load((PKG / "adjudication" / "decisions.yaml").read_text(encoding="utf-8"))
+ANSWERED = {q["id"]: q for q in DECISIONS["questions"] if q.get("status") == "answered"}
+
+# A3: identities of the excluded «Non-Avoiders», read from the structured field.
+# Do NOT regex the prose answer -- it names the retained animals too, and an
+# earlier version of this script silently excluded all six because of that.
+_a3 = ANSWERED.get("A3")
+EXCLUDED = set((_a3.get("answer_structured") or {}).get("excluded", [])) if _a3 else set()
 
 
 def load(path: Path, sheet: str, data_only: bool = True):
@@ -87,21 +99,37 @@ for r in range(3, 18):
     join_note = ""
     if batch == "2" and bw_hit is None and alt in bw_map:
         bw_hit = bw_map[alt]
-        join_note = (
-            f"joined to APA_Batch2_BW_IDs.xlsx row {bw_hit['row']} only after "
-            f"substituting digit-0 with letter-O ('{local}' -> '{alt}'); PENDING-A2"
-        )
+        if "A2" in ANSWERED:
+            join_note = (
+                f"canonical id is '{local}' (digit zero) per owner adjudication A2; "
+                f"APA_Batch2_BW_IDs.xlsx row {bw_hit['row']} spells it '{alt}' "
+                f"(letter O), which is a typing error in that workbook"
+            )
+        else:
+            join_note = (
+                f"joined to APA_Batch2_BW_IDs.xlsx row {bw_hit['row']} only after "
+                f"substituting digit-0 with letter-O ('{local}' -> '{alt}'); PENDING-A2"
+            )
 
     geno_bw = bw_hit["geno"] if bw_hit else ""
     genotype_status = "established"
     if batch == "2":
-        # two workbooks agree per animal; the folder name implies a different
+        # Two workbooks agree per animal; the folder name implied a different
         # overall composition. The conflict is at the count level, not the cell.
-        genotype_status = "established_cell_value__composition_conflict_A1"
+        genotype_status = (
+            "established_by_owner_adjudication_A1"
+            if "A1" in ANSWERED
+            else "established_cell_value__composition_conflict_A1"
+        )
 
-    analysed_status = "established"
-    if batch == "2" and geno == "+/+":
-        analysed_status = "unknown_pending_A3"
+    if "A3" in ANSWERED:
+        excluded = animal_key in EXCLUDED
+        analysed = "no" if excluded else "yes"
+        analysed_status = "established_by_owner_adjudication_A3"
+    else:
+        excluded = False
+        analysed = "yes" if not (batch == "2" and geno == "+/+") else "unknown"
+        analysed_status = "unknown_pending_A3" if batch == "2" and geno == "+/+" else "established"
 
     animals.append(
         {
@@ -123,8 +151,9 @@ for r in range(3, 18):
             "date_of_birth_status": "absent_column_present_but_empty",
             "age_at_testing": "",
             "age_status": "not_computable__DOB_absent",
-            "included_in_final_analysis": "yes" if analysed_status == "established" else "unknown",
+            "included_in_final_analysis": analysed,
             "included_in_final_analysis_status": analysed_status,
+            "excluded_reason": "«Non-Avoider» (A3)" if excluded else "",
             "species": "UNRESOLVED",
             "strain": "UNRESOLVED",
             "evidence": (

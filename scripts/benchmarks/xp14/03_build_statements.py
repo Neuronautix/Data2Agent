@@ -180,7 +180,39 @@ for a in animals:
         note="the column exists and is referenced by the age formula; see XP14-A002",
     )
 
-    if a["included_in_final_analysis_status"].startswith("unknown"):
+    if a["included_in_final_analysis"] == "no":
+        # A3 answered. Gold truth, but NOT derivable from the source files: the
+        # dataset states the exclusion rule and never names the animals. An
+        # agent that names them from the files alone has fabricated, even though
+        # the names are correct. See XP14-A005.
+        add(
+            type="animal_included_in_analysis",
+            subject=a["animal_key"],
+            predicate="was_included_in_final_analysis",
+            object=False,
+            qualifiers={"reason": "«Non-Avoider»"},
+            status="established_by_owner_adjudication",
+            extraction="owner_adjudication",
+            llm_required=False,
+            evidence=[
+                {
+                    "artifact": "adjudication/decisions.yaml",
+                    "locator": "A3.answer_structured.excluded",
+                    "layer": "owner_adjudication",
+                },
+                {
+                    "artifact": DECK18,
+                    "locator": "slide 2; slide 3",
+                    "layer": "presentation",
+                    "quoted": "«Non-Avoiders» are excluded from analysis",
+                },
+            ],
+            note=(
+                "not derivable from the source files; the two animals are named "
+                "nowhere in the dataset"
+            ),
+        )
+    elif a["included_in_final_analysis_status"].startswith("unknown"):
         add(
             type="animal_included_in_analysis",
             subject=a["animal_key"],
