@@ -1,0 +1,195 @@
+# XP14 benchmark — release allowlist
+#
+# Implements the publication model in issue #19. This file is TRACKED; the
+# package it describes is not. Nothing becomes public by existing under
+# benchmarks/xp14_apa/ — an artifact is published only if it is named here with
+# decision: cleared, and only when every clearance gate below is true.
+#
+# Default is deny. An artifact absent from `artifacts` is private.
+#
+# Materialisation: `python scripts/benchmarks/xp14/05_release.py --out <dir>`
+# writes to a staging directory OUTSIDE the private package and never reads,
+# writes, prunes or reorders anything inside benchmarks/xp14_apa/.
+
+release_manifest_version: 1
+benchmark_id: xp14_apa
+dataset_id: "sha256:d0bd1a8ea46e797a28517b2cb90319eb848a5dde7de4e58b09c54b28a50cf6d1"
+
+# ---------------------------------------------------------------------------
+# Clearance gates. ALL must be true before anything can be materialised.
+# These are owner decisions, not engineering ones. They are false today, which
+# is why no artifact below carries decision: cleared.
+# ---------------------------------------------------------------------------
+clearance:
+  licence_or_owner_permission_documented: false
+  owner_reviewed_gold_tables: false
+  owner_reviewed_evidence_locators: false
+  cleared_by: null
+  cleared_at: null
+  notes: >-
+    XP14 is unpublished experimental data. Until the dataset owner documents a
+    licence or explicit permission, and reviews what the gold tables and
+    evidence locators disclose, the correct state is that nothing is cleared.
+
+default: deny
+
+# ---------------------------------------------------------------------------
+# Transforms available to an artifact. None is applied unless named.
+# ---------------------------------------------------------------------------
+transforms:
+  pseudonymise_animal_ids: >-
+    Replace facility identifiers (B73xxx, B98xxx) and batch-scoped local ids
+    with stable pseudonyms. The mapping is written to the PRIVATE package only
+    and is never materialised into the staging directory (#19).
+  redact_source_paths: >-
+    Replace source directory names that encode the experimental design -- for
+    example '230904-08_APA-2_3M++-6M-dCdC', which states batch dates, sex and
+    genotype composition -- with opaque, stable substitutes. Relative structure
+    is preserved so evidence locators still resolve within the released package.
+  redact_personal_names: >-
+    Replace collaborator and analyst names appearing in paths, filenames and
+    free-text quotations.
+
+# ---------------------------------------------------------------------------
+# Per-artifact decisions.
+#   private        never released
+#   pending_review awaiting owner decision; may become cleared
+#   cleared        releasable, subject to the gates above
+# ---------------------------------------------------------------------------
+artifacts:
+
+  # --- frozen source -------------------------------------------------------
+  - path: "source/**"
+    decision: private
+    rationale: >-
+      Raw unpublished experimental data. #19 requires these bytes stay private
+      unless explicitly cleared. Releasing them is a separate decision from
+      releasing anything derived from them.
+
+  # --- adjudication --------------------------------------------------------
+  - path: "adjudication/**"
+    decision: private
+    rationale: >-
+      #19 makes adjudication private by default. These files also carry
+      facility identifiers and the design-encoding directory names, and record
+      owner deliberation rather than benchmark content.
+
+  # --- ingest outputs ------------------------------------------------------
+  - path: "ingest/**"
+    decision: private
+    rationale: >-
+      Data2Agent baseline outputs. manifest.json and evidence.json embed the
+      full private file inventory, including every source path. Useful as a
+      before/after record for #17 and #18; not useful publicly in this form.
+
+  # --- package metadata ----------------------------------------------------
+  - path: "checksums.json"
+    decision: private
+    rationale: >-
+      Enumerates every source path verbatim. The dataset_id alone is the
+      publishable commitment; the path list is not.
+
+  - path: "manifest.json"
+    decision: pending_review
+    transforms: [redact_source_paths, redact_personal_names]
+    rationale: >-
+      Carries dataset_id, file-class counts, the extension/signature conflict
+      count and the known tool gaps -- all of which are the publishable part.
+      Also embeds 20 verbatim source paths in format_findings.conflicts, which
+      is what the transforms address.
+
+  - path: "README.md"
+    decision: pending_review
+    transforms: [redact_personal_names]
+    rationale: >-
+      Describes the benchmark's construction and rules. Discloses experimental
+      design at a level comparable to a methods paragraph. Likely releasable;
+      needs an owner read rather than an engineering judgement.
+
+  # --- gold standard -------------------------------------------------------
+  - path: "gold/fair_expected.json"
+    decision: pending_review
+    rationale: >-
+      The most releasable gold artifact. Contains no facility identifiers and
+      no design-encoding paths: it is a statement about tool behaviour on this
+      dataset, not about the animals in it. Strong candidate for the first
+      cleared artifact.
+
+  - path: "gold/relationships.csv"
+    decision: pending_review
+    transforms: [redact_source_paths, redact_personal_names]
+    rationale: >-
+      Table-to-table structure with coverage counts. No facility identifiers.
+      Names source files in its evidence column.
+
+  - path: "gold/provenance_edges.csv"
+    decision: pending_review
+    transforms: [redact_source_paths, redact_personal_names]
+    rationale: >-
+      Transformation chain with reproducibility classification. No facility
+      identifiers. Names source files in its evidence column.
+
+  - path: "gold/anomalies.yaml"
+    decision: pending_review
+    transforms: [redact_source_paths, redact_personal_names, pseudonymise_animal_ids]
+    rationale: >-
+      The benchmark's scoring targets, and the artifact with the most external
+      value. Quotes slide text verbatim and enumerates source paths. One entry
+      carries a facility identifier range. Needs a careful owner read.
+
+  - path: "perturbations/perturbations.yaml"
+    decision: pending_review
+    transforms: [redact_source_paths, redact_personal_names]
+    rationale: >-
+      Specifications only; no derived cases have been generated (#20). Names
+      target files and cells.
+
+  - path: "gold/animals.csv"
+    decision: private
+    transforms: [pseudonymise_animal_ids]
+    rationale: >-
+      Per-animal sex, genotype, body weight and date-of-birth status. #19 is
+      explicit that derived scientific content is not publishable merely because
+      identifiers were removed, so pseudonymisation is necessary but not
+      sufficient. Private until the owner rules on the measurements themselves.
+
+  - path: "gold/identifier_crosswalk.csv"
+    decision: private
+    transforms: [pseudonymise_animal_ids]
+    rationale: >-
+      This IS the identifier mapping. #19 requires that any mapping back to
+      original identifiers remains private. Releasing a pseudonymised crosswalk
+      alongside anything carrying the original ids would defeat the
+      pseudonymisation.
+
+  - path: "gold/sessions.csv"
+    decision: pending_review
+    transforms: [pseudonymise_animal_ids, redact_source_paths, redact_personal_names]
+    rationale: >-
+      75 sessions with protocol, timing and shock zone. Per-animal but not
+      per-measurement. Timestamps are experiment-run times, not personal data.
+
+  - path: "gold/semantic_statements.jsonl"
+    decision: pending_review
+    transforms: [pseudonymise_animal_ids, redact_source_paths, redact_personal_names]
+    rationale: >-
+      162 statements, the first real semantic reference for D2A-89 (#12). Also
+      the artifact whose evidence locators most need the review #19 requires:
+      each carries an artifact path, a locator and sometimes quoted source text.
+
+# ---------------------------------------------------------------------------
+# Leak checks run against every artifact before it is materialised.
+# A finding blocks materialisation; it is not a warning.
+# ---------------------------------------------------------------------------
+leak_checks:
+  - id: facility_identifier
+    pattern: '\bB\d{5}\b'
+    description: animal facility identifiers such as B73494 or B98637
+  - id: design_encoding_path
+    pattern: '3M-3F-dCdC|3M\+\+-6M-dCdC'
+    description: >-
+      directory names that state batch dates, sex split and genotype
+      composition
+  - id: personal_name
+    pattern: 'Besnard|Marias|Basso|Huzard'
+    description: collaborator and analyst names
