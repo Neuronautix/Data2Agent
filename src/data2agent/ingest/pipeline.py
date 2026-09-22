@@ -131,6 +131,39 @@ def ingest(
                 warnings.extend(f"{entry.path}: {note}" for note in profile.warnings)
                 _record_table_claims(ledger, entry, profile, active_convention)
 
+        elif entry.format.format_id in formats.WORKBOOK_FORMATS:
+            # Reached only after the format was established from the file's
+            # bytes, so a workbook named '.xls' arrives here too (D2A-46).
+            from ..readers import workbook as workbook_reader
+
+            if not workbook_reader.available():
+                # The core stays honest about what it cannot see. A workbook the
+                # tool could not open is reported as exactly that -- never folded
+                # into silence, which is what made this gap invisible before.
+                warnings.append(
+                    f"{entry.path}: identified as a workbook but not profiled; "
+                    f"install the 'xlsx' extra to enable it"
+                )
+                ledger.record(
+                    f"'{entry.path}' is a workbook whose contents were not profiled",
+                    subject=entry.path,
+                    evidence=[
+                        EvidenceItem(
+                            source=entry.path,
+                            source_sha256=entry.sha256,
+                            check="workbook.reader-unavailable",
+                            result={"format": entry.format.format_id, "extra": "xlsx"},
+                        )
+                    ],
+                )
+            else:
+                for sheet in workbook_reader.profile_workbook(
+                    absolute, entry.path, active_convention
+                ):
+                    tables[sheet.path] = sheet.as_dict()
+                    warnings.extend(f"{sheet.path}: {note}" for note in sheet.warnings)
+                    _record_sheet_claims(ledger, entry, sheet, active_convention)
+
         elif entry.format.format_id in formats.STRUCTURED_FORMATS:
             profile = structured.profile_json(absolute, entry.path)
             structured_docs[entry.path] = profile.as_dict()
@@ -314,6 +347,60 @@ def _record_file_claims(ledger: EvidenceLedger, entry: FileEntry) -> None:
             )
         ],
     )
+
+
+def _record_sheet_claims(
+    ledger: EvidenceLedger,
+    entry: FileEntry,
+    sheet,
+    convention: MissingValueConvention,
+) -> None:
+    """Record claims about one worksheet.
+
+    Locators carry the workbook path *and* the sheet name, so an agent citing a
+    cell-level fact can say where in the file it came from. A claim that names
+    only the workbook is not checkable against a multi-sheet file (D2A-47).
+    """
+    convention_evidence = EvidenceItem(
+        source="",
+        source_sha256="",
+        check="convention.missing-values",
+        result=convention.as_dict(),
+    )
+    locator = {"workbook": sheet.workbook, "sheet": sheet.sheet, "header_row": sheet.header_row}
+
+    ledger.record(
+        f"sheet '{sheet.sheet}' of '{entry.path}' has {sheet.rows} data row(s)",
+        subject=sheet.path,
+        evidence=[
+            EvidenceItem(
+                source=entry.path,
+                source_sha256=entry.sha256,
+                check="workbook.row-count",
+                result={"rows": sheet.rows, **locator},
+            )
+        ],
+    )
+
+    for column in sheet.columns:
+        if not column.missing:
+            continue
+        ledger.record(
+            f"'{column.name}' is missing for {column.missing} of {sheet.rows} row(s) "
+            f"in sheet '{sheet.sheet}' of '{entry.path}' "
+            f"({column.missing_empty} empty, {column.missing_sentinel} resolved from "
+            f"tokens by the '{convention.id}' convention)",
+            subject=sheet.path,
+            evidence=[
+                EvidenceItem(
+                    source=entry.path,
+                    source_sha256=entry.sha256,
+                    check="workbook.missing-value-count",
+                    result={"column": column.name, "missing": column.missing, **locator},
+                ),
+                convention_evidence,
+            ],
+        )
 
 
 def _record_table_claims(
