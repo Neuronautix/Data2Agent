@@ -23,6 +23,12 @@ def test_ingest_writes_the_full_output_contract(example_dataset: Path, tmp_path:
     printed = capsys.readouterr().out
     assert json.loads((output / "manifest.json").read_text())["dataset_id"] in printed
 
+    usage = (output / "mcp" / "USAGE.md").read_text(encoding="utf-8")
+    assert "claude mcp add data2agent --" in usage
+    assert "codex mcp add data2agent --" in usage
+    assert "[mcp_servers.data2agent]" in usage
+    assert "Generic MCP JSON configuration" in usage
+
 
 def test_verify_passes_then_fails_after_drift(dataset_copy: Path, tmp_path: Path, capsys):
     output = tmp_path / "agent"

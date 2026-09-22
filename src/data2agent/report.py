@@ -185,6 +185,8 @@ def _find_claim(ledger: EvidenceLedger, subject: str, check: str, field: str) ->
 def _render_usage(output_dir: Path, source_dir: Path, mode: str, definition: dict[str, Any]) -> str:
     block = json.dumps({"mcpServers": {"data2agent": definition}}, indent=2)
     command = " ".join([definition["command"], *definition["args"]])
+    codex_command = json.dumps(definition["command"])
+    codex_args = json.dumps(definition["args"])
     return f"""# Connecting this dataset's MCP server
 
 This server exposes the dataset ingested from `{source_dir}` in mode `{mode}`.
@@ -199,11 +201,39 @@ pip install 'data2agent[mcp]'
 
 ## Claude Code
 
+Claude Code supports local stdio MCP servers directly:
+
 ```bash
 claude mcp add data2agent -- {command}
+claude mcp get data2agent
+claude mcp list
 ```
 
-## Codex and other hosts reading an MCP JSON config
+Inside Claude Code, `/mcp` should show `data2agent` as connected.
+
+## Codex
+
+Codex also supports local stdio MCP servers directly:
+
+```bash
+codex mcp add data2agent -- {command}
+codex mcp list
+```
+
+Inside the Codex TUI, `/mcp` should show `data2agent` as connected.
+
+The equivalent Codex `~/.codex/config.toml` (or trusted project
+`.codex/config.toml`) entry is:
+
+```toml
+[mcp_servers.data2agent]
+command = {codex_command}
+args = {codex_args}
+```
+
+## Generic MCP JSON configuration
+
+For hosts that consume the common `mcpServers` JSON shape:
 
 ```json
 {block}
