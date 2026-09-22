@@ -71,6 +71,11 @@ _SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
 _CONTAINER_COMPATIBLE: dict[str, frozenset[str]] = {
     "zip-container": frozenset({"zip", "xlsx", "docx", "pptx"}),
     "xml": frozenset({"xml", "rdfxml"}),
+    # NWB is HDF5, and MATLAB v7.3 is HDF5. An '.nwb' file over HDF5 bytes is
+    # not a contradiction -- it is the specific name for the general container,
+    # exactly like '.rdf' over XML. Without this entry those valid files were
+    # reported as generic 'hdf5' with a spurious conflict.
+    "hdf5": frozenset({"hdf5", "nwb", "matlab"}),
 }
 
 # OOXML part paths that identify what a ZIP container actually holds. Checked
