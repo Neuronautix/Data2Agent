@@ -1,6 +1,8 @@
 # Scratch ingest output for the D2A-15 host verification (docs/host-verification.md).
 # Contains an absolute-path server.json and is regenerated on demand.
 /.d2a-host-check/
+/.d2a-host-check-wsl/
+/.venv-wsl/
 
 # Local operating-system files and Python caches
 .DS_Store
