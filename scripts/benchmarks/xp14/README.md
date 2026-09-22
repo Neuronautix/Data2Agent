@@ -38,7 +38,7 @@ scripts are vendored elsewhere.
 dataset_id: sha256:d0bd1a8ea46e797a28517b2cb90319eb848a5dde7de4e58b09c54b28a50cf6d1
 files: 36   total bytes: 9777575
 animals.csv 15 · identifier_crosswalk.csv 15 · sessions.csv 75
-semantic_statements.jsonl 162
+semantic_statements.jsonl 158
 file classes: analysis_output 21 · data 10 · metadata 2 · presentation_artifact 3
 ```
 
