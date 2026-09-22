@@ -163,28 +163,90 @@ Copy this table into issue #14 with the completed values.
 
 | Field | Claude Code | Codex |
 | --- | --- | --- |
-| Host version | | |
-| Server registered | | |
-| Server connected in `/mcp` | | |
-| `dataset_inventory` succeeds | | |
-| dataset_id matches ingest | | |
-| `inspect_table("animals.csv")` | | |
-| rows = 48 | | |
-| missing sex = 12 | | |
-| `get_evidence` returns claim | | |
-| resource read | | |
-| observed errors/warnings | | |
+| Host version | 2.1.278 | **not installed** |
+| Server registered | yes | not attempted |
+| Server connected in `/mcp` | yes, 8 tools | not attempted |
+| `dataset_inventory` succeeds | yes | not attempted |
+| dataset_id matches ingest | yes | not attempted |
+| `inspect_table("animals.csv")` | yes | not attempted |
+| rows = 48 | 48 | not attempted |
+| missing sex = 12 | 12 (12 empty, 0 sentinel) | not attempted |
+| `get_evidence` returns claim | `clm_2ff8a77fb78e1d95` | not attempted |
+| resource read | not exercised | not attempted |
+| observed errors/warnings | none once registered from WSL; see finding 1 | n/a |
+
+Run date: 2026-09-22. Claude Code column complete; Codex column blocked.
+
+The returned claim was checked against the ledger rather than taken on trust:
+
+```text
+claim_id  clm_2ff8a77fb78e1d95
+claim     'sex' is missing for 12 of 48 row(s) in 'animals.csv'
+          (12 empty, 0 resolved from tokens by the 'default-sentinels' convention)
+checks    table.missing-value-count, table.missing-empty-count,
+          table.missing-sentinel-count, convention.missing-values
+file      animals.csv sha256 39c49a37...4b0308 -- matches manifest
+```
+
+It is the only claim in the ledger stating `sex ... 12 of 48`, and the host also
+returned the file digest, which matches the manifest. The id was retrieved from
+the server, not supplied to the host.
 
 Shared environment:
 
 ```text
-OS:
-Python:
-mcp package:
-Data2Agent commit:
-dataset_id:
-stdio command:
+OS:                WSL2 Ubuntu on Windows 11 10.0.26200
+Python:            3.12.3 (WSL; a separate Windows 3.12.6 install also exists)
+mcp package:       2.2.0
+Data2Agent commit: e634442
+dataset_id:        sha256:23233f557fec10d951a2185d38efddcef231aa2c35ad32d2c1c0ed59ab4de62c
+stdio command:     /home/dhuzard/.venv-d2a/bin/python -m data2agent.cli serve                    /mnt/c/Users/damie/Documents/GitHub/Data2Agent/.d2a-host-check-wsl                    --mode structured
 ```
+
+## 6. Findings from the first real run
+
+### Finding 1 -- the generated server command is environment-bound, silently
+
+Section 1 says the ingest "writes the exact current host commands". They are exact
+for the **ingesting** environment, not the **hosting** one, and nothing in
+`mcp/server.json` or `mcp/USAGE.md` says so.
+
+On this machine the repository lives on the Windows filesystem while Claude Code
+is installed only inside WSL. Ingesting with Windows Python emitted:
+
+```json
+"command": "C:\Python312\python.exe"
+```
+
+which cannot resolve in a WSL host. The failure mode is poor: registration
+succeeds, `mcp list` shows the server, and only the connection fails.
+
+Re-running the ingest inside WSL produced a WSL-native command and the server
+connected immediately. So the procedure works, but section 1 must say that the
+ingest has to run in the same environment as the host that will launch it.
+
+Worth fixing in the tool rather than only in this document: `server.json` could
+record the interpreter and platform it was generated for, so a mismatch is
+detectable instead of silent.
+
+### Finding 2 -- `dataset_id` is platform-independent in practice
+
+The same fixture ingested under Windows Python 3.12.6 and WSL Python 3.12.3
+produced an identical `dataset_id`:
+
+```text
+sha256:23233f557fec10d951a2185d38efddcef231aa2c35ad32d2c1c0ed59ab4de62c
+```
+
+`docs/data-contract.md` claims independence from "filesystem walk order, machine,
+clock and absolute path". This demonstrates it across two operating systems and
+two Python patch versions, which the determinism tests do not cover.
+
+### Finding 3 -- Codex blocks completion
+
+Codex is installed in neither WSL nor Windows on this machine, so section 4 could
+not be attempted. Under the completion rule below, D2A-15 stays open and the v0.1
+acceptance list stays 7/8.
 
 ## Completion rule
 
