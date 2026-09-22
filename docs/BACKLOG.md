@@ -31,7 +31,7 @@ depends on it.
 | D2A-14 | Worked example dataset + acceptance tests | done |
 | D2A-15 | **Manual two-host check: connect the generated server from both Claude Code and Codex** | open |
 | D2A-16 | CI: tests, lint, determinism re-check, stdlib-only guard | done |
-| D2A-17 | Replace the synthetic example with one real preclinical dataset | open |
+| D2A-17 | Replace the synthetic example with one real preclinical dataset | in progress — XP14 frozen, gold drafted, 4 owner questions open |
 
 ### D2A-15 — two-host verification
 
@@ -53,6 +53,41 @@ item, and finding them early is the point.
 
 Do one real dataset properly rather than building a generic
 everything-converter.
+
+**Dataset selected: XP14 APA** — a Shank3 active-place-avoidance experiment,
+15 animals, 75 sessions, 36 files. Frozen at
+`sha256:d0bd1a8ea46e797a28517b2cb90319eb848a5dde7de4e58b09c54b28a50cf6d1`
+under `benchmarks/xp14_apa/` (git-ignored: the bytes are unpublished data).
+
+Chosen over the larger XP4 battery because an authoritative reference answer can
+be written for it. XP4 is scientifically richer but six of its animals carry
+conflicting genotypes across sources, and genotype is the grouping variable — a
+benchmark whose reference answer for experimental group is disputed cannot
+measure whether an agent got the group right. XP4 is kept as the second,
+ambiguity-heavy set, where the quantity of interest is appropriate *abstention*
+rather than accuracy.
+
+Package: immutable `source/`, `checksums.json`, `manifest.json`, a `gold/`
+standard (animals, crosswalk, sessions, relationships, provenance edges,
+anomalies, expected FAIR, semantic statements), an `adjudication/` record for
+facts only the owner can settle, and 16 `perturbations/` specs — 12 injections
+and 4 over-triggering controls. Nothing is repaired: `repair_allowed: false`
+on every anomaly.
+
+Four blocking owner questions remain open (`adjudication/owner_questions.md`);
+the gold tables carry `PENDING-A<n>` rather than a guess wherever one bears.
+
+It did what it was supposed to do. Four gaps fell out of the first ingest, filed
+as D2A-46 … D2A-49b below.
+
+**A design consequence.** Rotation speed, chance level and an
+analysis-affecting exclusion rule exist in XP14 only inside `.pptx` files.
+Documents carrying experimental metadata cannot be treated as optional prose
+attachments, so files are classified by role — `data`, `metadata`,
+`protocol_evidence`, `analysis_output`, `presentation_artifact` — rather than by
+extension. Facts recovered from a slide are kept in two layers, the assertion
+and its carrier, instead of being transcribed into the data as though they had
+always been structured.
 
 ---
 
@@ -192,6 +227,79 @@ orchestration at once, with no reference implementation to compare against.
 | D2A-75 | Symlink policy | Recorded in `skipped` with a warning, never followed — `is_symlink()` is tested before `is_file()`, which follows links. Revisit only with a concrete dataset that needs internal links (BIDS derivatives do) |
 | D2A-76 | Security review of served content | The service withholds drifted content and bounds preview reads; it does not yet sandbox previews of hostile files |
 | D2A-77 | Partial/interrupted output directories | The service refuses one whose manifest, provenance and evidence disagree on `dataset_id`; ingest does not yet write atomically, so a half-written directory is still possible |
+
+---
+
+## Found by the first real dataset — XP14
+
+Each was exposed by ingesting XP14 (D2A-17). None is hypothetical.
+
+| id | Item | Status |
+| --- | --- | --- |
+| D2A-46 | Report extension/signature disagreement as a finding, not only a resolved format | open |
+| D2A-47 | Profile tables inside OOXML workbooks | open |
+| D2A-48 | Recognise `.pzfx` (GraphPad XML) | open |
+| D2A-49a | Recognise metadata by content, not only by filename convention | open |
+| D2A-49b | File-role classification in the manifest | open |
+
+### D2A-46 — extension/signature disagreement
+
+Twenty XP14 files are named `.xls` and contain OOXML. v0.1 detects
+`format_id: zip-container`, `detected_by: signature`, which is correct, and
+emits no warning — so the manifest never records that the *name* claimed
+something else.
+
+The consequence is not cosmetic. `I1-DATA-FORMATS-OPEN` flagged only the nine
+files named `.xlsx`; the twenty mis-extensioned OOXML files were classified
+`zip-container` and **escaped the check entirely**. A format-detection gap
+produced a false negative in a FAIR indicator.
+
+Fix: carry both the extension's claim and the signature's finding, and surface
+disagreement as a warning and as an evidence-backed claim.
+
+### D2A-47 — tables inside workbooks
+
+`tables: 0` on a 36-file, 9.8 MB dataset. Every scientific value in XP14 is
+inside an OOXML workbook, and the tabular profiler reads only delimited text.
+
+`R1.3-MISSING-VALUES-DECLARED` therefore returned `not_applicable` on a dataset
+with substantial undeclared missingness — nine acquisition metadata columns
+empty across all 75 session rows, date of birth empty for every batch-2 animal.
+The indicator abstained on a dataset that plainly fails it.
+
+This is the largest gap the real dataset exposed. Note the constraint in D2A-70:
+a workbook reader is a dependency, so it belongs in an optional extra, and the
+core must stay honest about what it cannot see when the extra is absent.
+
+Real-world shapes to expect, all present in XP14: merged multi-row headers,
+stacked variable blocks with no single header row, units inside title strings,
+formulas alongside cached values, and sheets whose first data row is row 3.
+
+### D2A-48 — `.pzfx`
+
+GraphPad's XML project format. Currently `unknown` with a warning, which is
+contract-correct — unknown stays unknown — but it is plain XML and recognising
+it is cheap. The sibling `.prism` format is a ZIP of JSON and is already
+detected as `zip-container`.
+
+### D2A-49a — metadata by content
+
+`metadata_files: []` for XP14 is correct under the current rule, which matches
+filenames only. But the dataset does have metadata: an animal registry in
+`IDs Batch Sex Group.xlsx`, and apparatus parameters plus an exclusion rule in
+two `.pptx` files. Five indicators (F2, F3, F4, I2, R1.2) cascade from that
+empty list.
+
+The honest reading of the v0.1 result is "no file matched a metadata *naming
+convention*", which is what the check says. The gap is that nothing else looks.
+
+### D2A-49b — file-role classification
+
+Follows from D2A-49a and from the XP14 finding that a presentation can be the
+sole carrier of experimental metadata. Classify by observed role — `data`,
+`metadata`, `protocol_evidence`, `analysis_output`, `presentation_artifact` —
+and keep an assertion separate from the artifact layer it came from, so a fact
+read off a slide is usable without being laundered into the data.
 
 ---
 
