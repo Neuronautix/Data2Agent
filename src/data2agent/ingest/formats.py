@@ -101,6 +101,8 @@ _OOXML_MARKERS: tuple[tuple[str, str, str], ...] = (
 
 # Formats whose contents this version profiles further.
 TABULAR_FORMATS = frozenset({"csv", "tsv"})
+# Tabular, but not delimited text: profiled by an optional reader (D2A-47).
+WORKBOOK_FORMATS = frozenset({"xlsx"})
 STRUCTURED_FORMATS = frozenset({"json", "jsonld"})
 TEXT_FORMATS = frozenset({"markdown", "text", "yaml", "xml", "turtle", "ntriples", "rdfxml"})
 

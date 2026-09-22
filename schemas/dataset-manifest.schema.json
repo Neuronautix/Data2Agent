@@ -71,7 +71,14 @@
     "tables": {
       "type": "object",
       "additionalProperties": {
-        "$ref": "#/$defs/tableProfile"
+        "oneOf": [
+          {
+            "$ref": "#/$defs/tableProfile"
+          },
+          {
+            "$ref": "#/$defs/workbookSheetProfile"
+          }
+        ]
       }
     },
     "structured": {
@@ -378,6 +385,86 @@
         "ambiguous_tokens_resolved": {
           "type": "boolean",
           "description": "Always false: tokens such as 'unknown' or '-' are reported, never resolved to missing."
+        }
+      }
+    },
+    "workbookSheetProfile": {
+      "type": "object",
+      "description": "Observed properties of one worksheet. Distinct from tableProfile: a sheet has no encoding or delimiter, and carries a sheet locator instead. 'rows' is null when the content could not be read, because no row count was observed.",
+      "required": [
+        "path",
+        "workbook",
+        "sheet",
+        "profiled",
+        "columns"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "'<workbook path>#<sheet name>'"
+        },
+        "workbook": {
+          "type": "string"
+        },
+        "sheet": {
+          "type": "string"
+        },
+        "sheet_index": {
+          "type": "integer"
+        },
+        "sheet_state": {
+          "enum": [
+            "visible",
+            "hidden",
+            "veryHidden",
+            "unknown"
+          ]
+        },
+        "header_row": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "has_header": {
+          "type": "boolean"
+        },
+        "profiled": {
+          "type": "boolean"
+        },
+        "rows": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "column_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "merged_ranges": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "missing_convention": {
+          "$ref": "#/$defs/missingValueConvention"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/columnProfile"
+          }
+        },
+        "missing": {
+          "type": "object"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       }
     }

@@ -25,7 +25,11 @@ mcp = ["mcp>=1.2.0"]
 # Assessment profiles author their canonical rules in YAML, because a human
 # maintains them and a reviewer has to read the diff.
 fair = ["PyYAML>=6.0"]
-dev = ["pytest>=8.0", "ruff>=0.5", "jsonschema>=4.0", "PyYAML>=6.0"]
+# Workbook profiling (D2A-47). Optional because the ingest core is
+# dependency-free by policy (D2A-70): without this extra a workbook is
+# reported as present and unprofiled, never as absent.
+xlsx = ["openpyxl>=3.1"]
+dev = ["pytest>=8.0", "ruff>=0.5", "jsonschema>=4.0", "PyYAML>=6.0", "openpyxl>=3.1"]
 
 [project.scripts]
 data2agent = "data2agent.cli:main"

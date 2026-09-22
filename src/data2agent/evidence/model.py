@@ -43,6 +43,26 @@ CHECKS: dict[str, str] = {
     "table.ambiguous-token-count": (
         "Number of cells holding a token that was NOT resolved to missing by any convention"
     ),
+    # Workbook checks are distinct from their table.* counterparts on purpose.
+    # A sheet-level claim carries a locator its delimited equivalent does not,
+    # and collapsing the two would make a claim about one sheet indistinguishable
+    # from a claim about the whole workbook (D2A-47).
+    "workbook.row-count": (
+        "Number of data rows below the header row of one worksheet, with the "
+        "workbook path, sheet name and header row recorded"
+    ),
+    "workbook.missing-value-count": (
+        "Number of rows whose cell is empty, or holds a token the active "
+        "missing-value convention resolves to missing, for one column of one worksheet"
+    ),
+    "workbook.unprofiled": (
+        "A workbook or worksheet was identified but its content could not be "
+        "read; it carries no row count, because none was observed"
+    ),
+    "workbook.reader-unavailable": (
+        "A file was identified as a workbook but not profiled, because the "
+        "optional reader for that format is not installed"
+    ),
     "json.shape": "Top-level type, keys and nesting depth of a JSON document",
     "metadata.file-convention": "Filename matches a published metadata convention",
     "identifier.detected": "A persistent-identifier pattern matched in file text",
