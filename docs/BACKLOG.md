@@ -268,9 +268,17 @@ Each was exposed by ingesting XP14 (D2A-17). None is hypothetical.
 | --- | --- | --- | --- |
 | D2A-46 | Classify mis-extensioned OOXML workbooks by observed format | #17 | open |
 | D2A-47 | Profile OOXML workbook tables; expose missingness to FAIR checks | #18 | open |
-| D2A-48 | Recognise `.pzfx` (GraphPad XML) | *(no issue)* | open |
-| D2A-49a | Recognise metadata by content, not only by filename convention | *(no issue)* | open |
-| D2A-49b | File-role classification in the manifest | *(no issue)* | open |
+| D2A-48 | Recognise `.pzfx` (GraphPad XML) | *(no issue — fold into #17)* | open |
+| D2A-49a | Recognise metadata by content, not only by filename convention | #22 | open |
+| D2A-49b | Classify files by observed role in the manifest | #23 | open |
+
+D2A-48 has deliberately not been given its own issue. It is one file in one
+dataset, `unknown` is already the contract-correct result, and recognising the
+XML buys little when the GraphPad semantics stay opaque either way. What it does
+expose is an inconsistency — `.prism` resolves to `zip-container` while `.pzfx`
+from the same vendor resolves to `unknown` — which belongs in #17 alongside the
+rest of observed-format classification rather than in a near-empty issue of its
+own.
 
 Two further XP14 decisions are tracked as issues without a `D2A-nn` id, because
 they are benchmark-packaging choices rather than library work:
