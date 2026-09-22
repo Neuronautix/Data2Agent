@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import os
 import re
 import shutil
@@ -67,6 +68,29 @@ def decide(rel: str, man: dict) -> dict | None:
         if fnmatch.fnmatch(rel, entry["path"]) or rel.startswith(entry["path"].rstrip("*")):
             return entry
     return None
+
+
+def approved(path: Path, entry: dict) -> tuple[bool, str]:
+    """Whether a per-artifact clearance still applies to this file's bytes.
+
+    An owner approves content, not a filename. These artifacts are regenerated
+    routinely, so a path-only clearance would silently re-approve whatever the
+    generator wrote last -- bypassing the package gates with content nobody
+    reviewed. The leak scanner cannot close that gap: it recognises three
+    identifier patterns and cannot establish that a replacement carries no
+    measurements.
+    """
+    expected = entry.get("sha256")
+    if not expected:
+        return False, "clearance records no sha256, so it cannot be bound to content"
+    observed = hashlib.sha256(path.read_bytes()).hexdigest()
+    if observed != expected:
+        return False, (
+            f"content changed since clearance on {entry.get('cleared_at', '?')}\n"
+            f"        approved: {expected}\n"
+            f"        observed: {observed}"
+        )
+    return True, ""
 
 
 def scan(path: Path, checks: list[dict]) -> list[tuple[str, int, str]]:
@@ -184,16 +208,45 @@ def main() -> int:
         print()
 
     if args.check:
+        # Digest state is reported here so drift is visible before a release is
+        # attempted, not only when one is refused.
+        if per_artifact:
+            print("per-artifact clearance")
+            for rel, entry in sorted(per_artifact.items()):
+                target = PKG / rel
+                if not target.exists():
+                    print(f"  {DIM}?{RESET} {rel:<42} artifact not present")
+                    continue
+                valid, why = approved(target, entry)
+                mark = f"{GREEN}ok{RESET}" if valid else f"{RED}STALE{RESET}"
+                print(f"  {mark:<14} {rel:<42} {entry.get('cleared_by', '?')}")
+                if not valid:
+                    print(f"      {why}")
+            print()
         print(f"{DIM}--check: nothing written{RESET}")
         return 1 if blocked else 0
 
-    # An artifact cleared individually does not need the package gates. Anything
-    # else does.
-    uncovered = [rel for _, rel, _ in cleared if rel not in per_artifact]
-    if not ok and uncovered:
+    # An artifact cleared individually does not need the package gates -- but the
+    # clearance must still bind to the bytes in front of us.
+    unbound: list[str] = []
+    for _, rel, _ in cleared:
+        entry = per_artifact.get(rel)
+        if entry is None:
+            unbound.append(f"{rel}: no per-artifact clearance")
+            continue
+        valid, why = approved(PKG / rel, entry)
+        if not valid:
+            unbound.append(f"{rel}: {why}")
+    detail = "\n  - ".join(unbound)
+    if not ok and unbound:
         sys.exit(
             f"{RED}refusing to materialise:{RESET} package clearance gates not satisfied, "
-            f"and these cleared artifacts have no per-artifact clearance: {uncovered}"
+            f"and these artifacts are not covered by a valid per-artifact clearance:\n  - {detail}"
+        )
+    if unbound:
+        sys.exit(
+            f"{RED}refusing to materialise:{RESET} per-artifact clearance no longer "
+            f"matches the content:\n  - {detail}"
         )
     if blocked and not args.force:
         sys.exit(f"{RED}refusing to materialise:{RESET} leak findings in cleared artifacts")

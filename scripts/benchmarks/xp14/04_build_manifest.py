@@ -12,6 +12,8 @@ import collections
 import json
 from pathlib import Path
 
+import yaml
+
 
 def _repo_root() -> Path:
     """Repository root, derived from this file's location.
@@ -31,6 +33,20 @@ REPO = _repo_root()
 PKG = REPO / "benchmarks" / "xp14_apa"
 
 entries = json.loads((PKG / "_entries.tmp.json").read_text(encoding="utf-8"))
+
+# Derived, never hard-coded. An earlier version asserted a statement count and a
+# list of pending questions as literals; both went stale the moment the
+# adjudication was answered and the statements regenerated, leaving the manifest
+# contradicting the gold tables it describes.
+_decisions = yaml.safe_load((PKG / "adjudication" / "decisions.yaml").read_text(encoding="utf-8"))
+OPEN_QUESTIONS = [q["id"] for q in _decisions["questions"] if q.get("status") != "answered"]
+ANSWERED_QUESTIONS = [q["id"] for q in _decisions["questions"] if q.get("status") == "answered"]
+_statements_path = PKG / "gold" / "semantic_statements.jsonl"
+STATEMENT_COUNT = (
+    sum(1 for line in _statements_path.read_text(encoding="utf-8").splitlines() if line.strip())
+    if _statements_path.exists()
+    else 0
+)
 checks = json.loads((PKG / "checksums.json").read_text(encoding="utf-8"))
 
 # extension-vs-signature conflicts, computed rather than asserted
@@ -53,10 +69,19 @@ classes = collections.Counter(e["file_class"] for e in entries)
 anomaly_ids = [f"XP14-A{i:03d}" for i in range(1, 13)]
 
 manifest = {
-    "package_version": "1.0.0-draft",
+    # 0.x for the same reason the manifest schema is: this package is not
+    # finished. Four questions remain open and no artifact is cleared for
+    # release.
+    "package_version": "0.1.0-draft",
     "benchmark_id": "xp14_apa",
     "title": "XP14 APA — Shank3 active place avoidance",
-    "status": "frozen; gold standard draft; 4 blocking owner questions open",
+    # Derived, like the question lists below. A hard-coded status line is the
+    # same staleness bug in prose form.
+    "status": (
+        "frozen; gold standard draft; "
+        f"{len(ANSWERED_QUESTIONS)} owner question(s) answered, "
+        f"{len(OPEN_QUESTIONS)} open"
+    ),
     "backlog_item": "D2A-17",
     "dataset": {
         "dataset_id": checks["dataset_id"],
@@ -110,10 +135,14 @@ manifest = {
             "provenance_edges.csv": "15 transformation edges, classified by reproducibility",
             "anomalies.yaml": "12 natural anomalies with expected agent actions",
             "fair_expected.json": "expected FAIR verdicts, and where v0.1 diverges",
-            "semantic_statements.jsonl": "162 statements with layered evidence",
+            "semantic_statements.jsonl": (f"{STATEMENT_COUNT} statements with layered evidence"),
         },
-        "pending_owner_questions": ["A1", "A2", "A3", "A4"],
-        "pending_marker": "PENDING-A<n> appears in any gold field a question bears on",
+        "answered_owner_questions": ANSWERED_QUESTIONS,
+        "pending_owner_questions": OPEN_QUESTIONS,
+        "pending_marker": (
+            "PENDING-A<n> appears in any gold field a question still bears on; "
+            "an answered question is reflected in the gold tables instead"
+        ),
     },
     "anomalies": {
         "count": len(anomaly_ids),

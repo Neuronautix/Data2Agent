@@ -210,8 +210,8 @@ applies to D2A-84 and D2A-90 — both generate candidates, and a candidate that
 skips the D2A-85 gate is a guess with provenance attached.
 
 **D2A-89 no longer needs a synthetic fixture.** XP14 (D2A-17, #16) already
-carries 162 gold semantic statements with layered evidence and explicit
-`unknown` / `absent_from_dataset` states, of which 30 deliberately carry no
+carries 158 gold semantic statements with layered evidence and explicit
+`unknown` / `absent_from_dataset` states, of which 24 deliberately carry no
 value. That is a real semantic reference rather than a hypothetical one, and it
 exercises abstention — which a synthetic fixture built to be answerable cannot.
 

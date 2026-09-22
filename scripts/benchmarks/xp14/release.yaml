@@ -49,6 +49,11 @@ per_artifact_clearance:
   - path: "gold/fair_expected.json"
     cleared_by: "Damien Huzard — dataset owner"
     cleared_at: "2026-09-22"
+    # The approval is of THESE BYTES, not of this path. A clearance that binds
+    # to a path silently re-approves whatever the generator writes next, and
+    # these artifacts are regenerated routinely. If the digest no longer
+    # matches, the artifact is not cleared and must be reviewed again.
+    sha256: "45c1f1343139c658324e560dc4a6f2f08b2b5d92275f74a02620ff95cea11c5a"
     scope_of_permission: >-
       This artifact only. Not a precedent for the package, and not a statement
       about the licence status of XP14 as a whole.
@@ -199,7 +204,7 @@ artifacts:
     decision: pending_review
     transforms: [pseudonymise_animal_ids, redact_source_paths, redact_personal_names]
     rationale: >-
-      162 statements, the first real semantic reference for D2A-89 (#12). Also
+      158 statements, the first real semantic reference for D2A-89 (#12). Also
       the artifact whose evidence locators most need the review #19 requires:
       each carries an artifact path, a locator and sometimes quoted source text.
 
