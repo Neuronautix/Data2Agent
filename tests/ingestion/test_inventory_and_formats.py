@@ -161,3 +161,50 @@ def test_unknown_still_reachable(tmp_path: Path):
     assert detected.format_id == "unknown"
     assert detected.detected_by == "none"
     assert notes
+
+
+def test_hdf5_backed_formats_are_not_false_conflicts(tmp_path: Path):
+    """'.nwb' over HDF5 bytes is the specific name for the general container.
+
+    Reported as a generic 'hdf5' with a spurious conflict before the carrier
+    map learned about HDF5-backed formats.
+    """
+    nwb = tmp_path / "recording.nwb"
+    nwb.write_bytes(b"\x89HDF\r\n\x1a\n" + b"\x00" * 32)
+
+    detected, notes = formats.detect(nwb)
+    assert detected.format_id == "nwb"
+    assert detected.extension_conflict is False
+    assert notes == []
+
+
+def test_the_conflict_reaches_evidence_and_inspection(tmp_path: Path):
+    """A conflict recorded only in the manifest cannot be cited by an agent."""
+    import json
+    import zipfile
+
+    from data2agent.ingest.pipeline import ingest
+    from data2agent.mcp.service import DatasetService
+
+    source = tmp_path / "ds"
+    source.mkdir()
+    with zipfile.ZipFile(source / "legacy.xls", "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("xl/workbook.xml", "<workbook/>")
+
+    out = tmp_path / "out"
+    ingest(source, out)
+
+    evidence = json.loads((out / "evidence.json").read_text(encoding="utf-8"))
+    results = [
+        item["result"]
+        for claim in evidence["claims"]
+        for item in claim["evidence"]
+        if item["check"] == "file.format-detection"
+    ]
+    assert results and results[0]["extension_conflict"] is True
+    assert results[0]["extension_format"] == "xls"
+
+    payload = DatasetService(out, mode="structured").inspect_file("legacy.xls")
+    assert payload["extension_conflict"] is True
+    assert payload["extension_format"] == "xls"

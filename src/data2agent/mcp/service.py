@@ -168,6 +168,12 @@ class DatasetService:
             "detected_by": entry.get("detected_by"),
             "integrity": integrity.as_dict(),
         }
+        # Present only when the name made a claim, mirroring the manifest. This
+        # method promises the file's manifest record, so omitting a recorded
+        # field would make the promise false.
+        if "extension_format" in entry:
+            payload["extension_format"] = entry["extension_format"]
+            payload["extension_conflict"] = entry.get("extension_conflict", False)
         if not integrity.matches:
             payload["preview"] = None
             payload["preview_withheld"] = (

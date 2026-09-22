@@ -339,10 +339,21 @@ def _record_file_claims(ledger: EvidenceLedger, entry: FileEntry) -> None:
                 source=entry.path,
                 source_sha256=entry.sha256,
                 check="file.format-detection",
+                # The extension's claim travels with the verdict. A conflict that
+                # appears only in the manifest cannot be substantiated through
+                # get_evidence, which is where an agent has to look for it.
                 result={
                     "format": entry.format.format_id,
                     "media_type": entry.format.media_type,
                     "detected_by": entry.format.detected_by,
+                    **(
+                        {
+                            "extension_format": entry.format.extension_format,
+                            "extension_conflict": entry.format.extension_conflict,
+                        }
+                        if entry.format.extension_format is not None
+                        else {}
+                    ),
                 },
             )
         ],
