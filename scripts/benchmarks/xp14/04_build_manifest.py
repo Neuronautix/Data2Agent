@@ -5,12 +5,13 @@ data2agent ingest manifest under ingest/ (what the dataset is). It carries the
 file-class taxonomy, which is a benchmark-level judgement about the role each
 artifact plays, not something derivable from bytes.
 """
+
 from __future__ import annotations
 
 import collections
-import csv
 import json
 from pathlib import Path
+
 
 def _repo_root() -> Path:
     """Repository root, derived from this file's location.
@@ -19,6 +20,7 @@ def _repo_root() -> Path:
     the D2A_REPO environment variable if the scripts are vendored elsewhere.
     """
     import os
+
     env = os.environ.get("D2A_REPO")
     if env:
         return Path(env).resolve()
@@ -37,8 +39,14 @@ conflicts = []
 for e in entries:
     ext, fmt = e["extension"], str(e["detected_format"] or "")
     if ext == "xls" and "zip" in fmt.lower():
-        conflicts.append({"path": e["path"], "extension_claims": "xls (OLE2/BIFF)",
-                          "bytes_indicate": "ZIP/OOXML", "signature": "50 4B 03 04"})
+        conflicts.append(
+            {
+                "path": e["path"],
+                "extension_claims": "xls (OLE2/BIFF)",
+                "bytes_indicate": "ZIP/OOXML",
+                "signature": "50 4B 03 04",
+            }
+        )
 
 classes = collections.Counter(e["file_class"] for e in entries)
 
@@ -50,7 +58,6 @@ manifest = {
     "title": "XP14 APA — Shank3 active place avoidance",
     "status": "frozen; gold standard draft; 4 blocking owner questions open",
     "backlog_item": "D2A-17",
-
     "dataset": {
         "dataset_id": checks["dataset_id"],
         "dataset_id_method": checks["dataset_id_method"],
@@ -60,14 +67,12 @@ manifest = {
         "immutable": True,
         "repair_policy": "none — incorrect values and contradictory metadata are preserved verbatim",
     },
-
     "provenance_of_snapshot": {
         "origin": "Shank3-experiments/Data2Agent_candidates/XP14_APA (w. A. Besnard)",
         "copied_at": "2026-09-22",
         "verified_byte_identical": True,
         "verification_method": "recursive diff against the origin tree at copy time",
     },
-
     "file_classes": {
         "rationale": (
             "XP14 shows that experimental metadata does not live only in CSV/Excel/JSON. "
@@ -85,7 +90,6 @@ manifest = {
         },
         "counts": dict(sorted(classes.items())),
     },
-
     "format_findings": {
         "extension_signature_conflicts": len(conflicts),
         "conflicts": conflicts,
@@ -93,10 +97,9 @@ manifest = {
             "data2agent v0.1 records format_id 'zip-container' detected_by 'signature' for "
             "these files, which is correct, but emits no warning that the extension "
             "disagreed. The conflict is therefore absent from the ingest manifest. "
-            "See gold/anomalies.yaml XP14-A001 and the D2A-20 backlog item."
+            "See gold/anomalies.yaml XP14-A001 and the D2A-46 backlog item (issue #17)."
         ),
     },
-
     "gold_standard": {
         "path": "gold/",
         "files": {
@@ -112,14 +115,12 @@ manifest = {
         "pending_owner_questions": ["A1", "A2", "A3", "A4"],
         "pending_marker": "PENDING-A<n> appears in any gold field a question bears on",
     },
-
     "anomalies": {
         "count": len(anomaly_ids),
         "ids": anomaly_ids,
         "repair_allowed_anywhere": False,
         "expected_actions": ["report", "flag", "abstain_and_report_conflict", "verify", "discover"],
     },
-
     "perturbations": {
         "path": "perturbations/perturbations.yaml",
         "applied": False,
@@ -127,25 +128,26 @@ manifest = {
         "remove_count": 4,
         "note": "removal items are over-triggering controls and are scored as strictly as injections",
     },
-
     "known_tool_gaps": [
         {
-            "id": "D2A-20",
+            "id": "D2A-46",
+            "issue": 17,
             "summary": "extension/signature disagreement is not surfaced",
             "impact": "20 OOXML files named .xls escaped I1-DATA-FORMATS-OPEN, which flagged only the 9 files named .xlsx",
         },
         {
-            "id": "D2A-21",
+            "id": "D2A-47",
+            "issue": 18,
             "summary": "the tabular profiler reads only delimited text, so OOXML workbooks yield 0 tables",
             "impact": "R1.3-MISSING-VALUES-DECLARED returned not_applicable on a dataset with substantial undeclared missingness",
         },
         {
-            "id": "D2A-22",
+            "id": "D2A-48",
             "summary": ".pzfx (GraphPad XML) is unrecognised",
             "impact": "one warning; format stays unknown, which is contract-correct but improvable",
         },
         {
-            "id": "D2A-23",
+            "id": "D2A-49a",
             "summary": "metadata recognition is by filename convention only",
             "impact": "the registry workbook and the presentations carry real metadata and are invisible to F2/F3/F4/I2/R1.2",
         },

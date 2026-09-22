@@ -4,11 +4,13 @@ Reuses the repository's own checksum fold and format detection so the
 benchmark package's dataset_id is the same value `data2agent ingest` produces.
 Read-only with respect to the snapshot.
 """
+
 from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
+
 
 def _repo_root() -> Path:
     """Repository root, derived from this file's location.
@@ -17,6 +19,7 @@ def _repo_root() -> Path:
     the D2A_REPO environment variable if the scripts are vendored elsewhere.
     """
     import os
+
     env = os.environ.get("D2A_REPO")
     if env:
         return Path(env).resolve()
@@ -43,22 +46,18 @@ PRESENTATION = "presentation_artifact"
 
 CLASS_RULES: list[tuple[str, str, str]] = [
     # (path substring, class, why)
-    ("IDs Batch Sex Group.xlsx", METADATA,
-     "animal registry: batch, local id, genotype, sex"),
-    ("APA_Batch2_BW_IDs.xlsx", METADATA,
-     "batch-2 biological id, body weight, DOB column"),
-    ("_MM.xls", ANALYSIS_OUTPUT,
-     "hand-annotated derivative of a raw session export"),
-    ("_results_HD.xlsx", ANALYSIS_OUTPUT,
-     "reshaped session results"),
-    ("APA-ALL-results", ANALYSIS_OUTPUT,
-     "consolidated results, pivots and computed indices"),
-    (".prism", ANALYSIS_OUTPUT,
-     "GraphPad project (zip of JSON)"),
-    (".pzfx", ANALYSIS_OUTPUT,
-     "GraphPad XML project"),
-    (".pptx", PRESENTATION,
-     "result presentation; sole carrier of apparatus parameters and the exclusion rule"),
+    ("IDs Batch Sex Group.xlsx", METADATA, "animal registry: batch, local id, genotype, sex"),
+    ("APA_Batch2_BW_IDs.xlsx", METADATA, "batch-2 biological id, body weight, DOB column"),
+    ("_MM.xls", ANALYSIS_OUTPUT, "hand-annotated derivative of a raw session export"),
+    ("_results_HD.xlsx", ANALYSIS_OUTPUT, "reshaped session results"),
+    ("APA-ALL-results", ANALYSIS_OUTPUT, "consolidated results, pivots and computed indices"),
+    (".prism", ANALYSIS_OUTPUT, "GraphPad project (zip of JSON)"),
+    (".pzfx", ANALYSIS_OUTPUT, "GraphPad XML project"),
+    (
+        ".pptx",
+        PRESENTATION,
+        "result presentation; sole carrier of apparatus parameters and the exclusion rule",
+    ),
 ]
 
 
@@ -85,17 +84,19 @@ def main() -> None:
         ext = p.suffix.lower().lstrip(".")
         actual = getattr(info, "format", None) or getattr(info, "name", None) or str(info)
         detected_by = getattr(info, "detected_by", None)
-        entries.append({
-            "path": rel,
-            "bytes": p.stat().st_size,
-            "sha256": sha,
-            "extension": ext,
-            "detected_format": actual,
-            "detected_by": detected_by,
-            "file_class": cls,
-            "class_rationale": why,
-            "format_warnings": warnings,
-        })
+        entries.append(
+            {
+                "path": rel,
+                "bytes": p.stat().st_size,
+                "sha256": sha,
+                "extension": ext,
+                "detected_format": actual,
+                "detected_by": detected_by,
+                "file_class": cls,
+                "class_rationale": why,
+                "format_warnings": warnings,
+            }
+        )
 
     did = fold_dataset_id(pairs)
 
@@ -123,10 +124,13 @@ def main() -> None:
         fmt = str(e["detected_format"])
         if e["extension"] == "xls" and "xls" not in fmt.lower():
             mismatch += 1
-        print(f"  {e['path'][:70]:<70} ext={e['extension']:<5} detected={fmt:<28} by={e['detected_by']}")
+        print(
+            f"  {e['path'][:70]:<70} ext={e['extension']:<5} detected={fmt:<28} by={e['detected_by']}"
+        )
     print()
     print("=== file classes ===")
     from collections import Counter
+
     for cls, n in sorted(Counter(str(e["file_class"]) for e in entries).items()):
         print(f"  {cls:<24} {n}")
 
