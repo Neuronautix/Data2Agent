@@ -314,6 +314,60 @@ def set_shared_index(sheet_xml: str, ref: str, index: int) -> str:
     return _replace(sheet_xml, cell, f"<c{attrs}><v>{index}</v></c>")
 
 
+def _col_key(ref: str) -> tuple[int, str]:
+    """Sort key for a cell reference, by column letters then by length."""
+    letters = re.match(r"([A-Z]+)", ref).group(1)
+    return (len(letters), letters)
+
+
+def add_shared_cells(sheet_xml: str, cells: dict[str, int]) -> str:
+    """Write shared-string cells that may not exist yet, creating rows as needed.
+
+    `set_shared_index` can only rewrite a cell the sheet already has. A visually
+    blank row often has no <row> element at all -- XP14's INDEX sheet has none
+    for rows 4 and 5 -- so "add a label to an empty row" is not a rewrite but an
+    insertion, and rows and cells must both land in ascending order or readers
+    silently mis-position them.
+    """
+    for ref, index in sorted(cells.items(), key=lambda kv: _col_key(kv[0])):
+        row_number = int(re.search(r"(\d+)$", ref).group(1))
+        tag = f'<c r="{ref}" t="s"><v>{index}</v></c>'
+
+        row = re.search(rf'<row[^>]*\sr="{row_number}"[^>]*?(/)?>', sheet_xml)
+        if row is None:
+            # No such row: insert a fresh one before the first row that sorts
+            # after it, or before </sheetData> when it belongs last.
+            successor = None
+            for candidate in re.finditer(r'<row[^>]*\sr="(\d+)"', sheet_xml):
+                if int(candidate.group(1)) > row_number:
+                    successor = candidate.start()
+                    break
+            at = successor if successor is not None else sheet_xml.index("</sheetData>")
+            sheet_xml = sheet_xml[:at] + f'<row r="{row_number}">{tag}</row>' + sheet_xml[at:]
+            continue
+
+        if row.group(1) == "/":  # <row .../> -- present but empty
+            open_tag = row.group(0)[:-2] + ">"
+            sheet_xml = (
+                sheet_xml[: row.start()] + open_tag + tag + "</row>" + sheet_xml[row.end() :]
+            )
+            continue
+
+        close = sheet_xml.index("</row>", row.end())
+        body = sheet_xml[row.end() : close]
+        if f'<c r="{ref}"' in body:
+            sheet_xml = set_shared_index(sheet_xml, ref, index)
+            continue
+        # Insert before the first cell whose column sorts after this one.
+        at = close
+        for candidate in re.finditer(r'<c r="([A-Z]+\d+)"', body):
+            if _col_key(candidate.group(1)) > _col_key(ref):
+                at = row.end() + candidate.start()
+                break
+        sheet_xml = sheet_xml[:at] + tag + sheet_xml[at:]
+    return sheet_xml
+
+
 def set_number(sheet_xml: str, ref: str, literal: str, style: str | None = None) -> str:
     """Write a numeric literal. `style` overrides the cell's s= index when given."""
     cell = find_cell(sheet_xml, ref)
@@ -588,25 +642,38 @@ def _p04(spec: dict) -> Case:
 
 @builder("XP14-P05")
 def _p05(spec: dict) -> Case:
+    # The Resultats sheet repeats its 22_seaN header row once per result
+    # variable, so '22_sea3' heads a column in twenty places. Perturbing only
+    # D3 would leave nineteen rows still naming session 3, which is a different
+    # defect (an inconsistency between blocks) from the one the spec intends.
+    # The spec was corrected on 2026-09-23 to name all twenty; this follows it.
+    rows = [3, 13, 23, 33, 43, 53, 63, 73, 83, 93, 103, 113, 123, 134, 145, 156, 167, 178, 189, 199]
+    refs = [f"D{r}" for r in rows]
+
+    def apply(raw: bytes) -> bytes:
+        wb = Workbook(raw)
+        part = wb.sheet_part(SHEET_RESULTATS)
+        sheet, sst = wb.part(part), wb.part("xl/sharedStrings.xml")
+        for ref in refs:
+            observed = shared_string_text(sst, cell_shared_index(sheet, ref))
+            if observed != "22_sea3":
+                raise Unimplementable(f"{ref} holds {observed!r}, spec baseline says '22_sea3'")
+        sst, index = append_shared_string(sst, "22_sea9")
+        for ref in refs:
+            sheet = set_shared_index(sheet, ref, index)
+        wb.set_part("xl/sharedStrings.xml", sst)
+        wb.set_part(part, sheet)
+        return wb.to_bytes()
+
     def verify(root: Path) -> list[str]:
         ws = _open_derived(root, _PT)[SHEET_RESULTATS]
-        assert ws["D3"].value == "22_sea9", ws["D3"].value
-        assert ws["D13"].value == "22_sea3", "the spec targets D3 only"
-        return ["Resultats!D3 == '22_sea9'; D13 still '22_sea3' (19 blocks unchanged)"]
+        stale = [ref for ref in refs if ws[ref].value != "22_sea9"]
+        assert not stale, f"still 22_sea3 at {stale}"
+        # The other five columns must be untouched, or the case tests nothing.
+        assert ws["C3"].value == "22_sea2" and ws["E3"].value == "22_sea4", "neighbours moved"
+        return [f"all {len(refs)} '22_sea3' header cells read '22_sea9'; neighbours unchanged"]
 
-    return Case(
-        edits={_PT: _resultats_string_swap("D3", "22_sea3", "22_sea9")},
-        verify=verify,
-        caveats=[
-            "The Resultats sheet repeats the 22_seaN header row once per result variable: "
-            "'22_sea3' occurs at D3, D13, D23 ... D199, twenty times in all. The spec names "
-            "target_cell Resultats!D3, so only the first block is perturbed and nineteen "
-            "header rows still assert 22_sea3. The stated expected_answer -- 'one result "
-            "column cannot be matched to any session' -- therefore holds for the first "
-            "variable block only. Either the spec should list all twenty cells, or its "
-            "expected_answer should be narrowed to the block. Applied literally, as written."
-        ],
-    )
+    return Case(edits={_PT: apply}, verify=verify)
 
 
 @builder("XP14-P06")
@@ -906,19 +973,23 @@ def _p14(spec: dict) -> Case:
 @builder("XP14-P16")
 def _p16(spec: dict) -> Case:
     target = f"{BATCH2_DIR}/APA-ALL-results_MM.xlsx"
-    labels = {"Q6": "B1_2-I (batch 1)", "R6": "B1_2-II (batch 1)", "S6": "B1_2-III (batch 1)"}
+    # Row 5, not row 6. The spec said "add" but originally named Q6:S6, which
+    # hold the genotype label for the three pooled columns -- writing there
+    # removes a fact this control exists to preserve. Corrected 2026-09-23.
+    labels = {"Q5": "B1_2-I (batch 1)", "R5": "B1_2-II (batch 1)", "S5": "B1_2-III (batch 1)"}
 
     def apply(raw: bytes) -> bytes:
         wb = Workbook(raw)
         part = wb.sheet_part("INDEX %-entries")
         sheet, sst = wb.part(part), wb.part("xl/sharedStrings.xml")
         for ref in labels:
-            observed = shared_string_text(sst, cell_shared_index(sheet, ref))
-            if observed != "dC/dC":
-                raise Unimplementable(f"{ref} holds {observed!r}, spec baseline says 'dC/dC'")
+            if re.search(rf'<c r="{ref}"', sheet):
+                raise Unimplementable(f"{ref} is occupied; the spec requires an empty row")
+        additions: dict[str, int] = {}
         for ref, text in labels.items():
             sst, index = append_shared_string(sst, text)
-            sheet = set_shared_index(sheet, ref, index)
+            additions[ref] = index
+        sheet = add_shared_cells(sheet, additions)
         wb.set_part("xl/sharedStrings.xml", sst)
         wb.set_part(part, sheet)
         return wb.to_bytes()
@@ -927,19 +998,15 @@ def _p16(spec: dict) -> Case:
         ws = _open_derived(root, target)["INDEX %-entries"]
         got = {ref: ws[ref].value for ref in labels}
         assert got == labels, got
-        assert ws["P6"].value == "dC/dC", "the three unpooled columns keep the genotype label"
-        return ["INDEX %-entries!Q6:S6 name their batch-1 origin; N6:P6 still read 'dC/dC'"]
+        # The point of correcting this spec: declaring the pooling must not cost
+        # the genotype label it sits above.
+        for ref in ("N6", "O6", "P6", "Q6", "R6", "S6"):
+            assert ws[ref].value == "dC/dC", f"{ref} lost its genotype label: {ws[ref].value!r}"
+        return ["INDEX %-entries!Q5:S5 name their batch-1 origin; N6:S6 still read 'dC/dC'"]
 
     return Case(
         edits={target: apply},
         verify=verify,
-        caveats=[
-            "The spec says 'add' the labels but names target_cells Q6:S6, which already hold "
-            "the genotype label 'dC/dC'. Writing the labels there replaces that label for the "
-            "three pooled columns rather than adding a row beside it. Row 5 is empty and would "
-            "have taken the labels without displacing anything. Applied to the cells the spec "
-            "names; if the intent was an extra header row, the spec should say Q5:S5."
-        ],
     )
 
 
