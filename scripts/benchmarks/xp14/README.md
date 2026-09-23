@@ -56,6 +56,28 @@ Two subtleties worth knowing before reading a score:
   letter would call that gap closed the day it was found and hide it the day it
   was fixed.
 
+Running an agent condition, which produces an assessment in the same shape:
+
+```bash
+python scripts/benchmarks/xp14/08_run_agent.py     --ingest <ingest-dir> --mode structured --model claude-sonnet-5 --out <run-dir>
+python scripts/benchmarks/xp14/07_score.py <run-dir>/assessment.json
+```
+
+The server is passed to the host per-run with `--mcp-config` and
+`--strict-mcp-config`, never registered globally. Without the strict flag the
+host also loads whatever the operator happens to have configured, and a `raw`
+condition with three unrelated servers attached is not a raw condition. It also
+leaves the operator's own configuration untouched, which a benchmark has no
+business editing.
+
+The prompt is identical in every mode and lives in `prompt_fair.md`, so it is
+reviewable as the instrument it is. It names the twelve rule ids, because a
+verdict that cannot be lined up against the gold cannot be scored. It
+deliberately omits their operational definitions: supplying those would erase
+the difference between `structured` and `fair-rules`, where reading the
+canonical registry is exactly what the mode adds. It says nothing about which
+indicators ought to be `unknown` — that is the measurement, not the setup.
+
 Paths resolve from the script location. Set `D2A_REPO` to override if the
 scripts are vendored elsewhere.
 
