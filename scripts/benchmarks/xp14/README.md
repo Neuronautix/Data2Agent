@@ -25,9 +25,12 @@ python scripts/benchmarks/xp14/01_freeze.py          # checksums + dataset_id + 
 python scripts/benchmarks/xp14/02_build_gold.py      # animals, crosswalk, sessions
 python scripts/benchmarks/xp14/03_build_statements.py# semantic statements (JSONL)
 python scripts/benchmarks/xp14/04_build_manifest.py  # package manifest; consumes 01's temp file
+python scripts/benchmarks/xp14/06_perturb.py         # derived perturbation cases (issue #20)
 ```
 
 Order matters: `04` consumes a temporary file written by `01` and deletes it.
+`06` is independent of `02`–`04`: it reads only `source/` and
+`perturbations/perturbations.yaml`, and writes outside the package.
 
 Paths resolve from the script location. Set `D2A_REPO` to override if the
 scripts are vendored elsewhere.
@@ -80,6 +83,24 @@ contrived one.
 `io.BytesIO` and hand that to `openpyxl`, bypassing its extension check.
 `openpyxl.load_workbook(path)` refuses these files outright. This is anomaly
 **XP14-A001** and the reason for D2A-46.
+
+**Perturbations are materialised, never applied in place.** `06_perturb.py`
+turns each of the 16 specifications in `perturbations/perturbations.yaml` into
+its own derived dataset under `benchmarks/xp14_perturbed/<id>/source/`, with a
+`provenance.json` beside it carrying the parent id, the derived id, the
+generator version and the gold expectation *copied out of the spec*. The frozen
+`source/` tree is digested before and after every run and the script aborts if a
+single byte moved. `--verify` materialises the whole suite a second time into a
+temporary directory and compares every digest, which is how the reproducibility
+claim is checked rather than asserted.
+
+Workbook cells are edited by surgery on the OOXML package XML, reassembled by a
+ZIP writer that re-emits every untouched member's already-compressed bytes. A
+load-and-save round trip through `openpyxl` was rejected: it would drop the six
+charts in `230807_PT_MM.xls`, the pivot cache in `APA-ALL-results_MM.xlsx` and
+every `printerSettings` part, so a case meant to perturb one cell would perturb
+the whole file. Each derived workbook therefore differs from its parent in two
+or three package parts and nowhere else.
 
 **`01_freeze.py` reuses the repository's own primitives** —
 `data2agent.ingest.checksum.dataset_id` and `.formats.detect` — so the package's
