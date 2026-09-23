@@ -59,7 +59,9 @@ Two subtleties worth knowing before reading a score:
 Running an agent condition, which produces an assessment in the same shape:
 
 ```bash
-python scripts/benchmarks/xp14/08_run_agent.py     --ingest <ingest-dir> --mode structured --model claude-sonnet-5 --out <run-dir>
+python scripts/benchmarks/xp14/08_run_agent.py \
+    --ingest <ingest-dir> --out <run-dir> \
+    --mode structured --model claude-sonnet-5
 python scripts/benchmarks/xp14/07_score.py <run-dir>/assessment.json
 ```
 
