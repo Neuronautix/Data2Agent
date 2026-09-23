@@ -196,3 +196,132 @@ def test_the_example_dataset_is_unchanged_by_content_recognition(ingested):
         item["recognised_by"] == "filename_convention"
         for item in ingested.manifest["metadata_files"]
     )
+
+
+def test_one_readable_file_does_not_resolve_another_that_was_never_opened(
+    tmp_path: Path, monkeypatch
+):
+    """Recognising a README says nothing about a workbook nobody could open.
+
+    The uncertainty branches keyed on `unread_metadata()` alone, which holds
+    only entries that were RECOGNISED and then could not be decoded. A file no
+    recogniser managed to examine is a different population, and once any
+    recognised metadata was readable the branch was skipped and the checks
+    returned `fail` -- asserting an absence across bytes nobody read.
+    """
+    openpyxl = pytest.importorskip("openpyxl")
+    from data2agent.readers import workbook as workbook_reader
+
+    root = tmp_path / "mixed" / "dataset"
+    root.mkdir(parents=True)
+    # Readable, filename-recognised, and deliberately silent on every question
+    # the four checks ask: no data file named, no vocabulary, no licence, no
+    # author. Each check therefore reaches its verdict branch.
+    (root / "README.md").write_text("# Study\n\nBehavioural sessions.\n", encoding="utf-8")
+    (root / "observations.csv").write_text(_measurement_rows(), encoding="utf-8")
+    book = openpyxl.Workbook()
+    book.active.append(["animal_id", "group"])
+    book.active.append(["A001", "control"])
+    book.save(root / "registry.xlsx")
+
+    monkeypatch.setattr(workbook_reader, "available", lambda: False)
+    result = ingest(root, tmp_path / "mixed" / "out")
+
+    assert [item["path"] for item in result.manifest["metadata_files"]] == ["README.md"]
+    candidates = [item["path"] for item in result.manifest["metadata_candidates"]]
+    assert candidates == ["registry.xlsx"], "the workbook must be a candidate, not a recognition"
+
+    service = DatasetService(result.output_dir, mode="fair-deterministic")
+    results = {item["rule_id"]: item for item in service.run_fair_check()["results"]}
+    for rule_id in (
+        "F3-METADATA-LINKS-DATA",
+        "I2-VOCABULARY-REFERENCED",
+        "R1.1-LICENCE-DECLARED",
+        "R1.2-PROVENANCE-DECLARED",
+    ):
+        assert results[rule_id]["result"] == "unknown", rule_id
+        assert "never examined" in results[rule_id]["rationale"], rule_id
+        # The candidate is named in the evidence, not merely in the prose, so an
+        # agent can act on which file left the verdict open.
+        cited = [
+            entry
+            for entry in results[rule_id]["evidence"]
+            if isinstance(entry, dict) and entry["check"] == "metadata.candidate"
+        ]
+        assert cited, rule_id
+        assert [item["path"] for item in cited[0]["result"]] == ["registry.xlsx"], rule_id
+        # Nothing was recognised-then-unread here, and no empty list is cited as
+        # though it described something.
+        assert not [
+            entry
+            for entry in results[rule_id]["evidence"]
+            if isinstance(entry, dict) and entry["check"] == "metadata.content-signature"
+        ], rule_id
+
+
+def test_a_candidate_only_rationale_reads_as_a_sentence(tmp_path: Path, monkeypatch):
+    """The detail string joined its two clauses with a leading 'and'."""
+    pytest.importorskip("openpyxl")
+    import openpyxl
+
+    from data2agent.readers import workbook as workbook_reader
+
+    root = tmp_path / "prose" / "dataset"
+    root.mkdir(parents=True)
+    (root / "README.md").write_text("# Study\n", encoding="utf-8")
+    (root / "observations.csv").write_text(_measurement_rows(), encoding="utf-8")
+    book = openpyxl.Workbook()
+    book.active.append(["animal_id", "group"])
+    book.save(root / "registry.xlsx")
+
+    monkeypatch.setattr(workbook_reader, "available", lambda: False)
+    result = ingest(root, tmp_path / "prose" / "out")
+    service = DatasetService(result.output_dir, mode="fair-deterministic")
+    results = {item["rule_id"]: item for item in service.run_fair_check()["results"]}
+
+    rationale = results["R1.2-PROVENANCE-DECLARED"]["rationale"]
+    assert "but and" not in rationale and "; and" not in rationale
+    assert "1 file(s) were never examined" in rationale
+
+
+def test_the_standard_is_cited_by_what_established_it(tmp_path: Path):
+    """R1.3 passed on a content recognition while citing only a README.
+
+    `community_standard` cited every `metadata.file-convention` claim, so a BIDS
+    document recognised from its content contributed the verdict while the
+    evidence pointed at a README -- documentation, which is explicitly not a
+    community standard.
+    """
+    root = tmp_path / "std" / "dataset"
+    root.mkdir(parents=True)
+    (root / "README.md").write_text("# Study\n", encoding="utf-8")
+    # Not named dataset_description.json, so only the content rule can reach it.
+    (root / "study_meta.json").write_text(
+        json.dumps({"Name": "APA", "BIDSVersion": "1.8.0"}), encoding="utf-8"
+    )
+    (root / "observations.csv").write_text(_measurement_rows(), encoding="utf-8")
+
+    result = ingest(root, tmp_path / "std" / "out")
+    carrier = next(
+        item for item in result.manifest["metadata_files"] if item["convention"] == "bids"
+    )
+    assert carrier["path"] == "study_meta.json"
+    assert carrier["recognised_by"] == "content"
+
+    service = DatasetService(result.output_dir, mode="fair-deterministic")
+    results = {item["rule_id"]: item for item in service.run_fair_check()["results"]}
+    standard = results["R1.3-COMMUNITY-STANDARD"]
+    assert standard["result"] == "pass"
+
+    evidence = json.loads((result.output_dir / "evidence.json").read_text(encoding="utf-8"))
+    by_id = {claim["claim_id"]: claim for claim in evidence["claims"]}
+    cited = [by_id[claim_id] for claim_id in standard["evidence"] if claim_id in by_id]
+    assert cited, "the verdict must cite ledger claims, not restate the standard"
+    assert {item["subject"] for item in cited} == {"study_meta.json"}
+    assert any(
+        entry["check"] == "metadata.content-signature"
+        for claim in cited
+        for entry in claim["evidence"]
+    )
+    # The README is recognised metadata, but it did not establish the standard.
+    assert "README.md" not in {item["subject"] for item in cited}

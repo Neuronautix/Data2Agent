@@ -244,10 +244,11 @@ def metadata_references_data(rule: Rule, context: ProfileContext) -> CheckOutcom
                 )
             ],
         )
-    if unread:
-        # Some recognised metadata was never read. A file it names would be
-        # invisible here, so "not referenced" would be a statement about text
-        # nobody saw.
+    if _unresolved_metadata(context):
+        # Something that could carry a reference was never read -- recognised
+        # metadata this version cannot decode, or a file it never opened. A name
+        # held there is invisible here, so "not referenced" would be a statement
+        # about text nobody saw.
         return CheckOutcome(
             result=UNKNOWN,
             rationale=(
@@ -257,10 +258,7 @@ def metadata_references_data(rule: Rule, context: ProfileContext) -> CheckOutcom
             ),
             evidence=_unread_evidence(context)
             + [_inline("metadata.file-convention", sorted(texts), f"read: {sorted(texts)}")],
-            observations={
-                "unreferenced": unreferenced,
-                "unread": [item["path"] for item in unread],
-            },
+            observations={"unreferenced": unreferenced, **_unresolved_observations(context)},
         )
     return CheckOutcome(
         result=FAIL,
@@ -407,7 +405,7 @@ def vocabulary_reference(rule: Rule, context: ProfileContext) -> CheckOutcome:
             ],
             observations={"references": found},
         )
-    if unread:
+    if _unresolved_metadata(context):
         return CheckOutcome(
             result=UNKNOWN,
             rationale=(
@@ -417,7 +415,7 @@ def vocabulary_reference(rule: Rule, context: ProfileContext) -> CheckOutcome:
             ),
             evidence=_unread_evidence(context)
             + [_inline("metadata.file-convention", sorted(texts), "read, no namespace found")],
-            observations={"unread": [item["path"] for item in unread]},
+            observations=_unresolved_observations(context),
         )
     return CheckOutcome(
         result=FAIL,
@@ -467,7 +465,7 @@ def license_declared(rule: Rule, context: ProfileContext) -> CheckOutcome:
             rationale="no licence file and no metadata in which a licence could be declared",
             evidence=[_inline("metadata.file-convention", [], "no recognised metadata files")],
         )
-    if context.unread_metadata():
+    if _unresolved_metadata(context):
         return CheckOutcome(
             result=UNKNOWN,
             rationale=(
@@ -475,6 +473,7 @@ def license_declared(rule: Rule, context: ProfileContext) -> CheckOutcome:
                 f"({sorted(context.metadata_text())}), but {_unread_detail(context)}"
             ),
             evidence=_unread_evidence(context),
+            observations=_unresolved_observations(context),
         )
     return CheckOutcome(
         result=FAIL,
@@ -517,8 +516,7 @@ def provenance_declared(rule: Rule, context: ProfileContext) -> CheckOutcome:
             ],
             observations={"declarations": declarations},
         )
-    unread = context.unread_metadata()
-    if unread:
+    if _unresolved_metadata(context):
         return CheckOutcome(
             result=UNKNOWN,
             rationale=(
@@ -528,7 +526,7 @@ def provenance_declared(rule: Rule, context: ProfileContext) -> CheckOutcome:
                 f"and reporting its absence would be a claim about bytes nobody read"
             ),
             evidence=_unread_evidence(context),
-            observations={"unread": [item["path"] for item in unread]},
+            observations=_unresolved_observations(context),
         )
     return CheckOutcome(
         result=FAIL,
@@ -557,12 +555,27 @@ def community_standard(rule: Rule, context: ProfileContext) -> CheckOutcome:
         {item["convention"] for item in recognised if item["convention"] in _COMMUNITY_STANDARDS}
     )
     if standards:
+        # Cite the recognitions of the files that CARRY a standard, by subject
+        # and by either rule. Citing every `metadata.file-convention` claim let
+        # a content-recognised BIDS document pass while the verdict pointed at a
+        # README -- documentation, which is explicitly not a community standard,
+        # and the claim that established the verdict went uncited.
+        carriers = [
+            item["path"] for item in recognised if item["convention"] in _COMMUNITY_STANDARDS
+        ]
+        cited: list[Any] = []
+        for path in carriers:
+            for check in ("metadata.file-convention", "metadata.content-signature"):
+                cited += [
+                    claim_id
+                    for claim_id in context.claim_ids(subject=path, check=check)
+                    if claim_id not in cited
+                ]
         return CheckOutcome(
             result=PASS,
             rationale="",
-            evidence=context.claim_ids(check="metadata.file-convention")
-            or [_inline("metadata.file-convention", standards, "")],
-            observations={"standards": standards},
+            evidence=cited or [_inline("metadata.file-convention", standards, "")],
+            observations={"standards": standards, "carriers": carriers},
         )
     conventions = sorted({item["convention"] for item in recognised})
     return CheckOutcome(
@@ -696,6 +709,32 @@ def _recognition_claims(context: ProfileContext) -> list[Any]:
     )
 
 
+def _unresolved_metadata(context: ProfileContext) -> bool:
+    """Whether anything that could hold metadata was left unread.
+
+    Two populations, and a verdict of absence is unsafe while EITHER is
+    non-empty: entries recognised as metadata whose text could not be decoded,
+    and files a recogniser applied to and could not examine at all. Predicating
+    only on the first let a dataset with a readable README beside an unparseable
+    JSON file return `fail` -- an assertion about bytes nobody read, which is
+    precisely what the unknown verdict exists to prevent. Recognising one file
+    does not resolve another.
+    """
+    return bool(context.unread_metadata() or context.metadata_candidates)
+
+
+def _unresolved_observations(context: ProfileContext) -> dict[str, list[str]]:
+    """The two populations named separately, so a consumer can tell them apart.
+
+    Recognised-but-unread is a gap in this version's readers; never-examined is
+    a gap in its recognisers. They are repaired by different work.
+    """
+    return {
+        "unread": [item["path"] for item in context.unread_metadata()],
+        "candidates": [item["path"] for item in context.metadata_candidates],
+    }
+
+
 def _candidate_evidence(candidates: list[dict[str, Any]]) -> list[Any]:
     return [
         _inline(
@@ -722,26 +761,39 @@ def _unread_detail(context: ProfileContext) -> str:
     candidates = context.metadata_candidates
     if candidates:
         listed = ", ".join(f"'{item['path']}' ({item['reason']})" for item in candidates)
-        detail += ("; " if detail else "") + (
-            f"and {len(candidates)} file(s) were never examined: {listed}"
+        # "and" joins two clauses; leading with it reads "but and 3 file(s)
+        # were never examined" in the branches where candidates are the only
+        # reason a verdict stays open, which is now a reachable case.
+        detail += ("; and " if detail else "") + (
+            f"{len(candidates)} file(s) were never examined: {listed}"
         )
     return detail or "no reason recorded"
 
 
 def _unread_evidence(context: ProfileContext) -> list[Any]:
-    evidence: list[Any] = [
-        _inline(
-            "metadata.content-signature",
-            [
-                {"path": item["path"], "recognised_by": item.get("recognised_by")}
-                for item in context.unread_metadata()
-            ],
-            "recognised metadata whose text could not be read here",
+    """What was recognised but unread, and what was never opened.
+
+    Each population is cited only when it is non-empty, so the ledger never
+    carries an empty list captioned as though it described something. When both
+    are empty the caller is reporting an outright absence of metadata, and the
+    empty file-convention claim is the honest citation for that.
+    """
+    evidence: list[Any] = []
+    unread = context.unread_metadata()
+    if unread:
+        evidence.append(
+            _inline(
+                "metadata.content-signature",
+                [
+                    {"path": item["path"], "recognised_by": item.get("recognised_by")}
+                    for item in unread
+                ],
+                "recognised metadata whose text could not be read here",
+            )
         )
-    ]
     if context.metadata_candidates:
         evidence += _candidate_evidence(context.metadata_candidates)
-    return evidence
+    return evidence or [_inline("metadata.file-convention", [], "no recognised metadata files")]
 
 
 def _is_persistent(hit: dict[str, Any]) -> bool:
