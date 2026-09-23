@@ -32,6 +32,54 @@ Order matters: `04` consumes a temporary file written by `01` and deletes it.
 `06` is independent of `02`–`04`: it reads only `source/` and
 `perturbations/perturbations.yaml`, and writes outside the package.
 
+Scoring is separate, because it runs against a *result* rather than the package:
+
+```bash
+python scripts/benchmarks/xp14/07_score.py <assessment.json> [--json score.json]
+```
+
+It reads `gold/fair_expected.json` and reports agreement, movement since the
+freeze, and — on its own line, failing the run by itself — any indicator the
+gold forbids resolving. Exit status is 0 only when everything agrees, nothing
+regressed, and nothing was resolved that must stay `unknown`.
+
+Two subtleties worth knowing before reading a score:
+
+- **Agreement is scored against `expected_result`, never `v0_1_actual`.** The
+  gold says so itself. Where they differ, v0.1 has a known gap and a better
+  assessor may legitimately beat it.
+- **Whether v0.1 was right at freeze is the gold's `agrees` flag, not a
+  comparison of verdict letters.** `I1-DATA-FORMATS-OPEN` returned `fail` at
+  freeze and is marked `agrees: false`, because the verdict was right while the
+  evidence under it was not — only the 9 files named `.xlsx` were evaluated and
+  the 20 OOXML files named `.xls` escaped the check. Scoring closure off the
+  letter would call that gap closed the day it was found and hide it the day it
+  was fixed.
+
+Running an agent condition, which produces an assessment in the same shape:
+
+```bash
+python scripts/benchmarks/xp14/08_run_agent.py \
+    --ingest <ingest-dir> --out <run-dir> \
+    --mode structured --model claude-sonnet-5
+python scripts/benchmarks/xp14/07_score.py <run-dir>/assessment.json
+```
+
+The server is passed to the host per-run with `--mcp-config` and
+`--strict-mcp-config`, never registered globally. Without the strict flag the
+host also loads whatever the operator happens to have configured, and a `raw`
+condition with three unrelated servers attached is not a raw condition. It also
+leaves the operator's own configuration untouched, which a benchmark has no
+business editing.
+
+The prompt is identical in every mode and lives in `prompt_fair.md`, so it is
+reviewable as the instrument it is. It names the twelve rule ids, because a
+verdict that cannot be lined up against the gold cannot be scored. It
+deliberately omits their operational definitions: supplying those would erase
+the difference between `structured` and `fair-rules`, where reading the
+canonical registry is exactly what the mode adds. It says nothing about which
+indicators ought to be `unknown` — that is the measurement, not the setup.
+
 Paths resolve from the script location. Set `D2A_REPO` to override if the
 scripts are vendored elsewhere.
 
