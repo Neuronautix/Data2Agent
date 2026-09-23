@@ -95,6 +95,49 @@ jobs:
           diff /tmp/a/evidence.json /tmp/b/evidence.json
           git diff --exit-code -- examples/preclinical-minimal
 
+      # The example dataset holds no workbook, so every schema assertion below
+      # this point was blind to workbook profiles. A manifest containing a
+      # worksheet violated the published schema for an entire release cycle and
+      # was caught in review rather than by CI. A synthetic workbook costs
+      # nothing and closes that hole.
+      - name: A workbook manifest validates against the published schema
+        run: |
+          python - <<'PY'
+          import json, pathlib, subprocess, sys, tempfile
+          import jsonschema, openpyxl
+
+          source = pathlib.Path(tempfile.mkdtemp()) / "wb"
+          source.mkdir()
+          book = openpyxl.Workbook()
+          book.active.title = "registry"
+          book.active.append(["animal_id", "sex"])
+          book.active.append(["A001", "M"])
+          book.active.append(["A002", None])          # an empty cell to profile
+          book.create_sheet("notes").append(["free text"])
+          book.save(source / "registry.xlsx")
+
+          # Named .xls over OOXML bytes: the mis-extension case D2A-46 handles.
+          (source / "legacy.xls").write_bytes((source / "registry.xlsx").read_bytes())
+
+          out = pathlib.Path(tempfile.mkdtemp()) / "out"
+          subprocess.run([sys.executable, "-m", "data2agent.cli", "ingest",
+                          str(source), "-o", str(out)], check=True)
+
+          manifest = json.loads((out / "manifest.json").read_text())
+          schema = json.loads(pathlib.Path("schemas/dataset-manifest.schema.json").read_text())
+          jsonschema.validate(manifest, schema)
+
+          tables = manifest["tables"]
+          assert tables, "a workbook must not yield zero tables"
+          assert any("#" in key for key in tables), "sheets are keyed workbook#sheet"
+          # The mis-extensioned file is identified by content and the
+          # disagreement is recorded, not silently resolved.
+          legacy = next(f for f in manifest["files"] if f["path"] == "legacy.xls")
+          assert legacy["format"] == "xlsx", legacy
+          assert legacy["extension_conflict"] is True, legacy
+          print("workbook manifest valid:", len(tables), "table(s)")
+          PY
+
       - name: Assess the example dataset and validate the output
         run: |
           data2agent assess /tmp/a
