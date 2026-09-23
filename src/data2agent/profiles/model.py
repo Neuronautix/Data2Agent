@@ -156,12 +156,18 @@ class ProfileContext:
     manifest: dict[str, Any]
     ledger: EvidenceLedger
     read_metadata: Callable[[str], str | None]
+    _texts: dict[str, str] | None = field(default=None, repr=False)
 
     # -- convenience accessors, so checks stay short and uniform -------------
 
     @property
     def metadata_files(self) -> list[dict[str, Any]]:
         return self.manifest.get("metadata_files", [])
+
+    @property
+    def metadata_candidates(self) -> list[dict[str, Any]]:
+        """Files a recogniser applied to and could not read. Open questions, not findings."""
+        return self.manifest.get("metadata_candidates", [])
 
     @property
     def metadata_paths(self) -> set[str]:
@@ -173,9 +179,20 @@ class ProfileContext:
 
     @property
     def data_files(self) -> list[dict[str, Any]]:
-        """Files that are not recognised metadata -- the payload of the dataset."""
-        metadata = self.metadata_paths
-        return [entry for entry in self.files if entry["path"] not in metadata]
+        """Files that are not a metadata document -- the payload of the dataset.
+
+        Metadata recognised as ``embedded`` -- a registry worksheet inside a
+        workbook of results -- does not remove its file from this list. The file
+        is still payload, and keeping it here bounds the damage a wrong
+        recognition can do: it can add a metadata finding, but it can never
+        silently subtract a data file from the format and linkage checks.
+        """
+        documents = {
+            item["path"]
+            for item in self.metadata_files
+            if item.get("kind", "document") == "document"
+        }
+        return [entry for entry in self.files if entry["path"] not in documents]
 
     @property
     def identifiers(self) -> list[dict[str, Any]]:
@@ -194,10 +211,27 @@ class ProfileContext:
         return [record.claim_id for record in self.ledger.query(subject=subject, check=check)]
 
     def metadata_text(self) -> dict[str, str]:
-        """The text of every recognised metadata file that could be decoded."""
-        texts: dict[str, str] = {}
-        for item in self.metadata_files:
-            content = self.read_metadata(item["path"])
-            if content is not None:
-                texts[item["path"]] = content
-        return texts
+        """The text of every recognised metadata file that could be decoded.
+
+        Metadata recognised inside a workbook, or in any file whose bytes are not
+        text, yields nothing here. That is a gap the checks must report as one --
+        see :meth:`unread_metadata` -- not treat as an absence of content.
+        """
+        if self._texts is None:
+            texts: dict[str, str] = {}
+            for item in self.metadata_files:
+                content = self.read_metadata(item["path"])
+                if content is not None:
+                    texts[item["path"]] = content
+            self._texts = texts
+        return dict(self._texts)
+
+    def unread_metadata(self) -> list[dict[str, Any]]:
+        """Recognised metadata whose text this profile could not read.
+
+        A check that searched only :meth:`metadata_text` must say so when this is
+        non-empty; otherwise "no licence field was found" reads as a statement
+        about a file nobody opened.
+        """
+        readable = set(self.metadata_text())
+        return [item for item in self.metadata_files if item["path"] not in readable]

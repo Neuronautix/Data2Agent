@@ -97,7 +97,8 @@ def ingest(
 
     tables: dict[str, Any] = {}
     structured_docs: dict[str, Any] = {}
-    metadata_files: list[dict[str, str]] = []
+    metadata_files: list[dict[str, Any]] = []
+    metadata_candidates: list[dict[str, Any]] = []
     identifier_hits: list[dict[str, Any]] = []
 
     _record_dataset_claims(ledger, identity, inventory, active_convention)
@@ -106,6 +107,9 @@ def ingest(
         absolute = source / entry.path
         _record_file_claims(ledger, entry)
 
+        # The filename verdict is taken first for every file, and travels with
+        # the entry whichever rule finally recognised it: "recognised by content"
+        # must never obscure "and the name matched nothing".
         classification = metadata.classify(entry.path)
         if classification is not None:
             metadata_files.append(classification.as_dict())
@@ -130,6 +134,15 @@ def ingest(
                 tables[entry.path] = profile.as_dict()
                 warnings.extend(f"{entry.path}: {note}" for note in profile.warnings)
                 _record_table_claims(ledger, entry, profile, active_convention)
+                if classification is None:
+                    _recognise_table(
+                        ledger,
+                        entry,
+                        metadata_files,
+                        path=entry.path,
+                        rows=profile.rows,
+                        columns=profile.columns,
+                    )
 
         elif entry.format.format_id in formats.WORKBOOK_FORMATS:
             # Reached only after the format was established from the file's
@@ -144,6 +157,22 @@ def ingest(
                     f"{entry.path}: identified as a workbook but not profiled; "
                     f"install the 'xlsx' extra to enable it"
                 )
+                # A workbook nobody opened is a question, not an answer. It is
+                # registered as a metadata candidate so that "no metadata was
+                # found" cannot be read off a file that was never examined.
+                if classification is None:
+                    _record_candidate(
+                        ledger,
+                        entry,
+                        metadata_candidates,
+                        path=entry.path,
+                        reason="reader-unavailable",
+                        note=(
+                            "identified as a workbook and not opened, because the optional "
+                            "'xlsx' reader is not installed; whether it carries metadata is "
+                            "undetermined"
+                        ),
+                    )
                 ledger.record(
                     f"'{entry.path}' is a workbook whose contents were not profiled",
                     subject=entry.path,
@@ -163,12 +192,56 @@ def ingest(
                     tables[sheet.path] = sheet.as_dict()
                     warnings.extend(f"{sheet.path}: {note}" for note in sheet.warnings)
                     _record_sheet_claims(ledger, entry, sheet, active_convention)
+                    if classification is not None:
+                        continue
+                    if not sheet.profiled:
+                        _record_candidate(
+                            ledger,
+                            entry,
+                            metadata_candidates,
+                            path=sheet.path,
+                            reason="unprofiled",
+                            note=(
+                                "content could not be read, so whether it carries metadata "
+                                "is undetermined"
+                            ),
+                        )
+                        continue
+                    _recognise_table(
+                        ledger,
+                        entry,
+                        metadata_files,
+                        path=sheet.path,
+                        rows=sheet.rows or 0,
+                        columns=sheet.columns,
+                        locator={"sheet": sheet.sheet, "header_row": sheet.header_row},
+                    )
 
         elif entry.format.format_id in formats.STRUCTURED_FORMATS:
-            profile = structured.profile_json(absolute, entry.path)
+            document, parse_error = structured.load_json(absolute)
+            profile = structured.profile_document(document, parse_error, relative_path=entry.path)
             structured_docs[entry.path] = profile.as_dict()
             if profile.parse_error:
                 warnings.append(f"{entry.path}: JSON parse error: {profile.parse_error}")
+                if classification is None:
+                    # The metadata rule applied and could not run. Saying nothing
+                    # would make an unreadable descriptor indistinguishable from
+                    # a file that was read and found to carry none.
+                    _record_candidate(
+                        ledger,
+                        entry,
+                        metadata_candidates,
+                        path=entry.path,
+                        reason="unparsed",
+                        note=(
+                            f"JSON that could not be parsed, so whether it declares a "
+                            f"metadata standard is undetermined: {profile.parse_error}"
+                        ),
+                    )
+            elif classification is None:
+                recognised = metadata.classify_json_document(entry.path, document)
+                if recognised is not None:
+                    _record_content_metadata(ledger, entry, metadata_files, recognised)
             ledger.record(
                 f"'{entry.path}' is a JSON document with root type '{profile.root_type}'",
                 subject=entry.path,
@@ -213,6 +286,7 @@ def ingest(
         tables=tables,
         structured_docs=structured_docs,
         metadata_files=metadata_files,
+        metadata_candidates=metadata_candidates,
         identifier_hits=identifier_hits,
         warnings=warnings,
     )
@@ -248,7 +322,8 @@ def _build_manifest(
     convention: MissingValueConvention,
     tables: dict[str, Any],
     structured_docs: dict[str, Any],
-    metadata_files: list[dict[str, str]],
+    metadata_files: list[dict[str, Any]],
+    metadata_candidates: list[dict[str, Any]],
     identifier_hits: list[dict[str, Any]],
     warnings: list[str],
 ) -> dict[str, Any]:
@@ -271,7 +346,16 @@ def _build_manifest(
         "formats": dict(sorted(format_counts.items())),
         "tables": dict(sorted(tables.items())),
         "structured": dict(sorted(structured_docs.items())),
-        "metadata_files": sorted(metadata_files, key=lambda item: item["path"]),
+        "metadata_files": sorted(
+            metadata_files, key=lambda item: (item["path"], item["convention"])
+        ),
+        # Files a recogniser applied to and could not finish reading. Kept apart
+        # from metadata_files because a candidate is an open question, never a
+        # finding: an empty metadata_files beside a non-empty list here means
+        # "nothing was recognised, and these were never examined".
+        "metadata_candidates": sorted(
+            metadata_candidates, key=lambda item: (item["path"], item["reason"])
+        ),
         "identifiers": sorted(
             identifier_hits, key=lambda item: (item["source"], item["scheme"], item["value"])
         ),
@@ -282,6 +366,92 @@ def _build_manifest(
         "skipped": list(inventory.skipped),
         "warnings": sorted(set(warnings)),
     }
+
+
+def _recognise_table(
+    ledger: EvidenceLedger,
+    entry: FileEntry,
+    metadata_files: list[dict[str, Any]],
+    *,
+    path: str,
+    rows: int,
+    columns: list[tabular.ColumnProfile],
+    locator: dict[str, Any] | None = None,
+) -> None:
+    """Offer one profiled table to the registry rule, and record what it said.
+
+    The rule is handed counts only -- never cells -- so that no recognition can
+    come to depend on what a value says. It answers ``None`` far more often than
+    not, and that silence is the intended behaviour.
+    """
+    facts = [
+        metadata.ColumnFacts(
+            name=column.name,
+            values=column.values,
+            missing=column.missing,
+            distinct=column.distinct,
+            distinct_exact=column.distinct_exact,
+            unique=column.unique,
+        )
+        for column in columns
+    ]
+    recognised = metadata.classify_table(
+        path, file=entry.path, rows=rows, columns=facts, locator=locator
+    )
+    if recognised is not None:
+        _record_content_metadata(ledger, entry, metadata_files, recognised)
+
+
+def _record_content_metadata(
+    ledger: EvidenceLedger,
+    entry: FileEntry,
+    metadata_files: list[dict[str, Any]],
+    recognised: metadata.MetadataFile,
+) -> None:
+    """Record a content recognition, with the structure that produced it."""
+    metadata_files.append(recognised.as_dict())
+    ledger.record(
+        f"'{recognised.path}' has the structure of {recognised.convention} metadata, "
+        f"recognised from its content and not from its filename: {recognised.note}",
+        subject=recognised.path,
+        evidence=[
+            EvidenceItem(
+                source=entry.path,
+                source_sha256=entry.sha256,
+                check="metadata.content-signature",
+                result=dict(recognised.basis),
+                locator=recognised.path if recognised.path != entry.path else None,
+            )
+        ],
+    )
+
+
+def _record_candidate(
+    ledger: EvidenceLedger,
+    entry: FileEntry,
+    metadata_candidates: list[dict[str, Any]],
+    *,
+    path: str,
+    reason: str,
+    note: str,
+) -> None:
+    """Record that a recogniser applied to a file and could not finish reading it."""
+    candidate = metadata.MetadataCandidate(
+        path=path, file=entry.path, reason=reason, note=note, filename_convention=None
+    )
+    metadata_candidates.append(candidate.as_dict())
+    ledger.record(
+        f"'{path}' could carry metadata that this version did not read: {note}",
+        subject=path,
+        evidence=[
+            EvidenceItem(
+                source=entry.path,
+                source_sha256=entry.sha256,
+                check="metadata.candidate",
+                result={"reason": reason, "path": path},
+            )
+        ],
+    )
 
 
 def _record_dataset_claims(

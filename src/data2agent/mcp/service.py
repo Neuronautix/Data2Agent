@@ -127,6 +127,7 @@ class DatasetService:
             "formats": self.manifest.get("formats", {}),
             "table_count": len(self.manifest.get("tables", {})),
             "metadata_files": self.manifest.get("metadata_files", []),
+            "metadata_candidates": self.manifest.get("metadata_candidates", []),
             "identifier_count": len(self.manifest.get("identifiers", [])),
             # Empty means "this version does not determine relationships", not
             # "this dataset has none". The distinction matters for FAIR scoring.
@@ -234,21 +235,43 @@ class DatasetService:
         downstream claim unverifiable against the bytes.
         """
         recognised = {item["path"]: item for item in self.manifest.get("metadata_files", [])}
+        candidates = self.manifest.get("metadata_candidates", [])
         if path is None:
             return {
                 "dataset_id": self.dataset_id,
                 "metadata_files": list(recognised.values()),
+                # Reported beside the recognitions, never merged into them: a
+                # candidate is a file a recogniser could not finish reading, so
+                # an empty metadata_files next to a populated list here means
+                # "nothing found, and these were never examined".
+                "metadata_candidates": list(candidates),
                 "note": "call get_metadata(path=...) for a file's verbatim contents",
             }
         if path not in recognised:
             known = ", ".join(sorted(recognised)) or "none recognised"
             raise KeyError(f"'{path}' is not a recognised metadata file; recognised: {known}")
 
-        integrity = self.verify_file(path)
-        payload: dict[str, Any] = {**recognised[path], "integrity": integrity.as_dict()}
+        entry = recognised[path]
+        carrier = entry.get("file") or path
+        integrity = self.verify_file(carrier)
+        payload: dict[str, Any] = {**entry, "integrity": integrity.as_dict()}
         if not integrity.matches:
             payload["content"] = None
             payload["content_withheld"] = "file no longer matches its manifest checksum"
+            return payload
+
+        if carrier != path:
+            # Metadata recognised inside part of a file -- one worksheet of a
+            # workbook. Serving the whole file's bytes would answer a different
+            # question from the one asked, so the structure is reported and the
+            # content is not invented.
+            payload["content"] = None
+            payload["content_encoding"] = "not-applicable"
+            payload["content_withheld"] = (
+                f"this metadata is carried inside '{carrier}' rather than being a file of its "
+                f"own; its observed structure is in 'basis', and the profiled content is "
+                f"available through inspect_table('{path}')"
+            )
             return payload
 
         absolute = self._resolve(path)

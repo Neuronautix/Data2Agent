@@ -8,6 +8,7 @@ check:
   type: metadata_presence
   inputs:
     - manifest.metadata_files
+    - manifest.metadata_candidates
 
 allowed_results: [pass, fail, unknown, not_applicable]
 
@@ -16,7 +17,13 @@ evidence_required: true
 rationale_required_for: [fail, unknown, not_applicable]
 
 notes: >
-  Recognition is by filename convention only (RO-Crate, Frictionless, BIDS,
-  ISA-Tab, CodeMeta, DataCite, README, LICENSE). A file that holds excellent
-  metadata under an unrecognised name will not be counted -- a false negative,
-  which is the safer direction to err.
+  Recognition is by filename convention (RO-Crate, Frictionless, BIDS, ISA-Tab,
+  CodeMeta, DataCite, README, LICENSE) or by content structure -- a JSON
+  document that names a published standard in its own content, or a table with
+  a complete, unique subject-identifier column and grouping attribute columns.
+  Each entry records which rule fired, and what the filename rule made of the
+  same file. Metadata in any other shape is still not counted -- a false
+  negative, which is the safer direction to err, because five indicators
+  cascade from this list. A file a recogniser could not read is a candidate,
+  and a dataset with candidates and no recognitions reads as unknown rather
+  than as a dataset without metadata.

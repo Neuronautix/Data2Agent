@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import metadata
 from .conventions import AMBIGUOUS, DEFAULT_CONVENTION, SENTINEL, MissingValueConvention
 from .textio import read_text
 
@@ -33,6 +34,14 @@ _BOOLEAN = {"true", "false"}
 # Distinct values are only enumerated below this cardinality; above it a column
 # is treated as free-form and only an upper bound on the count is kept.
 _MAX_ENUMERATED_DISTINCT = 25
+
+# Uniqueness needs the whole value set, which ``distinct`` stops tracking at 25.
+# It is therefore tracked separately, and only for columns named as a subject
+# identifier -- a handful per table -- because keeping every column's values
+# would make memory grow with the file. Past this cap the answer becomes "not
+# determined", never "not unique": an unbounded scan is the one thing a profiler
+# of arbitrarily large files cannot promise.
+_MAX_TRACKED_KEYS = 200_000
 
 
 @dataclass
@@ -51,8 +60,15 @@ class ColumnProfile:
     distinct: int = 0
     distinct_exact: bool = True
     distinct_values: list[str] | None = None
+    # Whether every value in this column differs from every other. None means
+    # not determined -- either the column was not tracked, or it exceeded the
+    # tracking cap. Tracked only where ``track_unique`` was asked for.
+    unique: bool | None = None
+    track_unique: bool = False
     _seen: set[str] = field(default_factory=set, repr=False)
     _overflowed: bool = field(default=False, repr=False)
+    _keys_seen: set[str] = field(default_factory=set, repr=False)
+    _keys_overflowed: bool = field(default=False, repr=False)
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -76,7 +92,23 @@ class ColumnProfile:
         }
         if self.distinct_values is not None:
             payload["distinct_values"] = self.distinct_values
+        if self.track_unique:
+            # Emitted only where uniqueness was actually looked for, so an absent
+            # field reads as "not asked" rather than as "asked and found false".
+            payload["unique"] = self.unique
         return payload
+
+
+def new_column(name: str, position: int) -> ColumnProfile:
+    """Build a column profile, enabling uniqueness tracking where it is useful.
+
+    The decision is made here rather than at each call site so that a worksheet
+    and a CSV observe exactly the same thing -- the metadata rule that consumes
+    ``unique`` must not depend on which profiler produced the column.
+    """
+    return ColumnProfile(
+        name=name, position=position, track_unique=metadata.is_subject_identifier_name(name)
+    )
 
 
 @dataclass
@@ -149,10 +181,7 @@ def profile_table(
             [*warnings, "file is empty"],
         )
 
-    columns = [
-        ColumnProfile(name=_header_name(name, index), position=index)
-        for index, name in enumerate(header)
-    ]
+    columns = [new_column(_header_name(name, index), index) for index, name in enumerate(header)]
     if len({column.name for column in columns}) != len(columns):
         warnings.append("header contains duplicate column names; positions disambiguate them")
 
@@ -171,11 +200,7 @@ def profile_table(
 
     for column in columns:
         # Any cell not seen at all (a short row) is an absent value, not a value.
-        column.missing_empty = rows - column.values - column.missing_sentinel
-        column.missing = column.missing_empty + column.missing_sentinel
-        if not column._overflowed:
-            column.distinct = len(column._seen)
-            column.distinct_values = sorted(column._seen)
+        finalise(column, rows)
 
     warnings.extend(_convention_warnings(columns, convention))
     if ragged:
@@ -203,6 +228,11 @@ def _observe(column: ColumnProfile, raw: str, convention: MissingValueConvention
 
     column.values += 1
     column.dtype = _promote(column.dtype, _token_type(value))
+    if column.track_unique and not column._keys_overflowed:
+        column._keys_seen.add(value)
+        if len(column._keys_seen) > _MAX_TRACKED_KEYS:
+            column._keys_overflowed = True
+            column._keys_seen.clear()
     if not column._overflowed:
         column._seen.add(value)
         if len(column._seen) > _MAX_ENUMERATED_DISTINCT:
@@ -212,6 +242,22 @@ def _observe(column: ColumnProfile, raw: str, convention: MissingValueConvention
             column._seen.clear()
     else:
         column.distinct += 1  # Upper bound: see ``distinct_exact``.
+
+
+def finalise(column: ColumnProfile, rows: int) -> None:
+    """Close a column once the row count is known.
+
+    Shared with the workbook reader so that the invariant
+    ``missing == missing_empty + missing_sentinel`` and the uniqueness verdict
+    are computed once, in one place, for both kinds of table.
+    """
+    column.missing_empty = rows - column.values - column.missing_sentinel
+    column.missing = column.missing_empty + column.missing_sentinel
+    if not column._overflowed:
+        column.distinct = len(column._seen)
+        column.distinct_values = sorted(column._seen)
+    if column.track_unique:
+        column.unique = None if column._keys_overflowed else len(column._keys_seen) == column.values
 
 
 def _convention_warnings(

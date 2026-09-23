@@ -42,7 +42,19 @@ class StructuredProfile:
 
 def profile_json(path: Path, relative_path: str) -> StructuredProfile:
     """Profile a JSON file; a parse failure is reported, never swallowed."""
-    document, error = load_json(path)
+    return profile_document(*load_json(path), relative_path=relative_path)
+
+
+def profile_document(
+    document: Any | None, error: str | None, *, relative_path: str
+) -> StructuredProfile:
+    """Profile an already-loaded document.
+
+    Split out from :func:`profile_json` so that a caller which needs the parsed
+    document as well -- metadata recognition does -- can parse the file once.
+    Parsing it twice would double the cost and, worse, admit the possibility of
+    two different readings of the same bytes.
+    """
     if error is not None:
         return StructuredProfile(relative_path, "invalid", [], None, 0, error)
 
