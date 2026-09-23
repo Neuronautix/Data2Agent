@@ -32,6 +32,30 @@ Order matters: `04` consumes a temporary file written by `01` and deletes it.
 `06` is independent of `02`–`04`: it reads only `source/` and
 `perturbations/perturbations.yaml`, and writes outside the package.
 
+Scoring is separate, because it runs against a *result* rather than the package:
+
+```bash
+python scripts/benchmarks/xp14/07_score.py <assessment.json> [--json score.json]
+```
+
+It reads `gold/fair_expected.json` and reports agreement, movement since the
+freeze, and — on its own line, failing the run by itself — any indicator the
+gold forbids resolving. Exit status is 0 only when everything agrees, nothing
+regressed, and nothing was resolved that must stay `unknown`.
+
+Two subtleties worth knowing before reading a score:
+
+- **Agreement is scored against `expected_result`, never `v0_1_actual`.** The
+  gold says so itself. Where they differ, v0.1 has a known gap and a better
+  assessor may legitimately beat it.
+- **Whether v0.1 was right at freeze is the gold's `agrees` flag, not a
+  comparison of verdict letters.** `I1-DATA-FORMATS-OPEN` returned `fail` at
+  freeze and is marked `agrees: false`, because the verdict was right while the
+  evidence under it was not — only the 9 files named `.xlsx` were evaluated and
+  the 20 OOXML files named `.xls` escaped the check. Scoring closure off the
+  letter would call that gap closed the day it was found and hide it the day it
+  was fixed.
+
 Paths resolve from the script location. Set `D2A_REPO` to override if the
 scripts are vendored elsewhere.
 
