@@ -89,7 +89,8 @@ The subtle part is what an *empty* or *absent* value means. It is never "none".
 | Field | Means | Does **not** mean |
 | --- | --- | --- |
 | `relationships: []` | not determined by this version | the dataset has no relationships |
-| `metadata_files: []` | no filename matched a known convention | the dataset has no metadata |
+| `metadata_files: []` | nothing was recognised, by filename convention **or** by content structure | the dataset has no metadata |
+| `metadata_candidates: [...]` | a recogniser applied to these files and could not read them | they hold metadata |
 | `identifiers: []` | no pattern matched in scanned text | the dataset has no identifiers |
 | `column.dtype` | shape of the observed tokens | the column's scientific type |
 | `column.missing` | empty cells **plus** tokens the active convention resolves | a count anyone would reproduce without knowing the convention |
@@ -115,6 +116,45 @@ The subtle part is what an *empty* or *absent* value means. It is never "none".
 
 A column of ISO dates is `string`. That is correct and deliberate: nothing in
 the dataset declares a date format, so parsing one out would be an inference.
+
+## Metadata recognition
+
+A file is recognised as metadata by one of two rules, and every entry records
+which one fired and what the other one said.
+
+| Rule | `recognised_by` | What it matches |
+| --- | --- | --- |
+| Filename convention | `filename_convention` | `README.md`, `datapackage.json`, `dataset_description.json`, `ro-crate-metadata.json`, ISA-Tab files, … |
+| Content structure | `content` | a JSON object that names a published standard in its own content (`@context` on a known vocabulary, `BIDSVersion`, a Frictionless `resources` list, a DataCite record shape); a table with exactly one complete, unique subject-identifier column where every other column takes at most half as many distinct values as there are rows |
+
+Both claims are structural. Neither says what the file *means*: a recognised
+registry table is reported as "one row per distinct `<column>`, with N grouping
+columns", never as "these are the animals in the experiment". Interpreting it is
+the semantic layer's job.
+
+`kind` separates the two things a recognised file can be:
+
+- `document` — the file's content *is* the metadata record. It is not a data file.
+- `embedded` — metadata carried inside a file that is also payload, such as a
+  registry worksheet in a workbook of results. It stays a data file, so a wrong
+  recognition can add a metadata finding but can never silently subtract a data
+  file from the format and linkage checks.
+
+`path` is the file, or `<workbook path>#<sheet name>` when the metadata is one
+worksheet; `file` always names the file whose bytes carry it.
+
+A file a recogniser applied to and could not finish reading — a workbook with no
+reader installed, an unparseable JSON document — is listed in
+`metadata_candidates`, never in `metadata_files`. That keeps "we looked and found
+nothing" distinguishable from "we could not look", and a dataset with candidates
+and no recognitions makes `F2-METADATA-PRESENT` report `unknown` rather than
+`fail`.
+
+The rule is deliberately narrow, because five FAIR indicators cascade from
+`metadata_files` and a data table wrongly called metadata corrupts all five at
+once. Metadata in a shape neither rule covers — a PowerPoint deck, a lab
+notebook, a descriptor that declares no standard — is not counted. That is a
+false negative, and it is the direction this contract chooses to be wrong in.
 
 ## Missingness, precisely
 

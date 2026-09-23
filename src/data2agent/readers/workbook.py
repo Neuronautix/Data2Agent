@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..ingest.conventions import DEFAULT_CONVENTION, MissingValueConvention
-from ..ingest.tabular import ColumnProfile, _convention_warnings, _observe
+from ..ingest.tabular import ColumnProfile, _convention_warnings, _observe, finalise, new_column
 
 # Cap on sheets profiled per workbook. A pathological file should slow an
 # ingest, not hang it; the cap is reported rather than applied silently.
@@ -222,7 +222,7 @@ def _profile_sheet(sheet, workbook_path: str, index: int, convention: MissingVal
                 continue  # leading blank rows are layout, not data
             header_row_index = row_number
             header = _header_names(cells, warnings, name, row_number)
-            columns = [ColumnProfile(name=n, position=i) for i, n in enumerate(header)]
+            columns = [new_column(n, i) for i, n in enumerate(header)]
             continue
 
         data_rows += 1
@@ -230,19 +230,16 @@ def _profile_sheet(sheet, workbook_path: str, index: int, convention: MissingVal
             # Cells to the right of the header row. Recorded, never discarded:
             # a header narrower than its data is a finding about the sheet.
             for extra in range(len(columns), len(cells)):
-                columns.append(ColumnProfile(name=_column_letter(extra), position=extra))
+                columns.append(new_column(_column_letter(extra), extra))
                 columns[-1].missing_empty += data_rows - 1
         for position, column in enumerate(columns):
             _observe(column, cells[position] if position < len(cells) else "", convention)
 
-    # Finalised exactly as the delimited profiler does, so the invariant
-    # missing == missing_empty + missing_sentinel holds identically in both.
+    # Finalised by the delimited profiler's own routine, so the invariant
+    # missing == missing_empty + missing_sentinel, and the uniqueness verdict a
+    # metadata rule reads, are computed identically for a sheet and for a CSV.
     for column in columns:
-        column.missing_empty = data_rows - column.values - column.missing_sentinel
-        column.missing = column.missing_empty + column.missing_sentinel
-        if not column._overflowed:
-            column.distinct = len(column._seen)
-            column.distinct_values = sorted(column._seen)
+        finalise(column, data_rows)
 
     warnings.extend(_convention_warnings(columns, convention))
 

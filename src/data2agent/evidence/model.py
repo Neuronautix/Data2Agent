@@ -65,6 +65,19 @@ CHECKS: dict[str, str] = {
     ),
     "json.shape": "Top-level type, keys and nesting depth of a JSON document",
     "metadata.file-convention": "Filename matches a published metadata convention",
+    # Distinct from metadata.file-convention, and deliberately so: a claim that a
+    # file's *name* follows a convention and a claim that its *structure* does
+    # are different claims, checkable by different means, and collapsing them
+    # would hide which of the two any given verdict rests on (D2A-49a).
+    "metadata.content-signature": (
+        "A file's structure matches a metadata record: a JSON document that names "
+        "a published standard in its own content, or a table with a complete, unique "
+        "subject-identifier column and grouping attribute columns"
+    ),
+    "metadata.candidate": (
+        "A metadata recogniser applied to a file and could not finish reading it, so "
+        "neither recognition nor absence of metadata is asserted for it"
+    ),
     "identifier.detected": "A persistent-identifier pattern matched in file text",
 }
 

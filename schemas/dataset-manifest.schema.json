@@ -16,6 +16,7 @@
     "tables",
     "structured",
     "metadata_files",
+    "metadata_candidates",
     "identifiers",
     "relationships",
     "warnings"
@@ -91,6 +92,13 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/metadataFile"
+      }
+    },
+    "metadata_candidates": {
+      "type": "array",
+      "description": "Files a metadata recogniser applied to and could not finish reading. An open question, never a finding: a candidate is not metadata, and an empty metadata_files beside a non-empty list here means 'nothing was recognised, and these were never examined'.",
+      "items": {
+        "$ref": "#/$defs/metadataCandidate"
       }
     },
     "identifiers": {
@@ -308,25 +316,102 @@
           "items": {
             "type": "string"
           }
+        },
+        "unique": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether every value in the column differs from every other. Present only for columns whose name is one of the subject-identifier names uniqueness is tracked for; absent means the question was not asked, and null means it was asked and the column exceeded the tracking cap."
         }
       }
     },
     "metadataFile": {
       "type": "object",
+      "description": "A file, or one part of a file, recognised as carrying metadata -- by filename convention or by content structure. The claim is structural: that the file follows a metadata convention or has the shape of a metadata record. It is never a claim about what the metadata says.",
       "required": [
         "path",
         "convention",
-        "note"
+        "note",
+        "recognised_by",
+        "filename_convention",
+        "kind",
+        "file"
       ],
       "properties": {
         "path": {
-          "type": "string"
+          "type": "string",
+          "description": "The file, or '<workbook path>#<sheet name>' when the metadata is one worksheet of a workbook."
         },
         "convention": {
           "type": "string"
         },
         "note": {
           "type": "string"
+        },
+        "recognised_by": {
+          "enum": [
+            "filename_convention",
+            "content"
+          ],
+          "description": "Which rule fired. 'content' means the filename matched nothing and the file's structure was recognised instead."
+        },
+        "filename_convention": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What the filename rule said, whichever rule actually fired. Null means no filename convention matched; recognition by content never hides that."
+        },
+        "kind": {
+          "enum": [
+            "document",
+            "embedded"
+          ],
+          "description": "'document': the file's content is the metadata record. 'embedded': metadata carried inside a file that is also dataset payload, such as a registry worksheet. An embedded entry does not remove its file from the data files."
+        },
+        "file": {
+          "type": "string",
+          "description": "The dataset file carrying this metadata. Equal to 'path' for a whole file."
+        },
+        "basis": {
+          "type": "object",
+          "description": "The observed structure that produced the recognition: the signature that matched, and the columns or keys it matched on. What was seen, not what it means."
+        }
+      }
+    },
+    "metadataCandidate": {
+      "type": "object",
+      "description": "A file a metadata recogniser applied to and could not finish reading. Recorded so that 'we looked and found nothing' stays distinguishable from 'we could not look'.",
+      "required": [
+        "path",
+        "file",
+        "reason",
+        "note"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string"
+        },
+        "reason": {
+          "enum": [
+            "reader-unavailable",
+            "unprofiled",
+            "unparsed"
+          ],
+          "description": "Why the recogniser could not finish: the optional reader for the format is absent, the content could not be profiled, or the document would not parse."
+        },
+        "note": {
+          "type": "string"
+        },
+        "filename_convention": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },

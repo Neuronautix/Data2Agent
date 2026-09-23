@@ -98,13 +98,34 @@ def _render(manifest: dict[str, Any], ledger: EvidenceLedger, provenance: dict[s
         lines.append("")
 
     metadata_files = manifest.get("metadata_files", [])
+    metadata_candidates = manifest.get("metadata_candidates", [])
     lines += ["## Metadata files", ""]
     if metadata_files:
         for item in metadata_files:
-            lines.append(f"- `{item['path']}` — {item['convention']} ({item['note']})")
+            recognised_by = item.get("recognised_by", "filename_convention")
+            how = (
+                "recognised by filename convention"
+                if recognised_by == "filename_convention"
+                else "recognised by content; no filename convention matched"
+            )
+            lines.append(f"- `{item['path']}` — {item['convention']} ({how}): {item['note']}")
     else:
-        lines.append("- None recognised by filename convention.")
+        lines.append(
+            "- None recognised, by filename convention or by content structure. "
+            "That is 'none found', not 'none present'."
+        )
     lines.append("")
+    if metadata_candidates:
+        lines += [
+            "### Not examined",
+            "",
+            "Files a metadata recogniser applied to and could not finish reading. "
+            "Whether they carry metadata is undetermined.",
+            "",
+        ]
+        for item in metadata_candidates:
+            lines.append(f"- `{item['path']}` — {item['reason']}: {item['note']}")
+        lines.append("")
 
     tables = manifest.get("tables", {})
     if tables:
