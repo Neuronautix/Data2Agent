@@ -52,3 +52,13 @@ venv/
 !examples/**/*.xls
 !examples/**/*.xlsx
 !examples/**/*.xlsm
+
+# Ad-hoc ingest output written into the repo root during development. The rules
+# above stop a real workbook from being committed, but not a manifest DERIVED
+# from one: .xp14b/manifest.json is JSON, and since D2A-47 it carries the XP14
+# dataset_id, the investigator-named directories and profiled cell values. The
+# derivative is as sensitive as the source, so it is ignored by the same policy.
+# New ingest output belongs outside the repo; these two are grandfathered.
+/.ex1/
+/.xp14b/
+/.d2a-out-*/
