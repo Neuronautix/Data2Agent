@@ -237,9 +237,7 @@ def _cmd_relationships(args: argparse.Namespace) -> int:
     print(f"relationships : {bundle['relationship_count']}")
     print(
         "statuses      : "
-        + ", ".join(
-            f"{count} {status}" for status, count in bundle["status_counts"].items()
-        )
+        + ", ".join(f"{count} {status}" for status, count in bundle["status_counts"].items())
     )
     print(f"written       : {destination}")
     return 0
