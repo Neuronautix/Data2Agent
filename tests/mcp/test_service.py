@@ -175,6 +175,23 @@ def test_content_is_withheld_when_the_source_drifts(dataset_copy: Path, tmp_path
     assert verification["mismatched"][0]["path"] == "animals.csv"
 
 
+def test_read_rows_withholds_observations_when_the_backing_file_drifts(
+    dataset_copy: Path, tmp_path: Path
+):
+    result = ingest(dataset_copy, tmp_path / "out")
+    service = DatasetService(result.output_dir)
+
+    assert service.read_rows("animals.csv", limit=1)["returned"] == 1
+
+    (dataset_copy / "animals.csv").write_text("animal_id\nA001\n", encoding="utf-8")
+    payload = service.read_rows("animals.csv", limit=1)
+
+    assert payload["integrity"]["matches"] is False
+    assert payload["rows"] == []
+    assert payload["returned"] == 0
+    assert "re-ingest" in payload["content_withheld"]
+
+
 def test_paths_cannot_escape_the_dataset_root(service):
     with pytest.raises(KeyError):
         service.inspect_file("../../etc/passwd")
