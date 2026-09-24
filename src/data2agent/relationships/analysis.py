@@ -130,9 +130,7 @@ def assess_relationship(
     record: dict[str, Any] = {
         "id": relationship_id,
         "status": final_status,
-        "left": _endpoint(
-            left_table, left_keys, left_context, left, matched_distinct=len(overlap)
-        ),
+        "left": _endpoint(left_table, left_keys, left_context, left, matched_distinct=len(overlap)),
         "right": _endpoint(
             right_table, right_keys, right_context, right, matched_distinct=len(overlap)
         ),
