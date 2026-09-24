@@ -1023,6 +1023,8 @@ class DatasetService:
             return json.dumps(self.ledger.as_dict(), indent=2, ensure_ascii=False)
         if uri == "dataset://metadata":
             return json.dumps(self.get_metadata(), indent=2, ensure_ascii=False)
+        if uri == "dataset://relationships":
+            return json.dumps(self.list_relationships(), indent=2, ensure_ascii=False)
         if uri.startswith("dataset://files/"):
             return json.dumps(
                 self.inspect_file(uri[len("dataset://files/") :]), indent=2, ensure_ascii=False
