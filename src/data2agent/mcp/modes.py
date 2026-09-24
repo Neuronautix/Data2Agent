@@ -31,6 +31,8 @@ _CORE_TOOLS = (
     "list_files",
     "inspect_file",
     "inspect_table",
+    "list_tables",
+    "read_rows",
     "get_metadata",
     "get_evidence",
     "get_provenance",
