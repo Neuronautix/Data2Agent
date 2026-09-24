@@ -210,6 +210,36 @@ def test_a_worksheet_is_reachable_through_inspect_table(tmp_path: Path):
         service.inspect_table("a.xlsx")
 
 
+def test_a_worksheet_is_reachable_through_read_rows(tmp_path: Path):
+    """Row access returns observations plus the real worksheet row locator."""
+    from data2agent.mcp.service import DatasetService
+
+    source = tmp_path / "ds"
+    source.mkdir()
+    _write(
+        source / "animals.xlsx",
+        [["id", "sex", "weight_g"], [1, None, 20], [2, "NA", 21]],
+        lead_blank=2,
+    )
+
+    out = tmp_path / "out"
+    ingest(source, out)
+    service = DatasetService(out, mode="structured")
+
+    payload = service.read_rows(
+        "animals.xlsx#Sheet1",
+        columns=["id", "sex", "weight_g"],
+        limit=2,
+    )
+
+    assert payload["returned"] == 2
+    assert payload["rows"][0]["source_row"] == 4
+    assert payload["rows"][0]["values"] == {"id": 1, "sex": None, "weight_g": 20}
+    assert payload["rows"][0]["missing"]["sex"]["kind"] == "empty"
+    assert payload["rows"][1]["values"]["sex"] is None
+    assert payload["rows"][1]["missing"]["sex"] == {"kind": "sentinel", "raw": "NA"}
+
+
 def test_a_workbook_manifest_validates_against_the_published_schema(tmp_path: Path):
     """Every manifest holding a worksheet failed the schema before this."""
     import json
