@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .. import query
+from .. import query, relationships
 from ..errors import ModeError, OutputError
 from ..evidence import EvidenceLedger
 from ..ingest.checksum import hash_file
@@ -65,6 +65,7 @@ class DatasetService:
         *,
         source_dir: Path | None = None,
         mode: str = DEFAULT_MODE,
+        load_relationships: bool = True,
     ) -> None:
         self.output_dir = Path(output_dir).expanduser().resolve()
         self.mode: Mode = resolve_mode(mode)
@@ -74,6 +75,13 @@ class DatasetService:
         evidence = _load_json(self.output_dir / EVIDENCE_FILENAME)
         _require_one_dataset(self.manifest, self.provenance, evidence)
         self.ledger = EvidenceLedger.from_dict(evidence)
+        self.relationship_bundle = (
+            _load_relationship_bundle(
+                self.output_dir / relationships.RELATIONSHIPS_FILENAME, self.dataset_id
+            )
+            if load_relationships
+            else None
+        )
 
         recorded_source = self.provenance.get("source_path")
         candidate = (
@@ -137,10 +145,21 @@ class DatasetService:
             "metadata_files": self.manifest.get("metadata_files", []),
             "metadata_candidates": self.manifest.get("metadata_candidates", []),
             "identifier_count": len(self.manifest.get("identifiers", [])),
-            # Empty means "this version does not determine relationships", not
-            # "this dataset has none". The distinction matters for FAIR scoring.
-            "relationships": self.manifest.get("relationships", []),
-            "relationships_determined": False,
+            # Relationship resolution is a derived layer, not part of ingest.
+            # Without relationships.json, empty means "not determined".
+            "relationships": (
+                self.relationship_bundle.get("relationships", [])
+                if self.relationship_bundle
+                else []
+            ),
+            "relationships_determined": bool(
+                self.relationship_bundle and self.relationship_bundle.get("determined")
+            ),
+            "relationship_status_counts": (
+                self.relationship_bundle.get("status_counts", {})
+                if self.relationship_bundle
+                else {}
+            ),
             "warnings": self.manifest.get("warnings", []),
             "skipped": self.manifest.get("skipped", []),
             "mode": self.mode.name,
