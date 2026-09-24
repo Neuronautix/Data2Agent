@@ -53,6 +53,9 @@ async def test_structured_mode_registers_the_deterministic_surface(server):
         "aggregate",
         "describe_variable",
         "join_tables",
+        "list_relationships",
+        "get_relationship",
+        "join_relationship",
         "get_metadata",
         "get_evidence",
         "get_provenance",
@@ -160,6 +163,14 @@ async def test_calling_aggregate_over_mcp_returns_group_statistics(server):
 
 
 @pytest.mark.anyio
+async def test_relationships_are_explicitly_undetermined_over_mcp(server):
+    result = await server.call_tool("list_relationships", {})
+    payload = json.loads(_text_of(result))
+    assert payload["determined"] is False
+    assert payload["relationships"] == []
+
+
+@pytest.mark.anyio
 async def test_resources_are_listed_and_readable(server):
     uris = {str(resource.uri) for resource in await server.list_resources()}
     assert {"dataset://manifest", "dataset://evidence", "dataset://provenance"} <= uris
@@ -188,4 +199,5 @@ async def test_structured_mode_registers_the_structured_resources(server):
         "dataset://provenance",
         "dataset://evidence",
         "dataset://metadata",
+        "dataset://relationships",
     } <= uris
