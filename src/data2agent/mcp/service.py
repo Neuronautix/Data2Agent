@@ -17,12 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import query
 from ..errors import ModeError, OutputError
 from ..evidence import EvidenceLedger
 from ..ingest.checksum import hash_file
 from ..ingest.conventions import MissingValueConvention
 from ..ingest.pipeline import EVIDENCE_FILENAME, MANIFEST_FILENAME, PROVENANCE_FILENAME
-from .. import query
 from ..readers.rows import read_delimited_rows, read_workbook_rows
 from .modes import ALL_RESOURCES, DEFAULT_MODE, Mode, resolve_mode
 
