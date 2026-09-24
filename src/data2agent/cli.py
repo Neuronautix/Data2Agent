@@ -3,6 +3,7 @@
 data2agent ingest  <dataset> -o <output>   deterministic scan -> manifest/evidence
 data2agent verify  <output>                re-checksum the source against the manifest
 data2agent serve   <output> --mode <mode>  run the Data2MCP server over stdio
+data2agent relationships <output>          resolve cross-table relationships
 data2agent modes                           list benchmark modes and their status
 """
 
@@ -33,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     except Data2AgentError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    except (KeyError, FileNotFoundError) as error:
+    except (KeyError, FileNotFoundError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
