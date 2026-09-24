@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuronautix.github.io/Data2Agent/schemas/relationships.schema.json",
+  "title": "Data2Agent relationship bundle",
+  "type": "object",
+  "required": [
+    "relationships_version",
+    "dataset_id",
+    "determined",
+    "relationship_count",
+    "status_counts",
+    "relationships",
+    "skipped"
+  ],
+  "properties": {
+    "relationships_version": {
+      "type": "string"
+    },
+    "dataset_id": {
+      "type": "string"
+    },
+    "determined": {
+      "const": true
+    },
+    "relationship_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status_counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "declaration_source": {
+      "type": "object"
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relationship"
+      }
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "$defs": {
+    "endpoint": {
+      "type": "object",
+      "required": [
+        "table",
+        "keys",
+        "backing_file",
+        "backing_sha256",
+        "rows",
+        "complete_key_rows",
+        "incomplete_key_rows",
+        "distinct_keys",
+        "unique",
+        "matched_distinct_keys",
+        "distinct_key_coverage"
+      ],
+      "properties": {
+        "table": {
+          "type": "string"
+        },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "backing_file": {
+          "type": "string"
+        },
+        "backing_sha256": {
+          "type": "string"
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "complete_key_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "incomplete_key_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "distinct_keys": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unique": {
+          "type": "boolean"
+        },
+        "matched_distinct_keys": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "distinct_key_coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "required": [
+        "id",
+        "status",
+        "left",
+        "right",
+        "cardinality",
+        "matched_distinct_keys",
+        "joined_row_count",
+        "basis",
+        "evidence",
+        "warnings"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^rel_[0-9a-f]{20}$"
+        },
+        "status": {
+          "enum": [
+            "declared",
+            "deterministic",
+            "candidate",
+            "rejected"
+          ]
+        },
+        "left": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "right": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "cardinality": {
+          "enum": [
+            "one_to_one",
+            "one_to_many",
+            "many_to_one",
+            "many_to_many"
+          ]
+        },
+        "expected_cardinality": {
+          "enum": [
+            "one_to_one",
+            "one_to_many",
+            "many_to_one",
+            "many_to_many"
+          ]
+        },
+        "matched_distinct_keys": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "joined_row_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "basis": {
+          "type": "object"
+        },
+        "evidence": {
+          "type": "object",
+          "required": [
+            "kind",
+            "examples"
+          ],
+          "properties": {
+            "kind": {
+              "const": "observed-key-overlap"
+            },
+            "examples": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "key",
+                  "left_source_rows",
+                  "right_source_rows"
+                ],
+                "properties": {
+                  "key": {
+                    "type": "array"
+                  },
+                  "left_source_rows": {
+                    "type": "array",
+                    "items": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  },
+                  "right_source_rows": {
+                    "type": "array",
+                    "items": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rejection_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
