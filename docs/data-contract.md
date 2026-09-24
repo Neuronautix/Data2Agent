@@ -72,6 +72,7 @@ Properties, all covered by `tests/ingestion/test_determinism.py`:
 ├── manifest.json     what the dataset IS        (deterministic, no timestamps)
 ├── provenance.json   what this RUN was          (timestamps, host, tool version)
 ├── evidence.json     claim → evidence → bytes   (deterministic)
+├── relationships.json  optional derived cross-table relationships
 ├── mcp/
 │   ├── server.json   host-agnostic server definition
 │   └── USAGE.md      how to connect it from any MCP host
@@ -80,7 +81,11 @@ Properties, all covered by `tests/ingestion/test_determinism.py`:
 ```
 
 Schemas: `schemas/dataset-manifest.schema.json`, `schemas/evidence.schema.json`,
-and `schemas/assessment.schema.json` (declared in v0.1, produced from v0.2).
+`schemas/relationships.schema.json`, and `schemas/assessment.schema.json`.
+
+`relationships.json` is not produced by ingest. It appears only after
+`data2agent relationships <output>`, keeping relationship assessment separate
+from the byte-stable ingest contract.
 
 ## Manifest field semantics
 
@@ -155,6 +160,36 @@ The rule is deliberately narrow, because five FAIR indicators cascade from
 once. Metadata in a shape neither rule covers — a PowerPoint deck, a lab
 notebook, a descriptor that declares no standard — is not counted. That is a
 false negative, and it is the direction this contract chooses to be wrong in.
+
+## Relationship artifact semantics
+
+The manifest continues to carry `relationships: []` as **not determined by
+ingest**. Relationship resolution is an explicit derived step.
+
+Without `relationships.json`, the service reports
+`relationships_determined: false`. After resolution it overlays the derived
+bundle in `dataset_inventory()` without rewriting the manifest.
+
+Relationship status is epistemic, not a confidence score:
+
+| Status | Meaning |
+| --- | --- |
+| `candidate` | structural overlap observed; author intent is not established |
+| `declared` | explicitly supplied in a declaration configuration and consistent with the observed key facts |
+| `deterministic` | reserved for a supported metadata/convention rule that establishes the link without model inference |
+| `rejected` | an explicit declaration conflicts with observed overlap/cardinality |
+
+Every record contains table/key endpoints, backing checksums, complete and
+incomplete key-row counts, uniqueness, observed cardinality, overlap coverage,
+and bounded source-row examples. Composite keys are arrays and are never
+collapsed into concatenated strings.
+
+A declaration can state `expected_cardinality`; disagreement makes the record
+`rejected`. Candidate and rejected records cannot drive
+`join_relationship()`.
+
+Saved relationship assertions are withheld if their backing source files no
+longer match the manifest checksums.
 
 ## Missingness, precisely
 
