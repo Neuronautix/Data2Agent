@@ -1190,8 +1190,7 @@ class DatasetService:
         ]
         if drifted:
             raise OutputError(
-                "cannot assess relationships against drifted source bytes: "
-                + ", ".join(drifted)
+                "cannot assess relationships against drifted source bytes: " + ", ".join(drifted)
             )
         return relationships.assess_relationship(
             dataset_id=self.dataset_id,
