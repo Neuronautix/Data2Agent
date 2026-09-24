@@ -105,6 +105,67 @@ def test_assess_can_list_the_rules_without_running_them(
     assert not (output / "assessment.json").exists()
 
 
+def test_relationships_command_writes_candidate_bundle(
+    example_dataset: Path, tmp_path: Path, capsys
+):
+    output = tmp_path / "agent"
+    assert main(["ingest", str(example_dataset), "-o", str(output)]) == 0
+    capsys.readouterr()
+
+    assert main(["relationships", str(output)]) == 0
+    printed = capsys.readouterr().out
+
+    bundle = json.loads((output / "relationships.json").read_text(encoding="utf-8"))
+    assert bundle["determined"] is True
+    assert bundle["status_counts"] == {"candidate": 1}
+    assert bundle["relationships"][0]["status"] == "candidate"
+    assert "relationships : 1" in printed
+
+
+def test_relationships_command_accepts_explicit_declarations(
+    example_dataset: Path, tmp_path: Path, capsys
+):
+    output = tmp_path / "agent"
+    assert main(["ingest", str(example_dataset), "-o", str(output)]) == 0
+    capsys.readouterr()
+
+    declarations = tmp_path / "relationships.json"
+    declarations.write_text(
+        json.dumps(
+            [
+                {
+                    "left": "animals.csv",
+                    "right": "observations.csv",
+                    "left_keys": ["animal_id"],
+                    "right_keys": ["animal_id"],
+                    "expected_cardinality": "one_to_many",
+                    "note": "registry to repeated observations",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "relationships",
+                str(output),
+                "--declarations",
+                str(declarations),
+            ]
+        )
+        == 0
+    )
+
+    bundle = json.loads((output / "relationships.json").read_text(encoding="utf-8"))
+    assert bundle["status_counts"] == {"declared": 1}
+    relation = bundle["relationships"][0]
+    assert relation["status"] == "declared"
+    assert relation["basis"]["declaration_source"]["sha256"]
+    assert relation["cardinality"] == "one_to_many"
+
+
 def test_strict_missing_resolves_no_tokens(example_dataset: Path, tmp_path: Path, capsys):
     output = tmp_path / "agent"
     assert main(["ingest", str(example_dataset), "-o", str(output), "--strict-missing"]) == 0
