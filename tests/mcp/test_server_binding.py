@@ -49,6 +49,10 @@ async def test_structured_mode_registers_the_deterministic_surface(server):
         "inspect_table",
         "list_tables",
         "read_rows",
+        "filter_rows",
+        "aggregate",
+        "describe_variable",
+        "join_tables",
         "get_metadata",
         "get_evidence",
         "get_provenance",
@@ -117,6 +121,42 @@ async def test_calling_read_rows_over_mcp_returns_observations(server):
     assert payload["returned"] == 2
     assert payload["rows"][0]["source_row"] == 2
     assert isinstance(payload["rows"][0]["values"]["weight_g"], int)
+
+
+@pytest.mark.anyio
+async def test_calling_filter_rows_over_mcp_selects_a_group(server):
+    result = await server.call_tool(
+        "filter_rows",
+        {
+            "path": "animals.csv",
+            "filters": [{"column": "genotype", "op": "eq", "value": "KO"}],
+            "columns": ["animal_id", "genotype"],
+            "limit": 2,
+        },
+    )
+    payload = json.loads(_text_of(result))
+    assert payload["returned"] == 2
+    assert payload["matches_in_scanned_rows"] == 24
+    assert all(row["values"]["genotype"] == "KO" for row in payload["rows"])
+
+
+@pytest.mark.anyio
+async def test_calling_aggregate_over_mcp_returns_group_statistics(server):
+    result = await server.call_tool(
+        "aggregate",
+        {
+            "path": "animals.csv",
+            "group_by": ["genotype"],
+            "metrics": [
+                {"op": "count", "name": "n"},
+                {"op": "mean", "column": "weight_g", "name": "mean_weight_g"},
+            ],
+        },
+    )
+    payload = json.loads(_text_of(result))
+    groups = {item["group"]["genotype"]: item["metrics"] for item in payload["groups"]}
+    assert groups["KO"]["n"] == 24
+    assert groups["WT"]["n"] == 24
 
 
 @pytest.mark.anyio

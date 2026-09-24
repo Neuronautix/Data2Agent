@@ -202,6 +202,10 @@ generating bespoke tools per dataset and inheriting the generator's variance.
 | `inspect_table(path)` | rows, columns, observed shapes, missingness |
 | `list_tables()` | profiled delimited tables and workbook worksheets |
 | `read_rows(path, columns, offset, limit)` | bounded source observations with row locators and integrity proof |
+| `filter_rows(path, filters, columns, limit)` | bounded deterministic selection with a closed operator registry |
+| `aggregate(path, metrics, group_by, filters)` | complete-scan count/missing/sum/mean/min/max summaries |
+| `describe_variable(path, column)` | profile + deterministic observed summary for one column |
+| `join_tables(left, right, left_keys, right_keys, ...)` | explicit-key join with cardinality diagnostics |
 | `get_metadata(path)` | recognised metadata files, served verbatim |
 | `get_evidence(...)` | what supports a claim |
 | `get_provenance()` | when, how long, with what version this was ingested |

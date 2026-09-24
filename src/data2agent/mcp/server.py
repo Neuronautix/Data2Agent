@@ -141,6 +141,63 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         """
         return service.read_rows(path, columns=columns, offset=offset, limit=limit)
 
+    def filter_rows(
+        path: str,
+        filters: list[dict[str, Any]],
+        columns: list[str] | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Filter observations with a closed operator registry.
+
+        Supported operators are deterministic data comparisons only; no Python,
+        SQL, regex execution, or free-form expression language is accepted.
+        """
+        return service.filter_rows(path, filters=filters, columns=columns, limit=limit)
+
+    def aggregate(
+        path: str,
+        metrics: list[dict[str, Any]],
+        group_by: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Compute bounded deterministic summaries over a complete table scan.
+
+        Metrics are restricted to count, n_missing, sum, mean, min and max.
+        The call refuses a table above the complete-scan safety cap rather than
+        returning a partial statistic that looks complete.
+        """
+        return service.aggregate(path, group_by=group_by, metrics=metrics, filters=filters)
+
+    def describe_variable(path: str, column: str) -> dict[str, Any]:
+        """Describe one observed column without assigning scientific meaning to it."""
+        return service.describe_variable(path, column)
+
+    def join_tables(
+        left: str,
+        right: str,
+        left_keys: list[str],
+        right_keys: list[str],
+        left_columns: list[str] | None = None,
+        right_columns: list[str] | None = None,
+        how: str = "inner",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Join tables only on keys explicitly supplied by the caller.
+
+        Key uniqueness and cardinality are diagnosed and returned. No
+        relationship is inferred or promoted by this operation.
+        """
+        return service.join_tables(
+            left,
+            right,
+            left_keys=left_keys,
+            right_keys=right_keys,
+            left_columns=left_columns,
+            right_columns=right_columns,
+            how=how,
+            limit=limit,
+        )
+
     def get_metadata(path: str | None = None) -> dict[str, Any]:
         """List recognised metadata files, or return one of them verbatim."""
         return service.get_metadata(path)
@@ -214,6 +271,10 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         "inspect_table": inspect_table,
         "list_tables": list_tables,
         "read_rows": read_rows,
+        "filter_rows": filter_rows,
+        "aggregate": aggregate,
+        "describe_variable": describe_variable,
+        "join_tables": join_tables,
         "get_metadata": get_metadata,
         "get_evidence": get_evidence,
         "resolve_identifier": resolve_identifier,

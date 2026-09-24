@@ -81,6 +81,98 @@ def test_read_rows_is_bounded(service):
     assert payload["returned"] == 48
 
 
+def test_filter_rows_selects_a_group_and_reports_total_matches(service):
+    payload = service.filter_rows(
+        "animals.csv",
+        filters=[{"column": "genotype", "op": "eq", "value": "KO"}],
+        columns=["animal_id", "genotype", "weight_g"],
+        limit=3,
+    )
+
+    assert payload["returned"] == 3
+    assert payload["matches_in_scanned_rows"] == 24
+    assert payload["truncated"] is True
+    assert all(row["values"]["genotype"] == "KO" for row in payload["rows"])
+    assert payload["operation"]["filters"][0]["column"] == "genotype"
+    assert payload["input"]["backing_sha256"]
+
+
+def test_aggregate_computes_group_counts_and_numeric_means(service):
+    payload = service.aggregate(
+        "animals.csv",
+        group_by=["genotype"],
+        metrics=[
+            {"op": "count", "name": "n"},
+            {"op": "mean", "column": "weight_g", "name": "mean_weight_g"},
+        ],
+    )
+
+    groups = {item["group"]["genotype"]: item["metrics"] for item in payload["groups"]}
+    assert groups["KO"]["n"] == 24
+    assert groups["WT"]["n"] == 24
+    assert groups["KO"]["mean_weight_g"] == pytest.approx(24.0)
+    assert groups["WT"]["mean_weight_g"] == pytest.approx(24.041666666666668)
+    assert payload["rows_included"] == 48
+    assert payload["input"]["scan_complete"] is True
+
+
+def test_aggregate_can_filter_before_grouping(service):
+    payload = service.aggregate(
+        "observations.csv",
+        group_by=["session"],
+        filters=[{"column": "animal_id", "op": "in", "value": ["A001", "A002"]}],
+        metrics=[
+            {"op": "count", "name": "n"},
+            {"op": "mean", "column": "latency_s", "name": "mean_latency"},
+        ],
+    )
+
+    assert [item["group"]["session"] for item in payload["groups"]] == [1, 2, 3]
+    assert all(item["metrics"]["n"] == 2 for item in payload["groups"])
+    assert payload["rows_included"] == 6
+
+
+def test_describe_variable_reports_observed_numeric_summary(service):
+    payload = service.describe_variable("animals.csv", "weight_g")
+
+    assert payload["profile"]["dtype"] == "integer"
+    assert payload["summary"]["count"] == 48
+    assert payload["summary"]["n_missing"] == 0
+    assert payload["summary"]["min"] == 18
+    assert payload["summary"]["max"] == 30
+    assert payload["summary"]["mean"] == pytest.approx(24.020833333333332)
+
+
+def test_join_tables_uses_explicit_keys_and_reports_cardinality(service):
+    payload = service.join_tables(
+        "animals.csv",
+        "observations.csv",
+        left_keys=["animal_id"],
+        right_keys=["animal_id"],
+        left_columns=["animal_id", "genotype"],
+        right_columns=["observation_id", "animal_id", "session"],
+        limit=5,
+    )
+
+    assert payload["diagnostics"]["cardinality"] == "one_to_many"
+    assert payload["diagnostics"]["left_duplicate_keys"] == 0
+    assert payload["diagnostics"]["right_duplicate_keys"] == 48
+    assert payload["total_result_rows"] == 144
+    assert payload["returned"] == 5
+    assert payload["truncated"] is True
+    assert payload["rows"][0]["left"]["animal_id"] == "A001"
+    assert payload["rows"][0]["right"]["observation_id"] == "OBS0001"
+    assert payload["rows"][0]["source_rows"] == {"left": 2, "right": 2}
+
+
+def test_aggregate_rejects_numeric_metrics_on_string_columns(service):
+    with pytest.raises(ValueError, match="requires a numeric column"):
+        service.aggregate(
+            "animals.csv",
+            metrics=[{"op": "mean", "column": "genotype"}],
+        )
+
+
 def test_inspect_table_refuses_a_non_table(service):
     with pytest.raises(KeyError, match="not profiled as a table"):
         service.inspect_table("README.md")
