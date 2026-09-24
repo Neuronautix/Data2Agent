@@ -22,6 +22,12 @@ from ..evidence import EvidenceLedger
 from ..ingest.checksum import hash_file
 from ..ingest.conventions import MissingValueConvention
 from ..ingest.pipeline import EVIDENCE_FILENAME, MANIFEST_FILENAME, PROVENANCE_FILENAME
+from ..query import (
+    aggregate_rows as query_aggregate_rows,
+    describe_column as query_describe_column,
+    filter_rows as query_filter_rows,
+    join_rows as query_join_rows,
+)
 from ..readers.rows import read_delimited_rows, read_workbook_rows
 from .modes import ALL_RESOURCES, DEFAULT_MODE, Mode, resolve_mode
 
@@ -30,6 +36,9 @@ _DEFAULT_PREVIEW_BYTES = 4096
 _MAX_PREVIEW_BYTES = 262_144
 _DEFAULT_READ_ROWS = 100
 _MAX_READ_ROWS = 1000
+_MAX_FILTER_SCAN_ROWS = 100_000
+_MAX_COMPLETE_QUERY_ROWS = 100_000
+_MAX_JOIN_SCAN_ROWS = 50_000
 
 
 @dataclass
@@ -363,6 +372,223 @@ class DatasetService:
         )
         return payload
 
+    def filter_rows(
+        self,
+        path: str,
+        *,
+        filters: list[dict[str, Any]],
+        columns: list[str] | None = None,
+        limit: int = _DEFAULT_READ_ROWS,
+    ) -> dict[str, Any]:
+        """Filter observations through a closed deterministic operator registry."""
+        requested_limit = _bounded_result_limit(limit)
+        profile = self._table_profile(path)
+        available = [column["name"] for column in profile.get("columns", [])]
+        output_columns = available if columns is None else list(columns)
+        filter_columns = [
+            rule.get("column") for rule in filters if isinstance(rule.get("column"), str)
+        ]
+        needed = _ordered_union(output_columns, filter_columns)
+        _require_known_columns(path, available, needed)
+
+        context, rows = self._scan_table(
+            path, columns=needed, max_rows=_MAX_FILTER_SCAN_ROWS, require_complete=False
+        )
+        payload: dict[str, Any] = {
+            "dataset_id": self.dataset_id,
+            "operation": {
+                "type": "filter_rows",
+                "table": path,
+                "filters": filters,
+                "columns": output_columns,
+                "limit": requested_limit,
+            },
+            "input": context,
+            "scanned_rows": len(rows),
+            "scan_complete": context["scan_complete"],
+        }
+        if not context["integrity"]["matches"]:
+            payload.update(
+                {
+                    "rows": [],
+                    "returned": 0,
+                    "matches_in_scanned_rows": 0,
+                    "content_withheld": context["content_withheld"],
+                }
+            )
+            return payload
+
+        matched, total_matches = query_filter_rows(rows, filters, limit=requested_limit)
+        projected = [_project_row(row, output_columns) for row in matched]
+        payload.update(
+            {
+                "rows": projected,
+                "returned": len(projected),
+                "matches_in_scanned_rows": total_matches,
+                "truncated": total_matches > len(projected) or not context["scan_complete"],
+            }
+        )
+        return payload
+
+    def aggregate(
+        self,
+        path: str,
+        *,
+        group_by: list[str] | None = None,
+        metrics: list[dict[str, Any]],
+        filters: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Compute deterministic group summaries from a complete bounded table scan."""
+        groups = list(group_by or [])
+        rules = list(filters or [])
+        profile = self._table_profile(path)
+        available = [column["name"] for column in profile.get("columns", [])]
+        dtypes = {column["name"]: column.get("dtype", "string") for column in profile["columns"]}
+        metric_columns = [
+            metric.get("column")
+            for metric in metrics
+            if isinstance(metric.get("column"), str)
+        ]
+        filter_columns = [
+            rule.get("column") for rule in rules if isinstance(rule.get("column"), str)
+        ]
+        needed = _ordered_union(groups, metric_columns, filter_columns)
+        _require_known_columns(path, available, needed)
+
+        context, rows = self._scan_table(
+            path,
+            columns=needed,
+            max_rows=_MAX_COMPLETE_QUERY_ROWS,
+            require_complete=True,
+        )
+        payload: dict[str, Any] = {
+            "dataset_id": self.dataset_id,
+            "operation": {
+                "type": "aggregate",
+                "table": path,
+                "group_by": groups,
+                "metrics": metrics,
+                "filters": rules,
+            },
+            "input": context,
+            "scanned_rows": len(rows),
+        }
+        if not context["integrity"]["matches"]:
+            payload.update({"groups": [], "content_withheld": context["content_withheld"]})
+            return payload
+
+        selected = rows
+        if rules:
+            selected, _ = query_filter_rows(rows, rules, limit=len(rows))
+        result = query_aggregate_rows(selected, group_by=groups, metrics=metrics, dtypes=dtypes)
+        payload.update({"rows_included": len(selected), "groups": result})
+        return payload
+
+    def describe_variable(self, path: str, column: str) -> dict[str, Any]:
+        """Describe one observed column without assigning scientific meaning to it."""
+        profile = self._table_profile(path)
+        columns = {item["name"]: item for item in profile.get("columns", [])}
+        if column not in columns:
+            raise KeyError(
+                f"unknown column {column!r} for '{path}'; available columns: {list(columns)}"
+            )
+
+        context, rows = self._scan_table(
+            path,
+            columns=[column],
+            max_rows=_MAX_COMPLETE_QUERY_ROWS,
+            require_complete=True,
+        )
+        payload: dict[str, Any] = {
+            "dataset_id": self.dataset_id,
+            "operation": {"type": "describe_variable", "table": path, "column": column},
+            "input": context,
+            "profile": columns[column],
+        }
+        if not context["integrity"]["matches"]:
+            payload.update({"summary": None, "content_withheld": context["content_withheld"]})
+            return payload
+
+        payload["summary"] = query_describe_column(
+            rows, column=column, dtype=str(columns[column].get("dtype") or "string")
+        )
+        return payload
+
+    def join_tables(
+        self,
+        left: str,
+        right: str,
+        *,
+        left_keys: list[str],
+        right_keys: list[str],
+        left_columns: list[str] | None = None,
+        right_columns: list[str] | None = None,
+        how: str = "inner",
+        limit: int = _DEFAULT_READ_ROWS,
+    ) -> dict[str, Any]:
+        """Join two tables on caller-declared keys; no relationship is inferred."""
+        requested_limit = _bounded_result_limit(limit)
+        left_profile = self._table_profile(left)
+        right_profile = self._table_profile(right)
+        left_available = [column["name"] for column in left_profile.get("columns", [])]
+        right_available = [column["name"] for column in right_profile.get("columns", [])]
+        left_output = left_available if left_columns is None else list(left_columns)
+        right_output = right_available if right_columns is None else list(right_columns)
+        left_needed = _ordered_union(left_output, left_keys)
+        right_needed = _ordered_union(right_output, right_keys)
+        _require_known_columns(left, left_available, left_needed)
+        _require_known_columns(right, right_available, right_needed)
+
+        left_context, left_rows = self._scan_table(
+            left, columns=left_needed, max_rows=_MAX_JOIN_SCAN_ROWS, require_complete=True
+        )
+        right_context, right_rows = self._scan_table(
+            right, columns=right_needed, max_rows=_MAX_JOIN_SCAN_ROWS, require_complete=True
+        )
+        payload: dict[str, Any] = {
+            "dataset_id": self.dataset_id,
+            "operation": {
+                "type": "join_tables",
+                "left": left,
+                "right": right,
+                "left_keys": left_keys,
+                "right_keys": right_keys,
+                "left_columns": left_output,
+                "right_columns": right_output,
+                "how": how,
+                "limit": requested_limit,
+            },
+            "inputs": {"left": left_context, "right": right_context},
+        }
+        drifted = [
+            side
+            for side, context in (("left", left_context), ("right", right_context))
+            if not context["integrity"]["matches"]
+        ]
+        if drifted:
+            payload.update(
+                {
+                    "rows": [],
+                    "returned": 0,
+                    "content_withheld": f"source drift detected on: {', '.join(drifted)}",
+                }
+            )
+            return payload
+
+        result = query_join_rows(
+            left_rows,
+            right_rows,
+            left_keys=left_keys,
+            right_keys=right_keys,
+            how=how,
+            limit=requested_limit,
+        )
+        result["rows"] = [
+            _project_joined_row(row, left_output, right_output) for row in result["rows"]
+        ]
+        payload.update(result)
+        return payload
+
     def get_metadata(self, path: str | None = None) -> dict[str, Any]:
         """Serve recognised metadata files verbatim.
 
@@ -644,6 +870,89 @@ class DatasetService:
 
     # -- internals ----------------------------------------------------------
 
+    def _table_profile(self, path: str) -> dict[str, Any]:
+        """Return one profiled table, preserving workbook-vs-sheet diagnostics."""
+        tables = self.manifest.get("tables", {})
+        profile = tables.get(path)
+        if not isinstance(profile, dict):
+            if "#" not in path and any(key.startswith(f"{path}#") for key in tables):
+                sheets = sorted(key for key in tables if key.startswith(f"{path}#"))
+                raise KeyError(
+                    f"'{path}' is a workbook holding {len(sheets)} sheet(s); use one of {sheets}"
+                )
+            raise KeyError(f"'{path}' was not profiled as a table")
+        if profile.get("profiled") is False:
+            raise KeyError(f"'{path}' exists but was not successfully profiled")
+        return profile
+
+    def _scan_table(
+        self,
+        path: str,
+        *,
+        columns: list[str],
+        max_rows: int,
+        require_complete: bool,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Read a bounded query scan after exactly one backing-file integrity check."""
+        profile = self._table_profile(path)
+        available = [column["name"] for column in profile.get("columns", [])]
+        _require_known_columns(path, available, columns)
+
+        backing = profile.get("workbook") or path
+        entry = self._require_entry(backing)
+        integrity = self.verify_file(backing)
+        total_rows = profile.get("rows")
+        if require_complete and isinstance(total_rows, int) and total_rows > max_rows:
+            raise ValueError(
+                f"query requires a complete scan of '{path}', but it has {total_rows} rows "
+                f"and the safety cap is {max_rows}"
+            )
+
+        context: dict[str, Any] = {
+            "table": path,
+            "backing_file": backing,
+            "backing_sha256": entry["sha256"],
+            "integrity": integrity.as_dict(),
+            "total_rows": total_rows,
+            "scan_limit": max_rows,
+            "scan_complete": isinstance(total_rows, int) and total_rows <= max_rows,
+        }
+        if not integrity.matches:
+            context["content_withheld"] = (
+                "the backing file no longer matches its manifest checksum; "
+                "re-ingest before relying on it"
+            )
+            return context, []
+
+        convention = _missing_convention(self.manifest.get("missing_value_convention", {}))
+        absolute = self._resolve(backing)
+        if profile.get("workbook"):
+            rows = read_workbook_rows(
+                absolute,
+                profile,
+                columns=columns,
+                offset=0,
+                limit=max_rows,
+                convention=convention,
+            )
+            context["row_locator"] = "1-based worksheet row"
+        else:
+            rows = read_delimited_rows(
+                absolute,
+                profile,
+                columns=columns,
+                offset=0,
+                limit=max_rows,
+                convention=convention,
+            )
+            context["row_locator"] = (
+                "1-based physical line on which the CSV/TSV logical record ends"
+            )
+
+        if not isinstance(total_rows, int):
+            context["scan_complete"] = len(rows) < max_rows
+        return context, rows
+
     def _require_entry(self, path: str) -> dict[str, Any]:
         entry = self._by_path.get(path)
         if entry is None:
@@ -688,6 +997,57 @@ def _require_one_dataset(
             "this output directory does not describe a single dataset: "
             f"{detail}. Re-run `data2agent ingest` into a clean directory."
         )
+
+
+def _bounded_result_limit(limit: int) -> int:
+    requested = int(limit)
+    if requested < 1:
+        raise ValueError("limit must be at least 1")
+    return min(requested, _MAX_READ_ROWS)
+
+
+def _ordered_union(*groups: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for group in groups:
+        for item in group:
+            if item not in seen:
+                seen.add(item)
+                result.append(item)
+    return result
+
+
+def _require_known_columns(path: str, available: list[str], selected: list[str]) -> None:
+    unknown = [name for name in selected if name not in available]
+    if unknown:
+        raise KeyError(
+            f"unknown column(s) for '{path}': {unknown}; available columns: {available}"
+        )
+
+
+def _project_row(row: dict[str, Any], columns: list[str]) -> dict[str, Any]:
+    return {
+        "source_row": row.get("source_row"),
+        "values": {name: row["values"].get(name) for name in columns},
+        "missing": {
+            name: detail for name, detail in row.get("missing", {}).items() if name in columns
+        },
+    }
+
+
+def _project_joined_row(
+    row: dict[str, Any], left_columns: list[str], right_columns: list[str]
+) -> dict[str, Any]:
+    right = row.get("right")
+    return {
+        "source_rows": row["source_rows"],
+        "left": {name: row["left"].get(name) for name in left_columns},
+        "right": (
+            {name: right.get(name) for name in right_columns}
+            if isinstance(right, dict)
+            else None
+        ),
+    }
 
 
 def _missing_convention(payload: dict[str, Any]) -> MissingValueConvention:
