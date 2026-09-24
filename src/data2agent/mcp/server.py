@@ -69,6 +69,10 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         """The metadata files recognised in this dataset."""
         return service.resource("dataset://metadata")
 
+    def relationship_resource() -> str:
+        """Resolved relationship bundle, or an explicit not-determined record."""
+        return service.resource("dataset://relationships")
+
     def file_resource(path: str) -> str:
         """One file's manifest record, integrity status and bounded preview."""
         return service.resource(f"dataset://files/{path}")
@@ -78,6 +82,7 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         "dataset://provenance": provenance,
         "dataset://evidence": evidence,
         "dataset://metadata": metadata,
+        "dataset://relationships": relationship_resource,
         "dataset://files/{path}": file_resource,
     }
     for uri in service.available_resources():
@@ -198,6 +203,38 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
             limit=limit,
         )
 
+    def list_relationships(status: str | None = None) -> dict[str, Any]:
+        """List saved cross-table relationships with epistemic status and evidence.
+
+        Candidate relationships are structural suggestions only. They are not
+        equivalent to declared or deterministic relationships.
+        """
+        return service.list_relationships(status)
+
+    def get_relationship(relationship_id: str) -> dict[str, Any]:
+        """Return one saved relationship record by stable identifier."""
+        return service.get_relationship(relationship_id)
+
+    def join_relationship(
+        relationship_id: str,
+        left_columns: list[str] | None = None,
+        right_columns: list[str] | None = None,
+        how: str = "inner",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Execute a saved declared/deterministic relationship as a join contract.
+
+        Candidate or rejected relationships are refused. This prevents a
+        plausible structural overlap from silently becoming a scientific fact.
+        """
+        return service.join_relationship(
+            relationship_id,
+            left_columns=left_columns,
+            right_columns=right_columns,
+            how=how,
+            limit=limit,
+        )
+
     def get_metadata(path: str | None = None) -> dict[str, Any]:
         """List recognised metadata files, or return one of them verbatim."""
         return service.get_metadata(path)
@@ -275,6 +312,9 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         "aggregate": aggregate,
         "describe_variable": describe_variable,
         "join_tables": join_tables,
+        "list_relationships": list_relationships,
+        "get_relationship": get_relationship,
+        "join_relationship": join_relationship,
         "get_metadata": get_metadata,
         "get_evidence": get_evidence,
         "resolve_identifier": resolve_identifier,
