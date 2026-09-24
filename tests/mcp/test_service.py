@@ -295,6 +295,39 @@ def test_cardinality_violation_rejects_declaration_and_named_join(ingested):
         service.join_relationship(relation["id"])
 
 
+def test_saved_relationship_assertions_are_withheld_after_source_drift(
+    dataset_copy: Path, tmp_path: Path
+):
+    result = ingest(dataset_copy, tmp_path / "out")
+    builder = DatasetService(result.output_dir, load_relationships=False)
+    bundle = builder.build_relationships(
+        [
+            {
+                "left": "animals.csv",
+                "right": "observations.csv",
+                "left_keys": ["animal_id"],
+                "right_keys": ["animal_id"],
+                "expected_cardinality": "one_to_many",
+            }
+        ]
+    )
+    (result.output_dir / "relationships.json").write_text(
+        json.dumps(bundle, indent=2) + "\n", encoding="utf-8"
+    )
+
+    service = DatasetService(result.output_dir)
+    assert service.list_relationships()["total"] == 1
+
+    (dataset_copy / "observations.csv").write_text(
+        "observation_id,animal_id\nOBS1,A001\n", encoding="utf-8"
+    )
+    listing = service.list_relationships()
+    assert listing["determined"] is True
+    assert listing["relationships"] == []
+    assert listing["source_integrity"]["matches"] is False
+    assert "regenerate relationships" in listing["content_withheld"]
+
+
 def test_stale_relationship_sidecar_is_refused(ingested):
     (ingested.output_dir / "relationships.json").write_text(
         json.dumps(
