@@ -118,6 +118,29 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         """
         return service.inspect_table(path)
 
+    def list_tables() -> dict[str, Any]:
+        """List every profiled delimited table and workbook worksheet.
+
+        This returns table identity and shape only. Use read_rows for the actual
+        observations.
+        """
+        return service.list_tables()
+
+    def read_rows(
+        path: str,
+        columns: list[str] | None = None,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Read a bounded slice of actual observations from a profiled table.
+
+        Values come from the immutable source bytes after checksum verification.
+        Missing sentinels are normalised under the same convention used at
+        ingest, with the original sentinel retained in the row's missing map.
+        No semantic interpretation or analysis is performed.
+        """
+        return service.read_rows(path, columns=columns, offset=offset, limit=limit)
+
     def get_metadata(path: str | None = None) -> dict[str, Any]:
         """List recognised metadata files, or return one of them verbatim."""
         return service.get_metadata(path)
@@ -189,6 +212,8 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         "list_files": list_files,
         "inspect_file": inspect_file,
         "inspect_table": inspect_table,
+        "list_tables": list_tables,
+        "read_rows": read_rows,
         "get_metadata": get_metadata,
         "get_evidence": get_evidence,
         "resolve_identifier": resolve_identifier,
