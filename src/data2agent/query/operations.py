@@ -290,8 +290,7 @@ def _validate_metrics(
 
         if op in {"sum", "mean", "min", "max"} and dtypes[column] not in {"integer", "number"}:
             raise ValueError(
-                f"metric {op!r} requires a numeric column; "
-                f"{column!r} has dtype {dtypes[column]!r}"
+                f"metric {op!r} requires a numeric column; {column!r} has dtype {dtypes[column]!r}"
             )
 
         default_name = op if column is None else f"{op}:{column}"
@@ -369,9 +368,7 @@ def _key_rows(
     return keyed, missing
 
 
-def _joined_row(
-    left: dict[str, Any], right: dict[str, Any] | None
-) -> dict[str, Any]:
+def _joined_row(left: dict[str, Any], right: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "source_rows": {
             "left": left.get("source_row"),
