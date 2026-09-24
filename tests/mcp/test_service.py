@@ -232,18 +232,11 @@ def test_composite_declared_relationship_is_representable(tmp_path: Path):
     source = tmp_path / "source"
     source.mkdir()
     (source / "subjects.csv").write_text(
-        "batch,local_id,group\n"
-        "1,A,control\n"
-        "1,B,test\n"
-        "2,A,test\n",
+        "batch,local_id,group\n1,A,control\n1,B,test\n2,A,test\n",
         encoding="utf-8",
     )
     (source / "sessions.csv").write_text(
-        "batch,local_id,session\n"
-        "1,A,1\n"
-        "1,A,2\n"
-        "1,B,1\n"
-        "2,A,1\n",
+        "batch,local_id,session\n1,A,1\n1,A,2\n1,B,1\n2,A,1\n",
         encoding="utf-8",
     )
     result = ingest(source, tmp_path / "out")
