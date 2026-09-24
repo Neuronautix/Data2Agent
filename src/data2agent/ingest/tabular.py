@@ -328,17 +328,44 @@ def _read_text(path: Path) -> tuple[str | None, str, str | None]:
 
 
 def _resolve_delimiter(path: Path, text: str) -> tuple[str | None, str | None]:
-    """Pick a delimiter from the extension, or from consistent field counts."""
-    explicit = _EXTENSION_DELIMITERS.get(path.suffix.lower())
-    if explicit is not None:
-        return explicit, None
+    """Resolve a delimiter from the bytes, using the extension only as a hint.
 
+    Scientific exports routinely use a '.csv' filename for semicolon-delimited
+    content. Treating the suffix as authority collapses such a table to one
+    column and corrupts every downstream structural fact. We therefore test the
+    extension-implied delimiter against a bounded sample, then prefer another
+    supported delimiter only when it gives a stable multi-column parse.
+
+    A genuinely one-column CSV remains valid: when no supported delimiter gives
+    a stable multi-column parse, the explicit extension delimiter is retained.
+    """
+    explicit = _EXTENSION_DELIMITERS.get(path.suffix.lower())
     lines = [line for line in text.splitlines()[:_SNIFF_LINES] if line.strip()]
     if not lines:
-        return None, None
+        return explicit, None
 
+    plausible: list[tuple[str, int]] = []
     for candidate in _CANDIDATE_DELIMITERS:
-        counts = {len(row) for row in csv.reader(lines, delimiter=candidate)}
-        if len(counts) == 1 and counts.pop() > 1:
-            return candidate, f"delimiter inferred as {candidate!r} from consistent field counts"
+        widths = [len(row) for row in csv.reader(lines, delimiter=candidate)]
+        if widths and len(set(widths)) == 1 and widths[0] > 1:
+            plausible.append((candidate, widths[0]))
+
+    if explicit is not None:
+        explicit_hit = next((item for item in plausible if item[0] == explicit), None)
+        if explicit_hit is not None:
+            return explicit, None
+        if plausible:
+            # Prefer the candidate exposing the widest consistent structure;
+            # candidate order is the deterministic tie-breaker.
+            candidate, width = max(plausible, key=lambda item: item[1])
+            return (
+                candidate,
+                f"extension implies delimiter {explicit!r}, but a bounded sample is "
+                f"consistently {width} fields with {candidate!r}; reporting the bytes",
+            )
+        return explicit, None
+
+    if plausible:
+        candidate, _ = plausible[0]
+        return candidate, f"delimiter inferred as {candidate!r} from consistent field counts"
     return None, None
