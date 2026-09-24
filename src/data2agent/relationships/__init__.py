@@ -1,5 +1,7 @@
 """Evidence-bearing cross-table relationship analysis."""
 
+RELATIONSHIPS_FILENAME = "relationships.json"
+
 from .analysis import (
     CARDINALITIES,
     RELATIONSHIP_VERSION,
@@ -12,6 +14,7 @@ from .analysis import (
 
 __all__ = [
     "CARDINALITIES",
+    "RELATIONSHIPS_FILENAME",
     "RELATIONSHIP_VERSION",
     "STATUSES",
     "assess_relationship",
