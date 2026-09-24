@@ -52,6 +52,35 @@ def test_inspect_table_returns_the_recorded_profile(service):
     assert profile["integrity"]["matches"] is True
 
 
+def test_list_tables_and_read_rows_expose_observations(service):
+    listing = service.list_tables()
+    assert listing["total"] == 2
+    assert {table["path"] for table in listing["tables"]} == {
+        "animals.csv",
+        "observations.csv",
+    }
+
+    payload = service.read_rows(
+        "animals.csv",
+        columns=["animal_id", "weight_g"],
+        offset=0,
+        limit=2,
+    )
+    assert payload["returned"] == 2
+    assert payload["rows"][0]["source_row"] == 2
+    assert set(payload["rows"][0]["values"]) == {"animal_id", "weight_g"}
+    assert isinstance(payload["rows"][0]["values"]["weight_g"], int)
+    assert payload["integrity"]["matches"] is True
+    assert payload["limit_applied"] == 2
+
+
+def test_read_rows_is_bounded(service):
+    payload = service.read_rows("animals.csv", limit=100_000)
+    assert payload["limit_requested"] == 100_000
+    assert payload["limit_applied"] == 1000
+    assert payload["returned"] == 48
+
+
 def test_inspect_table_refuses_a_non_table(service):
     with pytest.raises(KeyError, match="not profiled as a table"):
         service.inspect_table("README.md")
