@@ -273,8 +273,7 @@ class DatasetService:
             if "#" not in path and any(key.startswith(f"{path}#") for key in tables):
                 sheets = sorted(key for key in tables if key.startswith(f"{path}#"))
                 raise KeyError(
-                    f"'{path}' is a workbook holding {len(sheets)} sheet(s); "
-                    f"read one of {sheets}"
+                    f"'{path}' is a workbook holding {len(sheets)} sheet(s); read one of {sheets}"
                 )
             raise KeyError(f"'{path}' was not profiled as a table")
 
@@ -358,8 +357,7 @@ class DatasetService:
                 "returned": len(observed),
                 "total_rows": total_rows,
                 "has_more": (
-                    isinstance(total_rows, int)
-                    and applied_offset + len(observed) < total_rows
+                    isinstance(total_rows, int) and applied_offset + len(observed) < total_rows
                 ),
             }
         )
