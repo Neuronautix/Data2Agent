@@ -125,9 +125,7 @@ def read_workbook_rows(
     return rows
 
 
-def _column_specs(
-    profile: dict[str, Any], columns: list[str]
-) -> list[tuple[str, int, str]]:
+def _column_specs(profile: dict[str, Any], columns: list[str]) -> list[tuple[str, int, str]]:
     by_name = {column["name"]: column for column in profile.get("columns", [])}
     specs: list[tuple[str, int, str]] = []
     for name in columns:
