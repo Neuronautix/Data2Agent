@@ -440,9 +440,7 @@ class DatasetService:
         available = [column["name"] for column in profile.get("columns", [])]
         dtypes = {column["name"]: column.get("dtype", "string") for column in profile["columns"]}
         metric_columns = [
-            metric.get("column")
-            for metric in metrics
-            if isinstance(metric.get("column"), str)
+            metric.get("column") for metric in metrics if isinstance(metric.get("column"), str)
         ]
         filter_columns = [
             rule.get("column") for rule in rules if isinstance(rule.get("column"), str)
@@ -1015,9 +1013,7 @@ def _ordered_union(*groups: list[str]) -> list[str]:
 def _require_known_columns(path: str, available: list[str], selected: list[str]) -> None:
     unknown = [name for name in selected if name not in available]
     if unknown:
-        raise KeyError(
-            f"unknown column(s) for '{path}': {unknown}; available columns: {available}"
-        )
+        raise KeyError(f"unknown column(s) for '{path}': {unknown}; available columns: {available}")
 
 
 def _project_row(row: dict[str, Any], columns: list[str]) -> dict[str, Any]:
@@ -1038,9 +1034,7 @@ def _project_joined_row(
         "source_rows": row["source_rows"],
         "left": {name: row["left"].get(name) for name in left_columns},
         "right": (
-            {name: right.get(name) for name in right_columns}
-            if isinstance(right, dict)
-            else None
+            {name: right.get(name) for name in right_columns} if isinstance(right, dict) else None
         ),
     }
 
