@@ -127,6 +127,7 @@ class DatasetService:
 
     def dataset_inventory(self) -> dict[str, Any]:
         """Summarise the dataset without reading any file content."""
+        relationship_listing = self.list_relationships()
         return {
             "dataset_id": self.dataset_id,
             "manifest_version": self.manifest.get("manifest_version"),
@@ -147,19 +148,10 @@ class DatasetService:
             "identifier_count": len(self.manifest.get("identifiers", [])),
             # Relationship resolution is a derived layer, not part of ingest.
             # Without relationships.json, empty means "not determined".
-            "relationships": (
-                self.relationship_bundle.get("relationships", [])
-                if self.relationship_bundle
-                else []
-            ),
-            "relationships_determined": bool(
-                self.relationship_bundle and self.relationship_bundle.get("determined")
-            ),
-            "relationship_status_counts": (
-                self.relationship_bundle.get("status_counts", {})
-                if self.relationship_bundle
-                else {}
-            ),
+            "relationships": relationship_listing["relationships"],
+            "relationships_determined": relationship_listing["determined"],
+            "relationship_status_counts": relationship_listing.get("status_counts", {}),
+            "relationships_integrity": relationship_listing.get("source_integrity"),
             "warnings": self.manifest.get("warnings", []),
             "skipped": self.manifest.get("skipped", []),
             "mode": self.mode.name,
@@ -711,6 +703,30 @@ class DatasetService:
                 ),
             }
         records = list(self.relationship_bundle.get("relationships", []))
+        backing_files = sorted(
+            {
+                endpoint["backing_file"]
+                for record in records
+                for endpoint in (record["left"], record["right"])
+            }
+        )
+        integrity = [self.verify_file(path).as_dict() for path in backing_files]
+        drifted = [item for item in integrity if not item["matches"]]
+        if drifted:
+            return {
+                "dataset_id": self.dataset_id,
+                "determined": bool(self.relationship_bundle.get("determined")),
+                "relationships_version": self.relationship_bundle.get("relationships_version"),
+                "relationships": [],
+                "total": 0,
+                "status_counts": self.relationship_bundle.get("status_counts", {}),
+                "skipped": self.relationship_bundle.get("skipped", []),
+                "source_integrity": {"matches": False, "files": integrity},
+                "content_withheld": (
+                    "saved relationship assertions were derived from source bytes that no "
+                    "longer match the dataset manifest; re-ingest and regenerate relationships"
+                ),
+            }
         if status is not None:
             if status not in relationships.STATUSES:
                 raise ValueError(
@@ -726,6 +742,7 @@ class DatasetService:
             "total": len(records),
             "status_counts": self.relationship_bundle.get("status_counts", {}),
             "skipped": self.relationship_bundle.get("skipped", []),
+            "source_integrity": {"matches": True, "files": integrity},
         }
 
     def get_relationship(self, relationship_id: str) -> dict[str, Any]:
@@ -733,6 +750,8 @@ class DatasetService:
         listing = self.list_relationships()
         if not listing["determined"]:
             raise KeyError("relationships have not been determined for this dataset")
+        if listing.get("content_withheld"):
+            raise OutputError(listing["content_withheld"])
         for record in listing["relationships"]:
             if record.get("id") == relationship_id:
                 return {"dataset_id": self.dataset_id, "relationship": record}
