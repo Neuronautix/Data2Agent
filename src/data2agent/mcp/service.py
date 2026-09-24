@@ -22,12 +22,7 @@ from ..evidence import EvidenceLedger
 from ..ingest.checksum import hash_file
 from ..ingest.conventions import MissingValueConvention
 from ..ingest.pipeline import EVIDENCE_FILENAME, MANIFEST_FILENAME, PROVENANCE_FILENAME
-from ..query import (
-    aggregate_rows as query_aggregate_rows,
-    describe_column as query_describe_column,
-    filter_rows as query_filter_rows,
-    join_rows as query_join_rows,
-)
+from .. import query
 from ..readers.rows import read_delimited_rows, read_workbook_rows
 from .modes import ALL_RESOURCES, DEFAULT_MODE, Mode, resolve_mode
 
@@ -418,7 +413,7 @@ class DatasetService:
             )
             return payload
 
-        matched, total_matches = query_filter_rows(rows, filters, limit=requested_limit)
+        matched, total_matches = query.filter_rows(rows, filters, limit=requested_limit)
         projected = [_project_row(row, output_columns) for row in matched]
         payload.update(
             {
@@ -479,8 +474,8 @@ class DatasetService:
 
         selected = rows
         if rules:
-            selected, _ = query_filter_rows(rows, rules, limit=len(rows))
-        result = query_aggregate_rows(selected, group_by=groups, metrics=metrics, dtypes=dtypes)
+            selected, _ = query.filter_rows(rows, rules, limit=len(rows))
+        result = query.aggregate_rows(selected, group_by=groups, metrics=metrics, dtypes=dtypes)
         payload.update({"rows_included": len(selected), "groups": result})
         return payload
 
@@ -509,7 +504,7 @@ class DatasetService:
             payload.update({"summary": None, "content_withheld": context["content_withheld"]})
             return payload
 
-        payload["summary"] = query_describe_column(
+        payload["summary"] = query.describe_column(
             rows, column=column, dtype=str(columns[column].get("dtype") or "string")
         )
         return payload
@@ -575,7 +570,7 @@ class DatasetService:
             )
             return payload
 
-        result = query_join_rows(
+        result = query.join_rows(
             left_rows,
             right_rows,
             left_keys=left_keys,
