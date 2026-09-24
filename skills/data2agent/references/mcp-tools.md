@@ -36,9 +36,10 @@ Manifest record plus integrity status plus a bounded UTF-8 preview.
 
 ## `inspect_table(path)`
 
-For `csv` / `tsv` files that were successfully profiled. Raises if the file was
-not profiled as a table — that is a real signal (the delimiter could not be
-established), not an error to route around.
+For profiled delimited tables and workbook worksheets. A worksheet is addressed
+as `<workbook>#<sheet>`. This tool returns the **recorded structural profile**,
+not the source observations: rows, columns, token shapes, missingness and
+warnings. Use `read_rows` when the actual values are needed.
 
 Per column:
 
@@ -60,6 +61,33 @@ reproducible by anyone who does not share your assumptions — always quote both
 
 `ragged_rows` counts rows whose field count differs from the header's. Rows are
 never padded to fit.
+
+## `list_tables()`
+
+Lists every profiled delimited table and workbook worksheet with its backing
+file, row count, column names, profiling state and warnings. Start here when a
+dataset contains multiple worksheets rather than guessing sheet names.
+
+## `read_rows(path, columns=None, offset=0, limit=100)`
+
+Returns actual source observations through a bounded, read-only query.
+
+- Maximum rows per call: 1000. Larger requested limits are reported and capped.
+- The backing file is re-checksummed before any value is served.
+- `columns` is an explicit projection; omit it to return every profiled column.
+- `offset` is a zero-based data-row offset after the profiled header.
+- Each returned record carries `source_row`.
+- For worksheets, `source_row` is the real 1-based Excel row.
+- For CSV/TSV, it is the physical line on which the logical CSV record ends.
+- Empty cells and declared missing sentinels become `null`. A sentinel's
+  original token is retained in that row's `missing` map.
+- Ambiguous tokens such as `unknown`, `-` and `?` remain values.
+- Numeric/boolean coercion follows the dtype already established at ingest; the
+  query does not infer a new type.
+
+This is observation access, not semantic interpretation or analysis. A column
+named `dose` is still only a column until metadata/semantics establishes what
+it means.
 
 ## `get_metadata(path=None)`
 

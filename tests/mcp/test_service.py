@@ -52,6 +52,35 @@ def test_inspect_table_returns_the_recorded_profile(service):
     assert profile["integrity"]["matches"] is True
 
 
+def test_list_tables_and_read_rows_expose_observations(service):
+    listing = service.list_tables()
+    assert listing["total"] == 2
+    assert {table["path"] for table in listing["tables"]} == {
+        "animals.csv",
+        "observations.csv",
+    }
+
+    payload = service.read_rows(
+        "animals.csv",
+        columns=["animal_id", "weight_g"],
+        offset=0,
+        limit=2,
+    )
+    assert payload["returned"] == 2
+    assert payload["rows"][0]["source_row"] == 2
+    assert set(payload["rows"][0]["values"]) == {"animal_id", "weight_g"}
+    assert isinstance(payload["rows"][0]["values"]["weight_g"], int)
+    assert payload["integrity"]["matches"] is True
+    assert payload["limit_applied"] == 2
+
+
+def test_read_rows_is_bounded(service):
+    payload = service.read_rows("animals.csv", limit=100_000)
+    assert payload["limit_requested"] == 100_000
+    assert payload["limit_applied"] == 1000
+    assert payload["returned"] == 48
+
+
 def test_inspect_table_refuses_a_non_table(service):
     with pytest.raises(KeyError, match="not profiled as a table"):
         service.inspect_table("README.md")
@@ -144,6 +173,23 @@ def test_content_is_withheld_when_the_source_drifts(dataset_copy: Path, tmp_path
     verification = service.verify_dataset()
     assert verification["intact"] is False
     assert verification["mismatched"][0]["path"] == "animals.csv"
+
+
+def test_read_rows_withholds_observations_when_the_backing_file_drifts(
+    dataset_copy: Path, tmp_path: Path
+):
+    result = ingest(dataset_copy, tmp_path / "out")
+    service = DatasetService(result.output_dir)
+
+    assert service.read_rows("animals.csv", limit=1)["returned"] == 1
+
+    (dataset_copy / "animals.csv").write_text("animal_id\nA001\n", encoding="utf-8")
+    payload = service.read_rows("animals.csv", limit=1)
+
+    assert payload["integrity"]["matches"] is False
+    assert payload["rows"] == []
+    assert payload["returned"] == 0
+    assert "re-ingest" in payload["content_withheld"]
 
 
 def test_paths_cannot_escape_the_dataset_root(service):

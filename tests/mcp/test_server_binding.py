@@ -47,6 +47,8 @@ async def test_structured_mode_registers_the_deterministic_surface(server):
         "list_files",
         "inspect_file",
         "inspect_table",
+        "list_tables",
+        "read_rows",
         "get_metadata",
         "get_evidence",
         "get_provenance",
@@ -103,6 +105,18 @@ async def test_calling_inspect_table_over_mcp_returns_the_profile(server):
     payload = json.loads(_text_of(result))
     assert payload["rows"] == 48
     assert payload["missing"]["sex"] == 12
+
+
+@pytest.mark.anyio
+async def test_calling_read_rows_over_mcp_returns_observations(server):
+    result = await server.call_tool(
+        "read_rows",
+        {"path": "animals.csv", "columns": ["animal_id", "weight_g"], "limit": 2},
+    )
+    payload = json.loads(_text_of(result))
+    assert payload["returned"] == 2
+    assert payload["rows"][0]["source_row"] == 2
+    assert isinstance(payload["rows"][0]["values"]["weight_g"], int)
 
 
 @pytest.mark.anyio

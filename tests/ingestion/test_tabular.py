@@ -145,6 +145,29 @@ def test_tsv_delimiter_comes_from_the_extension(tmp_path: Path):
     assert profile_table(path, "t.tsv").delimiter == "\t"
 
 
+def test_semicolon_delimited_csv_overrides_the_extension_hint(tmp_path: Path):
+    """A .csv suffix must not collapse a real semicolon table to one column."""
+    path = tmp_path / "roche.csv"
+    path.write_text(
+        "Animal ID;DLC file;Group;Dosage\n"
+        "16459-67049;a.csv;Control;0\n"
+        "16459-67050;b.csv;Yohimbine;1\n",
+        encoding="utf-8",
+    )
+
+    profile = profile_table(path, "roche.csv")
+
+    assert profile is not None
+    assert profile.delimiter == ";"
+    assert [column.name for column in profile.columns] == [
+        "Animal ID",
+        "DLC file",
+        "Group",
+        "Dosage",
+    ]
+    assert any("extension implies delimiter" in warning for warning in profile.warnings)
+
+
 def test_an_undeterminable_delimiter_yields_no_table(tmp_path: Path):
     """Better to report nothing than to force prose into a table shape."""
     path = tmp_path / "prose.dat"

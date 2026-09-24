@@ -200,6 +200,8 @@ generating bespoke tools per dataset and inheriting the generator's variance.
 | `list_files(pattern, file_format)` | inventoried files, filtered |
 | `inspect_file(path)` | size, checksum, format, bounded preview |
 | `inspect_table(path)` | rows, columns, observed shapes, missingness |
+| `list_tables()` | profiled delimited tables and workbook worksheets |
+| `read_rows(path, columns, offset, limit)` | bounded source observations with row locators and integrity proof |
 | `get_metadata(path)` | recognised metadata files, served verbatim |
 | `get_evidence(...)` | what supports a claim |
 | `get_provenance()` | when, how long, with what version this was ingested |

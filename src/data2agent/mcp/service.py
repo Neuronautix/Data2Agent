@@ -20,12 +20,16 @@ from typing import Any
 from ..errors import ModeError, OutputError
 from ..evidence import EvidenceLedger
 from ..ingest.checksum import hash_file
+from ..ingest.conventions import MissingValueConvention
 from ..ingest.pipeline import EVIDENCE_FILENAME, MANIFEST_FILENAME, PROVENANCE_FILENAME
+from ..readers.rows import read_delimited_rows, read_workbook_rows
 from .modes import ALL_RESOURCES, DEFAULT_MODE, Mode, resolve_mode
 
 # Content is served in bounded slices; an agent that wants more asks again.
 _DEFAULT_PREVIEW_BYTES = 4096
 _MAX_PREVIEW_BYTES = 262_144
+_DEFAULT_READ_ROWS = 100
+_MAX_READ_ROWS = 1000
 
 
 @dataclass
@@ -227,6 +231,137 @@ class DatasetService:
                 "call inspect_file for its format and preview"
             )
         return {**profile, "integrity": self.verify_file(backing or path).as_dict()}
+
+    def list_tables(self) -> dict[str, Any]:
+        """List profiled tables and worksheets without returning their observations."""
+        tables: list[dict[str, Any]] = []
+        for path, profile in sorted(self.manifest.get("tables", {}).items()):
+            if not isinstance(profile, dict):
+                continue
+            backing = profile.get("workbook") or path
+            tables.append(
+                {
+                    "path": path,
+                    "kind": "worksheet" if profile.get("workbook") else "delimited",
+                    "backing_file": backing,
+                    "profiled": profile.get("profiled", True),
+                    "rows": profile.get("rows"),
+                    "columns": [column.get("name") for column in profile.get("columns", [])],
+                    "warnings": list(profile.get("warnings", [])),
+                }
+            )
+        return {"dataset_id": self.dataset_id, "tables": tables, "total": len(tables)}
+
+    def read_rows(
+        self,
+        path: str,
+        *,
+        columns: list[str] | None = None,
+        offset: int = 0,
+        limit: int = _DEFAULT_READ_ROWS,
+    ) -> dict[str, Any]:
+        """Read actual observations from a profiled table through a bounded, read-only API.
+
+        This is deliberately separate from :meth:`inspect_table`: the latter
+        returns structural facts recorded at ingest, while this method returns
+        source observations and therefore re-verifies the backing file checksum
+        before reading anything.
+        """
+        tables = self.manifest.get("tables", {})
+        profile = tables.get(path)
+        if not isinstance(profile, dict):
+            if "#" not in path and any(key.startswith(f"{path}#") for key in tables):
+                sheets = sorted(key for key in tables if key.startswith(f"{path}#"))
+                raise KeyError(
+                    f"'{path}' is a workbook holding {len(sheets)} sheet(s); read one of {sheets}"
+                )
+            raise KeyError(f"'{path}' was not profiled as a table")
+
+        if profile.get("profiled") is False:
+            raise KeyError(f"'{path}' exists but was not successfully profiled")
+
+        backing = profile.get("workbook") or path
+        entry = self._require_entry(backing)
+        integrity = self.verify_file(backing)
+
+        available = [column["name"] for column in profile.get("columns", [])]
+        selected = available if columns is None else list(columns)
+        unknown = [name for name in selected if name not in available]
+        if unknown:
+            raise KeyError(
+                f"unknown column(s) for '{path}': {unknown}; available columns: {available}"
+            )
+
+        requested_limit = int(limit)
+        if requested_limit < 1:
+            raise ValueError("limit must be at least 1")
+        applied_limit = min(requested_limit, _MAX_READ_ROWS)
+        applied_offset = int(offset)
+        if applied_offset < 0:
+            raise ValueError("offset must be zero or greater")
+
+        payload: dict[str, Any] = {
+            "dataset_id": self.dataset_id,
+            "table": path,
+            "backing_file": backing,
+            "backing_sha256": entry["sha256"],
+            "columns": selected,
+            "offset": applied_offset,
+            "limit_requested": requested_limit,
+            "limit_applied": applied_limit,
+            "integrity": integrity.as_dict(),
+            "missing_value_convention": self.manifest.get("missing_value_convention", {}),
+        }
+        if not integrity.matches:
+            payload.update(
+                {
+                    "rows": [],
+                    "returned": 0,
+                    "content_withheld": (
+                        "the backing file no longer matches its manifest checksum; "
+                        "re-ingest before relying on it"
+                    ),
+                }
+            )
+            return payload
+
+        convention = _missing_convention(self.manifest.get("missing_value_convention", {}))
+        absolute = self._resolve(backing)
+        if profile.get("workbook"):
+            observed = read_workbook_rows(
+                absolute,
+                profile,
+                columns=selected,
+                offset=applied_offset,
+                limit=applied_limit,
+                convention=convention,
+            )
+            payload["row_locator"] = "1-based worksheet row"
+        else:
+            observed = read_delimited_rows(
+                absolute,
+                profile,
+                columns=selected,
+                offset=applied_offset,
+                limit=applied_limit,
+                convention=convention,
+            )
+            payload["row_locator"] = (
+                "1-based physical line on which the CSV/TSV logical record ends"
+            )
+
+        total_rows = profile.get("rows")
+        payload.update(
+            {
+                "rows": observed,
+                "returned": len(observed),
+                "total_rows": total_rows,
+                "has_more": (
+                    isinstance(total_rows, int) and applied_offset + len(observed) < total_rows
+                ),
+            }
+        )
+        return payload
 
     def get_metadata(self, path: str | None = None) -> dict[str, Any]:
         """Serve recognised metadata files verbatim.
@@ -553,6 +688,16 @@ def _require_one_dataset(
             "this output directory does not describe a single dataset: "
             f"{detail}. Re-run `data2agent ingest` into a clean directory."
         )
+
+
+def _missing_convention(payload: dict[str, Any]) -> MissingValueConvention:
+    """Rehydrate the convention recorded in the manifest for query-time reads."""
+    return MissingValueConvention(
+        id=str(payload.get("id") or "recorded"),
+        tokens=frozenset(str(token) for token in payload.get("tokens", [])),
+        source=str(payload.get("source") or "recorded in manifest"),
+        case_sensitive=bool(payload.get("case_sensitive", False)),
+    )
 
 
 def _load_json(path: Path) -> dict[str, Any]:
