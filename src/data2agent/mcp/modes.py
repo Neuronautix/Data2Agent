@@ -37,6 +37,9 @@ _CORE_TOOLS = (
     "aggregate",
     "describe_variable",
     "join_tables",
+    "list_relationships",
+    "get_relationship",
+    "join_relationship",
     "get_metadata",
     "get_evidence",
     "get_provenance",
@@ -55,6 +58,7 @@ _STRUCTURED_RESOURCES = (
     "dataset://provenance",
     "dataset://evidence",
     "dataset://metadata",
+    "dataset://relationships",
     *_RAW_RESOURCES,
 )
 
