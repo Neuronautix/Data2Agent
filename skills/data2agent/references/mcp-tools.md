@@ -89,6 +89,66 @@ This is observation access, not semantic interpretation or analysis. A column
 named `dose` is still only a column until metadata/semantics establishes what
 it means.
 
+## `filter_rows(path, filters, columns=None, limit=100)`
+
+Select observations with a closed operator registry: `eq`, `ne`, `lt`,
+`lte`, `gt`, `gte`, `in`, `not_in`, `contains`, `is_missing`,
+and `is_not_missing`.
+
+Each filter is an object such as:
+
+```json
+{"column": "genotype", "op": "eq", "value": "KO"}
+```
+
+No Python, SQL, regex or free-form expression is executed. At most 100,000
+source rows are scanned. If a larger table is only partially scanned, the
+response says `scan_complete: false` and `truncated: true`; a partial search
+must never be reported as an exhaustive negative finding.
+
+## `aggregate(path, metrics, group_by=None, filters=None)`
+
+Compute deterministic summaries over a **complete** scan. Supported metrics are
+`count`, `n_missing`, `sum`, `mean`, `min`, and `max`.
+`sum/mean/min/max` require a column profiled as integer or number.
+
+Example:
+
+```json
+{
+  "path": "animals.csv",
+  "group_by": ["genotype"],
+  "metrics": [
+    {"op": "count", "name": "n"},
+    {"op": "mean", "column": "weight_g", "name": "mean_weight_g"}
+  ]
+}
+```
+
+Numeric aggregation uses decimal arithmetic internally. A table above the
+100,000-row complete-scan cap is refused rather than summarized partially.
+
+## `describe_variable(path, column)`
+
+Returns the ingest-time column profile together with a deterministic runtime
+summary. For numeric columns this includes count, missing count, min, max and
+mean. This describes observed tokens/values only; it does not infer units,
+biological meaning, treatment roles or ontology terms.
+
+## `join_tables(left, right, left_keys, right_keys, ...)`
+
+Join two tables only on keys explicitly supplied by the caller. No relationship
+is inferred or written back to the manifest.
+
+The response reports `one_to_one`, `one_to_many`, `many_to_one`, or
+`many_to_many` cardinality plus duplicate-key counts. Missing/null keys never
+match each other. Many-to-many multiplication is explicitly warned about.
+Supported join types are `inner` and `left`.
+
+Both inputs must be completely readable under the 50,000-row-per-side join
+safety cap. Output is capped at 1,000 rows, with `total_result_rows` and
+`truncated` stating whether more matches exist.
+
 ## `get_metadata(path=None)`
 
 With no argument: lists files whose *names* match a published convention
