@@ -201,11 +201,11 @@ class LayoutDeclarations:
     would claim a declaration governed a table it never touched.
     """
 
-    tables: dict[str, TableLayout]
+    tables: dict[str, TableLayout | TableBlocks]
     sha256: str
     name: str
 
-    def for_table(self, path: str) -> TableLayout | None:
+    def for_table(self, path: str) -> TableLayout | TableBlocks | None:
         return self.tables.get(path)
 
     def unapplied(self, applied: set[str]) -> list[str]:
@@ -258,15 +258,21 @@ def parse_declarations(payload: Any, *, sha256: str, name: str) -> LayoutDeclara
             "a layout declaration needs a non-empty 'layouts' object keyed by table path "
             "('<file>' or '<workbook>#<sheet>')"
         )
-    tables = {str(key): _parse_table(str(key), value) for key, value in layouts.items()}
+    tables = {str(key): _parse_entry(str(key), value) for key, value in layouts.items()}
     return LayoutDeclarations(tables=tables, sha256=sha256, name=name)
 
 
-def _parse_table(path: str, value: Any) -> TableLayout:
+def _parse_entry(path: str, value: Any) -> TableLayout | TableBlocks:
     if not path.strip():
         raise LayoutError("a layout declaration names an empty table path")
     if not isinstance(value, dict):
         raise LayoutError(f"layout for {path!r} must be an object")
+    if "blocks" in value:
+        return _parse_blocks(path, value)
+    return _parse_table(path, value)
+
+
+def _parse_table(path: str, value: Any) -> TableLayout:
     unknown = sorted(set(value) - _TABLE_KEYS)
     if unknown:
         raise LayoutError(
@@ -299,6 +305,223 @@ def _parse_table(path: str, value: Any) -> TableLayout:
     if note is not None and not isinstance(note, str):
         raise LayoutError(f"layout for {path!r}: note must be a string")
     return TableLayout(header_row, header_rows, data_starts_row, fill, note)
+
+
+# ---------------------------------------------------------------------- blocks
+#
+# One sheet (or delimited file) can hold several tables stacked vertically, or
+# side by side, each under its own header: one block per session, per day, per
+# drug. A header rule cannot find these without guessing where one table ends,
+# so they are declared (D2A-103). Each block becomes a table of its own, keyed
+# '<parent table path>#<block name>', and the parent's whole-range profile is
+# replaced by its blocks: keeping both would count every observation twice.
+
+_BLOCK_KEYS = frozenset(
+    {
+        "name",
+        "header_row",
+        "header_rows",
+        "data_starts_row",
+        "last_row",
+        "columns",
+        "upper_label_fill",
+        "note",
+    }
+)
+_BLOCKS_TABLE_KEYS = frozenset({"blocks", "note"})
+# A block is addressed as '<table>#<name>', so a name must not contain the
+# separator; it must also survive being typed into a tool call.
+_BLOCK_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.()+\-]*$")
+_COLUMN_RANGE = re.compile(r"^([A-Za-z]{1,3}):([A-Za-z]{1,3})$")
+_MAX_BLOCKS = 64
+
+
+def column_index(letters: str) -> int:
+    """0-based position of a spreadsheet column letter ('A' -> 0, 'AA' -> 26)."""
+    index = 0
+    for char in letters.upper():
+        index = index * 26 + (ord(char) - 64)
+    return index - 1
+
+
+@dataclass(frozen=True)
+class BlockLayout:
+    """One declared block: a table inside a table, bounded by rows and columns."""
+
+    name: str
+    layout: TableLayout
+    last_row: int
+    columns: tuple[int, int] | None  # inclusive 0-based positions; None: every column
+    columns_spec: str | None  # as declared, e.g. 'A:K'
+
+    def spans_columns(self, other: BlockLayout) -> bool:
+        if self.columns is None or other.columns is None:
+            return True
+        return self.columns[0] <= other.columns[1] and other.columns[0] <= self.columns[1]
+
+    def slice(self, cells: Any) -> tuple[Any, ...]:
+        """The cells inside this block's columns (all of them when undeclared)."""
+        cells = tuple(cells)
+        if self.columns is None:
+            return cells
+        return cells[self.columns[0] : self.columns[1] + 1]
+
+    @property
+    def first_position(self) -> int:
+        return self.columns[0] if self.columns is not None else 0
+
+
+@dataclass(frozen=True)
+class TableBlocks:
+    """A table path declared as several blocks, validated as a whole."""
+
+    blocks: tuple[BlockLayout, ...]
+    note: str | None = None
+
+    def region_start(self, block: BlockLayout) -> int:
+        """First row read for ``block``: just below the nearest block above it.
+
+        The rows between that block's end and this block's header -- a session
+        banner, a blank spacer -- become this block's preamble, recorded as
+        skipped and readable like any other rows above a table's data.
+        """
+        above = [
+            other.last_row
+            for other in self.blocks
+            if other is not block
+            and other.last_row < block.layout.header_row
+            and other.spans_columns(block)
+        ]
+        return max(above, default=0) + 1
+
+
+class BoundedRows:
+    """The rows of one block's region, sliced to its columns, as a lazy iterator.
+
+    Rows numbered below ``start`` are dropped and iteration stops after
+    ``block.last_row``. It remembers the last row it saw, so that a block whose
+    ``last_row`` lies beyond the table's end is refused rather than silently
+    shortened.
+    """
+
+    def __init__(self, rows: Iterable[Row], start: int, block: BlockLayout) -> None:
+        self._rows = iter(rows)
+        self._start = start
+        self._block = block
+        self.last_seen = 0
+
+    def __iter__(self) -> Iterator[Row]:
+        for row in self._rows:
+            self.last_seen = max(self.last_seen, row.number)
+            if row.number < self._start:
+                continue
+            if row.number > self._block.last_row:
+                return
+            yield Row(row.number, self._block.slice(row.cells))
+
+    def require_end(self, path: str) -> None:
+        """Raise unless the table reached the block's declared ``last_row``."""
+        if self.last_seen < self._block.last_row:
+            raise LayoutError(
+                f"declared block {path!r} ends at last_row {self._block.last_row}, but the "
+                f"table's last row is {self.last_seen}"
+            )
+
+
+def block_record(
+    block: BlockLayout, parent_table: str, file: str, first_row: int
+) -> dict[str, Any]:
+    """Where a block sits: the provenance its table profile carries in the manifest."""
+    return {
+        "name": block.name,
+        "parent_table": parent_table,
+        "file": file,
+        "first_row": first_row,
+        "header_row": block.layout.header_row,
+        "last_row": block.last_row,
+        "columns": block.columns_spec,
+    }
+
+
+def _parse_blocks(path: str, value: dict[str, Any]) -> TableBlocks:
+    unknown = sorted(set(value) - _BLOCKS_TABLE_KEYS)
+    if unknown:
+        raise LayoutError(
+            f"layout for {path!r} declares blocks, so it may only carry "
+            f"{sorted(_BLOCKS_TABLE_KEYS)}; the header of each block is declared inside it, "
+            f"not {unknown}"
+        )
+    raw = value["blocks"]
+    if not isinstance(raw, list) or not raw:
+        raise LayoutError(f"layout for {path!r}: blocks must be a non-empty array")
+    if len(raw) > _MAX_BLOCKS:
+        raise LayoutError(f"layout for {path!r}: at most {_MAX_BLOCKS} blocks per table")
+    blocks = [_parse_block(path, index, item) for index, item in enumerate(raw)]
+
+    names = [block.name for block in blocks]
+    if len(set(names)) != len(names):
+        raise LayoutError(f"layout for {path!r}: block names must be unique, got {names}")
+    for position, block in enumerate(blocks):
+        for other in blocks[position + 1 :]:
+            rows_meet = (
+                block.layout.header_row <= other.last_row
+                and other.layout.header_row <= block.last_row
+            )
+            if rows_meet and block.spans_columns(other):
+                raise LayoutError(
+                    f"layout for {path!r}: blocks {block.name!r} (rows "
+                    f"{block.layout.header_row}-{block.last_row}) and {other.name!r} (rows "
+                    f"{other.layout.header_row}-{other.last_row}) overlap"
+                )
+    ordered = sorted(blocks, key=lambda b: (b.layout.header_row, b.first_position))
+    note = value.get("note")
+    if note is not None and not isinstance(note, str):
+        raise LayoutError(f"layout for {path!r}: note must be a string")
+    return TableBlocks(tuple(ordered), note)
+
+
+def _parse_block(path: str, index: int, value: Any) -> BlockLayout:
+    where = f"{path!r} block {index}"
+    if not isinstance(value, dict):
+        raise LayoutError(f"layout for {where} must be an object")
+    unknown = sorted(set(value) - _BLOCK_KEYS)
+    if unknown:
+        raise LayoutError(
+            f"layout for {where} has unknown key(s) {unknown}; allowed: {sorted(_BLOCK_KEYS)}"
+        )
+    for required in ("name", "header_row", "last_row"):
+        if required not in value:
+            raise LayoutError(f"layout for {where} must state {required!r}")
+    name = value["name"]
+    if not isinstance(name, str) or not _BLOCK_NAME.match(name):
+        raise LayoutError(
+            f"layout for {where}: name {name!r} must start with a letter or digit and use "
+            f"only letters, digits, spaces and _ . ( ) + -"
+        )
+    layout = _parse_table(f"{path}#{name}", {k: v for k, v in value.items() if k in _TABLE_KEYS})
+    last_row = _positive_int(f"{path}#{name}", "last_row", value["last_row"])
+    header_end = layout.header_row + layout.header_rows - 1
+    data_start = layout.data_starts_row or header_end + 1
+    if last_row < header_end or last_row < data_start - 1:
+        raise LayoutError(
+            f"layout for {path}#{name}: last_row {last_row} ends before the block's header "
+            f"(rows {layout.header_row}-{header_end}) and data start {data_start}"
+        )
+    columns = None
+    spec = value.get("columns")
+    if spec is not None:
+        match = _COLUMN_RANGE.match(spec) if isinstance(spec, str) else None
+        if match is None:
+            raise LayoutError(
+                f"layout for {path}#{name}: columns must be a range of column letters "
+                f"such as 'A:K', not {spec!r}"
+            )
+        first, last = column_index(match.group(1)), column_index(match.group(2))
+        if first > last:
+            raise LayoutError(f"layout for {path}#{name}: columns {spec!r} run backwards")
+        columns = (first, last)
+        spec = spec.upper()
+    return BlockLayout(name, layout, last_row, columns, spec)
 
 
 def _positive_int(path: str, key: str, value: Any) -> int:

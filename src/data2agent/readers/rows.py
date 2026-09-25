@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..ingest.conventions import SENTINEL, MissingValueConvention
+from ..ingest.layout import column_index
 from ..ingest.tabular import numbered_records
 from . import workbook
 
@@ -39,6 +40,7 @@ def read_delimited_rows(
     data_starts_row = profile.get("data_starts_row")
     if data_starts_row is None and profile.get("header_source") is not None:
         return []  # a header was decided and nothing follows it
+    last_row, span = block_bounds(profile)
 
     rows: list[dict[str, Any]] = []
     data_index = 0
@@ -61,9 +63,15 @@ def read_delimited_rows(
             records = (row for row in numbered_records(reader) if row.number >= start)
 
         for numbered in records:
+            if last_row is not None and numbered.number > last_row:
+                break  # the end of a declared block: the rows below are another table
             record = numbered.cells
             if not record:
                 continue  # match the profiler: blank lines carry no observation
+            if span is not None and not any(
+                str(cell).strip() for cell in record[span[0] : span[1] + 1]
+            ):
+                continue  # blank within the block's columns, as the profiler skips it
             if data_index < offset:
                 data_index += 1
                 continue
@@ -105,6 +113,7 @@ def read_workbook_rows(
 
     sheet_name, backend = _sheet_and_backend(profile)
     specs = _column_specs(profile, columns)
+    last_row, _ = block_bounds(profile)
     rows: list[dict[str, Any]] = []
     with workbook.open_workbook(path, backend) as book:
         start_row = first_data_row + offset
@@ -113,6 +122,8 @@ def read_workbook_rows(
         ):
             if len(rows) >= limit:
                 break
+            if last_row is not None and source_row > last_row:
+                break  # the end of a declared block: the rows below are another table
             values, missing = _project(record, specs, convention)
             rows.append(
                 {
@@ -122,6 +133,24 @@ def read_workbook_rows(
                 }
             )
     return rows
+
+
+def block_bounds(profile: dict[str, Any]) -> tuple[int | None, tuple[int, int] | None]:
+    """A declared block's last row and inclusive column positions (D2A-103).
+
+    ``(None, None)`` for every table that is not a block, which is read as
+    before: to the end of its file or sheet, across every column.
+    """
+    block = profile.get("block")
+    if not isinstance(block, dict):
+        return None, None
+    last_row = block.get("last_row")
+    span = None
+    spec = block.get("columns")
+    if isinstance(spec, str) and ":" in spec:
+        first, last = spec.split(":", 1)
+        span = (column_index(first), column_index(last))
+    return (int(last_row) if last_row is not None else None), span
 
 
 def _sheet_and_backend(profile: dict[str, Any]) -> tuple[str, workbook.Backend]:
@@ -194,6 +223,7 @@ def read_rows_above_data(
     position when there is one.
     """
     wanted = rows_above_data(profile)
+    _, span = block_bounds(profile)
     selected = [dict(item) for item in wanted[:max_rows]]
     numbers = {item["row"] for item in selected if item["row"] is not None}
     offsets = {item["header_offset"] for item in selected if item["row"] is None}
@@ -242,6 +272,8 @@ def read_rows_above_data(
         cells: list[dict[str, Any]] = []
         non_blank = 0
         for position, value in enumerate(record):
+            if span is not None and not span[0] <= position <= span[1]:
+                continue  # outside a declared block's columns: another table's cells
             normalised, reason = _normalise(value, "string", convention)
             if reason is not None and reason["kind"] == "empty":
                 continue

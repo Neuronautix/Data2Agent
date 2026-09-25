@@ -36,7 +36,7 @@ from .checksum import dataset_id as fold_dataset_id
 from .checksum import hash_file
 from .conventions import DEFAULT_CONVENTION, MissingValueConvention
 from .inventory import DEFAULT_EXCLUDES, FileEntry, Inventory, build, walk
-from .layout import HeaderLayout, LayoutDeclarations
+from .layout import HeaderLayout, LayoutDeclarations, TableBlocks
 from .provenance import ProvenanceRecord, runtime_fingerprint, tool_fingerprint, utc_now
 
 MANIFEST_FILENAME = "manifest.json"
@@ -142,27 +142,30 @@ def ingest(
             )
 
         if entry.format.format_id in formats.TABULAR_FORMATS:
-            profile = tabular.profile_table(
-                absolute,
-                entry.path,
-                active_convention,
-                layouts.for_table(entry.path) if layouts else None,
-            )
-            if profile is None:
-                warnings.append(f"{entry.path}: could not be read as a delimited table")
+            declared = layouts.for_table(entry.path) if layouts else None
+            if isinstance(declared, TableBlocks):
+                profiles = tabular.profile_table_blocks(
+                    absolute, entry.path, active_convention, declared
+                )
             else:
-                tables[entry.path] = profile.as_dict()
+                single = tabular.profile_table(absolute, entry.path, active_convention, declared)
+                profiles = None if single is None else [single]
+            if profiles is None:
+                warnings.append(f"{entry.path}: could not be read as a delimited table")
+            for profile in profiles or []:
+                tables[profile.path] = profile.as_dict()
                 if _declared_layout_applied(profile.layout):
-                    applied_layouts.add(entry.path)
-                warnings.extend(f"{entry.path}: {note}" for note in profile.warnings)
+                    applied_layouts.add(_declared_path(profile.path, profile.block))
+                warnings.extend(f"{profile.path}: {note}" for note in profile.warnings)
                 _record_table_claims(ledger, entry, profile, active_convention)
-                _record_header_claim(ledger, entry, entry.path, profile.layout, layouts)
+                _record_header_claim(ledger, entry, profile.path, profile.layout, layouts)
+                _record_block_claim(ledger, entry, profile.path, profile.block)
                 if classification is None:
                     _recognise_table(
                         ledger,
                         entry,
                         metadata_files,
-                        path=entry.path,
+                        path=profile.path,
                         rows=profile.rows,
                         columns=profile.columns,
                     )
@@ -224,7 +227,7 @@ def ingest(
                 ):
                     tables[sheet.path] = sheet.as_dict()
                     if sheet.profiled and _declared_layout_applied(sheet.layout):
-                        applied_layouts.add(sheet.path)
+                        applied_layouts.add(_declared_path(sheet.path, sheet.block))
                     warnings.extend(f"{sheet.path}: {note}" for note in sheet.warnings)
                     _record_sheet_claims(ledger, entry, sheet, active_convention)
                     _record_header_claim(
@@ -235,6 +238,7 @@ def ingest(
                         layouts,
                         sheet={"workbook": sheet.workbook, "sheet": sheet.sheet},
                     )
+                    _record_block_claim(ledger, entry, sheet.path, sheet.block)
                     if classification is not None:
                         continue
                     if not sheet.profiled:
@@ -596,6 +600,42 @@ def _record_file_claims(ledger: EvidenceLedger, entry: FileEntry) -> None:
     )
 
 
+def _declared_path(table_path: str, block: dict[str, Any] | None) -> str:
+    """The declaration key a table answers to: its parent's, for a declared block."""
+    return str(block["parent_table"]) if block else table_path
+
+
+def _record_block_claim(
+    ledger: EvidenceLedger,
+    entry: FileEntry,
+    table_path: str,
+    block: dict[str, Any] | None,
+) -> None:
+    """Record that a table is one declared block of a larger sheet or file (D2A-103).
+
+    A block's rows are a slice of its parent's; without this claim an agent has
+    no citable fact saying where the slice starts and ends, or that a person --
+    not a rule -- drew its boundaries.
+    """
+    if not block:
+        return
+    columns = f", columns {block['columns']}" if block.get("columns") else ""
+    ledger.record(
+        f"'{table_path}' is declared block '{block['name']}' of '{block['parent_table']}', "
+        f"header on row {block['header_row']}, rows through {block['last_row']}{columns}",
+        subject=table_path,
+        evidence=[
+            EvidenceItem(
+                source=entry.path,
+                source_sha256=entry.sha256,
+                check="layout.block",
+                result=dict(block),
+                locator=f"rows:{block['first_row']}-{block['last_row']}",
+            )
+        ],
+    )
+
+
 def _declared_layout_applied(layout: HeaderLayout | None) -> bool:
     """Whether a table profile was produced under a declared layout."""
     return layout is not None and layout.declared is not None
@@ -746,8 +786,8 @@ def _record_table_claims(
     )
 
     ledger.record(
-        f"'{entry.path}' has {profile.rows} data row(s)",
-        subject=entry.path,
+        f"'{profile.path}' has {profile.rows} data row(s)",
+        subject=profile.path,
         evidence=[
             EvidenceItem(
                 source=entry.path,
@@ -758,8 +798,8 @@ def _record_table_claims(
         ],
     )
     ledger.record(
-        f"'{entry.path}' has {len(profile.columns)} column(s)",
-        subject=entry.path,
+        f"'{profile.path}' has {len(profile.columns)} column(s)",
+        subject=profile.path,
         evidence=[
             EvidenceItem(
                 source=entry.path,
@@ -771,8 +811,8 @@ def _record_table_claims(
     )
     for column in profile.columns:
         ledger.record(
-            f"column '{column.name}' in '{entry.path}' holds values shaped as '{column.dtype}'",
-            subject=entry.path,
+            f"column '{column.name}' in '{profile.path}' holds values shaped as '{column.dtype}'",
+            subject=profile.path,
             evidence=[
                 EvidenceItem(
                     source=entry.path,
@@ -787,9 +827,9 @@ def _record_table_claims(
         if column.missing:
             ledger.record(
                 f"'{column.name}' is missing for {column.missing} of {profile.rows} row(s) "
-                f"in '{entry.path}' ({column.missing_empty} empty, {column.missing_sentinel} "
+                f"in '{profile.path}' ({column.missing_empty} empty, {column.missing_sentinel} "
                 f"resolved from tokens by the '{convention.id}' convention)",
-                subject=entry.path,
+                subject=profile.path,
                 evidence=[
                     EvidenceItem(
                         source=entry.path,
@@ -821,10 +861,10 @@ def _record_table_claims(
         if column.sentinel_tokens_seen:
             tokens = ", ".join(sorted(column.sentinel_tokens_seen))
             ledger.record(
-                f"'{column.name}' in '{entry.path}' holds {column.missing_sentinel} cell(s) "
+                f"'{column.name}' in '{profile.path}' holds {column.missing_sentinel} cell(s) "
                 f"with the token(s) {tokens}, resolved to missing by the "
                 f"'{convention.id}' convention ({convention.source})",
-                subject=entry.path,
+                subject=profile.path,
                 evidence=[
                     EvidenceItem(
                         source=entry.path,
@@ -841,10 +881,10 @@ def _record_table_claims(
             total = sum(column.ambiguous_tokens_seen.values())
             tokens = ", ".join(sorted(column.ambiguous_tokens_seen))
             ledger.record(
-                f"'{column.name}' in '{entry.path}' holds {total} cell(s) with the "
+                f"'{column.name}' in '{profile.path}' holds {total} cell(s) with the "
                 f"token(s) {tokens}, which no convention resolves to missing; "
                 f"whether they denote absence is undetermined",
-                subject=entry.path,
+                subject=profile.path,
                 evidence=[
                     EvidenceItem(
                         source=entry.path,

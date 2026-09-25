@@ -334,6 +334,9 @@
         },
         "missing_convention": {
           "$ref": "#/$defs/missingValueConvention"
+        },
+        "block": {
+          "$ref": "#/$defs/tableBlock"
         }
       }
     },
@@ -711,6 +714,9 @@
           "items": {
             "type": "string"
           }
+        },
+        "block": {
+          "$ref": "#/$defs/tableBlock"
         }
       }
     },
@@ -821,6 +827,52 @@
         },
         "declared": {
           "$ref": "#/$defs/declaredLayout"
+        }
+      }
+    },
+    "tableBlock": {
+      "type": "object",
+      "description": "Present only on a table that is one declared block of a larger sheet or delimited file (D2A-103). The table is keyed '<parent_table>#<name>'; the parent's own whole-range profile is replaced by its blocks. Rows are read from first_row (just below the nearest block above, so the rows between two blocks are this block's recorded preamble) through last_row, and only within 'columns' when declared. Column positions are the file's own.",
+      "required": [
+        "name",
+        "parent_table",
+        "file",
+        "first_row",
+        "header_row",
+        "last_row",
+        "columns"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "parent_table": {
+          "type": "string"
+        },
+        "file": {
+          "type": "string",
+          "description": "The inventoried file whose bytes are read."
+        },
+        "first_row": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "header_row": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "last_row": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "columns": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Z]{1,3}:[A-Z]{1,3}$",
+          "description": "Declared column range, e.g. 'A:K'; null means every column."
         }
       }
     }

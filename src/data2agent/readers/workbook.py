@@ -40,7 +40,7 @@ that, so it is a stated limitation rather than a silent one.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
@@ -144,9 +144,10 @@ class SheetProfile:
     warnings: list[str] = field(default_factory=list)
     reader: Backend = OPENPYXL
     layout: layouts.HeaderLayout | None = None
+    block: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "path": self.path,
             "workbook": self.workbook,
             "sheet": self.sheet,
@@ -164,6 +165,10 @@ class SheetProfile:
             "missing": {column.name: column.missing for column in self.columns},
             "warnings": list(self.warnings),
         }
+        if self.block is not None:
+            # Only on a declared block (D2A-103), so every other profile is unchanged.
+            payload["block"] = dict(self.block)
+        return payload
 
 
 def available(format_id: str = "xlsx") -> bool:
@@ -176,7 +181,7 @@ def profile_workbook(
     relative_path: str,
     convention: MissingValueConvention = DEFAULT_CONVENTION,
     format_id: str = "xlsx",
-    layout_for: Callable[[str], layouts.TableLayout | None] | None = None,
+    layout_for: Callable[[str], layouts.TableLayout | layouts.TableBlocks | None] | None = None,
 ) -> list[SheetProfile]:
     """Profile every worksheet in a workbook whose format the bytes established.
 
@@ -211,9 +216,14 @@ def profile_workbook(
                 break
             declared = layout_for(f"{relative_path}#{name}") if layout_for else None
             try:
-                profiles.append(
-                    _profile_sheet(book, name, relative_path, index, convention, declared)
-                )
+                if isinstance(declared, layouts.TableBlocks):
+                    profiles.extend(
+                        _profile_blocks(book, name, relative_path, index, convention, declared)
+                    )
+                else:
+                    profiles.append(
+                        _profile_sheet(book, name, relative_path, index, convention, declared)
+                    )
             except LayoutError:
                 raise  # a wrong declaration is the user's to fix, not a bad sheet
             except Exception as exc:
@@ -467,45 +477,11 @@ def _profile_sheet(
         )
 
     merged = book.merged_ranges(name)
-
-    columns: list[ColumnProfile] = []
-    data_rows = 0
-
     numbered = (
         layouts.Row(number, raw_row) for number, raw_row in enumerate(book.iter_rows(name), start=1)
     )
-    layout, body = layouts.split_header(numbered, declared)
-    warnings.extend(layout.warnings)
+    layout, columns, data_rows = _profile_rows(numbered, declared, name, warnings, convention)
     header_row_index = layout.header_row
-    if header_row_index is not None:
-        header = _header_names(layout.labels, warnings, name, header_row_index)
-        columns = [new_column(n, i) for i, n in enumerate(header)]
-        if layout.header_cells is not None:
-            for column, cells in zip(columns, layout.header_cells, strict=False):
-                column.header_cells = cells
-
-    # Every row from the data start is an observation, blank ones included, as
-    # before D2A-97: the row reader counts offsets over the same rows.
-    for row in body:
-        cells = ["" if v is None else str(v) for v in row.cells]
-        data_rows += 1
-        if len(cells) > len(columns):
-            # Cells to the right of the header row. Recorded, never discarded:
-            # a header narrower than its data is a finding about the sheet.
-            for extra in range(len(columns), len(cells)):
-                columns.append(new_column(_column_letter(extra), extra))
-                columns[-1].missing_empty += data_rows - 1
-        for position, column in enumerate(columns):
-            _observe(column, cells[position] if position < len(cells) else "", convention)
-
-    # Finalised by the delimited profiler's own routine, so the invariant
-    # missing == missing_empty + missing_sentinel, and the uniqueness verdict a
-    # metadata rule reads, are computed identically for a sheet and for a CSV.
-    for column in columns:
-        finalise(column, data_rows)
-
-    warnings.extend(_convention_warnings(columns, convention))
-
     if header_row_index is None:
         warnings.append("sheet is empty; no header row and no data rows")
 
@@ -528,7 +504,122 @@ def _profile_sheet(
     )
 
 
-def _header_names(cells: list[str], warnings: list[str], sheet: str, row: int) -> list[str]:
+def _profile_blocks(
+    book: OpenWorkbook,
+    name: str,
+    workbook_path: str,
+    index: int,
+    convention: MissingValueConvention,
+    declared: layouts.TableBlocks,
+) -> list[SheetProfile]:
+    """One table per declared block of a sheet (D2A-103).
+
+    Each block reads its own region -- from just below the nearest block above
+    it to its ``last_row`` -- sliced to its columns, so a session banner between
+    two blocks becomes the lower block's recorded, readable preamble. The sheet
+    is read once per block: blocks are few, and one pass per block keeps side by
+    side blocks as simple as stacked ones. Column positions stay the sheet's
+    own, so the row reader indexes a record exactly as the profile did.
+    """
+    state = book.sheet_state(name)
+    merged = book.merged_ranges(name)
+    parent = f"{workbook_path}#{name}"
+    profiles: list[SheetProfile] = []
+    for block in declared.blocks:
+        warnings: list[str] = []
+        if state != "visible":
+            warnings.append(
+                f"sheet is '{state}'; profiled anyway, because a hidden sheet is "
+                f"still data the file carries"
+            )
+        start = declared.region_start(block)
+        numbered = (
+            layouts.Row(number, raw_row)
+            for number, raw_row in enumerate(book.iter_rows(name, min_row=start), start=start)
+        )
+        region = layouts.BoundedRows(numbered, start, block)
+        path = f"{parent}#{block.name}"
+        layout, columns, data_rows = _profile_rows(
+            region, block.layout, name, warnings, convention, offset=block.first_position
+        )
+        region.require_end(path)
+        profiles.append(
+            SheetProfile(
+                path=path,
+                workbook=workbook_path,
+                sheet=name,
+                sheet_index=index,
+                sheet_state=state,
+                header_row=layout.header_row,
+                has_header=layout.header_row is not None,
+                profiled=True,
+                rows=data_rows,
+                columns=columns,
+                merged_ranges=merged,
+                convention=convention,
+                warnings=warnings,
+                reader=book.backend,
+                layout=layout,
+                block=layouts.block_record(block, parent, workbook_path, start),
+            )
+        )
+    return profiles
+
+
+def _profile_rows(
+    numbered: Iterable[layouts.Row],
+    declared: layouts.TableLayout | None,
+    name: str,
+    warnings: list[str],
+    convention: MissingValueConvention,
+    *,
+    offset: int = 0,
+) -> tuple[layouts.HeaderLayout, list[ColumnProfile], int]:
+    """Header decision plus column profiles over a run of numbered sheet rows.
+
+    ``offset`` is the sheet position of the first cell in each row: 0 for a
+    whole sheet, the first column of a block declared with a column range.
+    """
+    columns: list[ColumnProfile] = []
+    data_rows = 0
+    layout, body = layouts.split_header(numbered, declared)
+    warnings.extend(layout.warnings)
+    header_row_index = layout.header_row
+    if header_row_index is not None:
+        header = _header_names(layout.labels, warnings, name, header_row_index, offset)
+        columns = [new_column(n, i) for i, n in enumerate(header)]
+        if layout.header_cells is not None:
+            for column, cells in zip(columns, layout.header_cells, strict=False):
+                column.header_cells = cells
+
+    # Every row from the data start is an observation, blank ones included, as
+    # before D2A-97: the row reader counts offsets over the same rows.
+    for row in body:
+        cells = ["" if v is None else str(v) for v in row.cells]
+        data_rows += 1
+        if len(cells) > len(columns):
+            # Cells to the right of the header row. Recorded, never discarded:
+            # a header narrower than its data is a finding about the sheet.
+            for extra in range(len(columns), len(cells)):
+                columns.append(new_column(_column_letter(offset + extra), extra))
+                columns[-1].missing_empty += data_rows - 1
+        for position, column in enumerate(columns):
+            _observe(column, cells[position] if position < len(cells) else "", convention)
+
+    # Finalised by the delimited profiler's own routine, so the invariant
+    # missing == missing_empty + missing_sentinel, and the uniqueness verdict a
+    # metadata rule reads, are computed identically for a sheet and for a CSV.
+    for column in columns:
+        finalise(column, data_rows)
+        column.position += offset
+
+    warnings.extend(_convention_warnings(columns, convention))
+    return layout, columns, data_rows
+
+
+def _header_names(
+    cells: list[str], warnings: list[str], sheet: str, row: int, offset: int = 0
+) -> list[str]:
     """Name the columns from the header row, filling blanks positionally.
 
     A blank header cell is named for its spreadsheet column so that the column
@@ -544,7 +635,7 @@ def _header_names(cells: list[str], warnings: list[str], sheet: str, row: int) -
         label = cell.strip()
         if not label:
             blanks += 1
-            label = _column_letter(position)
+            label = _column_letter(offset + position)
         if label in emitted:
             base, suffix = label, 1
             while f"{base}.{suffix}" in emitted:
@@ -553,7 +644,7 @@ def _header_names(cells: list[str], warnings: list[str], sheet: str, row: int) -
         emitted.add(label)
         names.append(label)
 
-    while names and names[-1] == _column_letter(len(names) - 1):
+    while names and names[-1] == _column_letter(offset + len(names) - 1):
         names.pop()  # trailing empties are the edge of the used range, not columns
 
     if blanks:
