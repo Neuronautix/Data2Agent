@@ -638,3 +638,47 @@ def test_declared_ingest_is_recorded_and_changes_what_the_baseline_retrieves(pac
     assert outcomes["undeclared"]["Q-unit"] == "fail"
     assert outcomes["declared"]["Q-unit"] == "pass"
     assert outcomes["declared"]["Q-count"] == "pass"
+    # the export carries a footer after last_row that the service's aggregate cannot
+    # exclude by position, so the native probe refuses instead of aggregating it
+    report = json.loads((package / "baseline_declared.json").read_text("utf-8"))
+    native = {q["id"]: q.get("native_aggregate") for q in report["questions"]}
+    assert native["Q-unit"]["status"] == "mixes_blocks"
+
+
+def test_the_native_unit_probe_matches_the_gold_on_a_clean_table(package: Path):
+    _conditions(package)
+    # drop the footer: the same export without rows after the data
+    tsv = package / "source" / "sub" / "bins.tsv"
+    lines = tsv.read_bytes().split(b"\r\n")[:12]
+    tsv.write_bytes(b"\r\n".join(lines) + b"\r\n")
+    checksums = json.loads((package / "checksums.json").read_text("utf-8"))
+    for f in checksums["files"]:
+        if f["path"] == "sub/bins.tsv":
+            f["sha256"] = xp16lib.sha256_file(tsv)
+    checksums["dataset_id"] = freeze.fold_dataset_id(
+        [(f["path"], f["sha256"]) for f in checksums["files"]]
+    )
+    (package / "checksums.json").write_text(json.dumps(checksums), encoding="utf-8")
+    assert _run(builder, ["--package", str(package)]) == 0
+    ingest_step.ingest(package, "declared")
+    out = package / "baseline.json"
+    argv = ["--package", str(package), "--ingest", str(package / "ingest_declared")]
+    assert _run(baseline, [*argv, "--out", str(out)]) == 0
+    report = json.loads(out.read_text("utf-8"))
+    native = {q["id"]: q.get("native_aggregate") for q in report["questions"]}
+    assert native["Q-unit"]["status"] == "pass", native["Q-unit"]
+
+
+def test_a_banner_cell_above_the_header_is_read_through_inspect_table(package: Path):
+    _conditions(package)
+    ingest_step.ingest(package, "declared")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from data2agent.mcp.service import DatasetService
+
+    config = yaml.safe_load((package / "config" / "tables.yaml").read_text(encoding="utf-8"))
+    svc = DatasetService(package / "ingest_declared", source_dir=package / "source")
+    src = baseline.ServiceRowSource(svc, config, xp16lib.FileRowSource(package / "source", config))
+    assert src.raw_cell("registry.xlsx", "Reg", "C1") == "Body weight"  # banner row
+    assert src.raw_cell("registry.xlsx", "Reg", "C2") == "Key"  # the header row itself
+    assert src.raw_cell("registry.xlsx", "Reg", "C3") == "C-1_I"  # a data row
+    assert "inspect_table(include_rows_above_data=True)" in src.tools_used

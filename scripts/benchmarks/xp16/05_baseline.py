@@ -99,6 +99,17 @@ class ServiceRowSource:
         self._raw: dict[str, tuple[list[str], dict[str, int], list[dict[str, Any]]]] = {}
         self._tables: dict[str, Table] = {}
         self.column_maps: dict[str, dict[str, Any]] = {}
+        self.renames: dict[str, dict[str, str]] = {}  # table id -> {service name: gold name}
+        self.tools_used: set[str] = {"read_rows"}
+        self.transform_crosswalks: dict[str, str] = {}  # gold transform -> service crosswalk
+
+    def service_name(self, table_id: str, gold_name: str) -> str:
+        """The service's name for a gold column (after table() has resolved it)."""
+        self.table(table_id)
+        for service, gold in self.renames.get(table_id, {}).items():
+            if gold == gold_name:
+                return service
+        return gold_name
 
     def file_sha(self, file: str) -> str:
         entry = next((f for f in self.svc.list_files() if f["path"] == file), None)
@@ -176,6 +187,7 @@ class ServiceRowSource:
         columns, positions, raw = self._fetch(key)
         delimited = spec.get("kind") == "delimited"
         rename = self._resolve_columns(table_id, columns, positions, delimited)
+        self.renames[table_id] = rename
         letters = {
             rename.get(name, name): (
                 str(positions[name] + 1) if delimited else _col_letter(positions[name] + 1)
@@ -234,13 +246,28 @@ class ServiceRowSource:
         columns, positions, raw = self._fetch(key)
         name = next((n for n, p in positions.items() if p == col_pos), None)
         header_row = int(profile.get("header_row") or 1)
-        if row < header_row:
+        first_data = min((int(r["source_row"]) for r in raw), default=header_row + 1)
+        if row < first_data:
+            # Not an observation: a banner / preamble row the header rule skipped, or a
+            # raw header row. An agent reads those through inspect_table (D2A-102).
+            above = self.svc.inspect_table(key, include_rows_above_data=True)
+            self.tools_used.add("inspect_table(include_rows_above_data=True)")
+            if not (above.get("integrity") or {}).get("matches", True):
+                raise KeyError(f"service withheld rows above the data of {key!r}")
+            for entry in above.get("rows_above_data", []):
+                if int(entry["row"]) == row:
+                    for c in entry.get("cells", []):
+                        if c.get("column_letter") == m.group(1):
+                            return _svc_value(c.get("value"))
+                    if entry.get("cells_truncated"):
+                        raise KeyError(f"row {row} of {key!r}: cells truncated by the service")
+                    return None
+            if row == header_row:
+                # a single header row is consumed as column names; a letter name means blank
+                return None if name in (None, m.group(1)) else _svc_value(name)
             raise KeyError(
-                f"row {row} lies above the service's header row {header_row}; not exposed"
+                f"row {row} of {key!r} lies above the data and inspect_table does not expose it"
             )
-        if row == header_row:
-            # the header cell was consumed as a column name; a letter fallback means it was blank
-            return None if name in (None, m.group(1)) else _svc_value(name)
         hit = next((r for r in raw if int(r["source_row"]) == row), None)
         if hit is None or name is None:
             return None
@@ -309,12 +336,31 @@ def _to_service_filters(where: list[dict[str, Any]] | None) -> list[dict[str, An
 
 
 def native_aggregate_probe(
-    svc: Any, src: ServiceRowSource, config: dict[str, Any], spec: dict[str, Any] | None, gold: Any
+    svc: Any,
+    src: ServiceRowSource,
+    config: dict[str, Any],
+    spec: dict[str, Any] | None,
+    gold: Any,
+    tolerance: float = 0.01,
 ) -> dict[str, Any] | None:
-    """One call to the service's aggregate tool for a single group_stats question."""
-    if not spec or spec.get("op") != "group_stats" or spec.get("join"):
+    """One service call for one group_stats computation, scored against the gold.
+
+    The service's own tools do the whole computation: ``aggregate`` with a
+    declared ``unit`` (per-animal reduction, then mean / sem across units), or
+    ``aggregate_join`` when the grouping column lives in another table -- through
+    the declared crosswalk when the gold join uses an identifier transform (the
+    ingest condition maps the transform to a crosswalk: ``transform_crosswalks``
+    in condition.json, so the gold config is untouched). Column names are
+    the service's own, resolved structurally as for the retrieval path.
+    """
+    if not spec or spec.get("op") != "group_stats":
         return None
-    tspec = config["tables"][spec["table"]]
+    tid = spec["table"]
+    tspec = config["tables"][tid]
+    try:
+        src.table(tid)
+    except KeyError as exc:
+        return {"status": "error", "reason": str(exc)}
     _, _, raw = src._fetch(tspec["service_table"])
     first = int(tspec.get("first_row", tspec["header_rows"][-1] + 1))
     last = tspec.get("last_row")
@@ -328,44 +374,140 @@ def native_aggregate_probe(
         return {
             "status": "mixes_blocks",
             "reason": f"the service table holds {outside} non-empty row(s) outside the declared "
-            "data rows (banner/header rows or other session blocks); aggregate cannot "
-            "restrict rows by position",
+            "data rows (other session blocks); aggregate cannot restrict rows by position",
         }
-    filters = _to_service_filters(spec.get("where"))
-    if filters is None:
-        return {
-            "status": "not_expressible",
-            "reason": "filter operator outside the service registry",
-        }
+
+    def left(col: str) -> str:
+        return src.service_name(tid, col)
+
+    by = list(spec.get("by", []))
+    units = [spec["unit"]] if isinstance(spec.get("unit"), str) else list(spec.get("unit") or [])
+    reduce = spec.get("reduce", "single")
+    join = spec.get("join")
+    where = [{**w, "col": left(w["col"])} for w in spec.get("where") or []]
     try:
-        res = svc.aggregate(
-            tspec["service_table"],
-            group_by=list(spec.get("by", [])),
-            metrics=[{"op": "count"}, {"op": "mean", "column": spec["value"]}],
-            filters=filters,
-        )
+        if join:
+            jt = config["tables"][join["table"]]
+            src.table(join["table"])
+
+            def right(col: str) -> str:
+                return src.service_name(join["table"], col)
+
+            named = join.get("right_transform") or join.get("left_transform")
+            crosswalk = src.transform_crosswalks.get(named) if named else None
+            if named and not crosswalk:
+                return {
+                    "status": "not_expressible",
+                    "reason": f"the ingest condition declares no service crosswalk for {named!r}",
+                }
+            filters = _to_service_filters([{**w, "col": f"left.{w['col']}"} for w in where])
+            if filters is None:
+                return {"status": "not_expressible", "reason": "filter outside the registry"}
+            value = f"left.{left(spec['value'])}"
+            group_by = [
+                f"right.{right(c)}" if c in join["columns"] else f"left.{left(c)}" for c in by
+            ]
+            unit_cols = [f"left.{left(u)}" for u in units]
+            res = svc.aggregate_join(
+                left=tspec["service_table"],
+                right=jt["service_table"],
+                left_keys=[left(join["left_key"])],
+                right_keys=[right(join["right_key"])],
+                crosswalk=crosswalk,
+                group_by=group_by,
+                filters=filters,
+                **_unit_args(unit_cols, reduce, value),
+            )
+            src.tools_used.add("aggregate_join" + (f"(crosswalk={crosswalk})" if crosswalk else ""))
+        else:
+            filters = _to_service_filters(where)
+            if filters is None:
+                return {"status": "not_expressible", "reason": "filter outside the registry"}
+            res = svc.aggregate(
+                tspec["service_table"],
+                group_by=[left(b) for b in by],
+                filters=filters,
+                **_unit_args([left(u) for u in units], reduce, left(spec["value"])),
+            )
+            src.tools_used.add("aggregate" + ("(unit)" if units else ""))
     except (KeyError, ValueError) as exc:
         return {"status": "error", "reason": str(exc)}
-    groups = [
-        {**g["group"], "n": g["metrics"]["count"], "mean": g["metrics"][f"mean:{spec['value']}"]}
-        for g in res["groups"]
-    ]
-    gold_n = (
-        {tuple(str(r.get(b)) for b in spec.get("by", [])): r.get("n") for r in gold}
-        if isinstance(gold, list)
-        else {}
-    )
-    native_n = {tuple(str(r.get(b)) for b in spec.get("by", [])): r["n"] for r in groups}
+
+    native = []
+    for g in res.get("groups", []):
+        mets = g.get("metrics", {})
+        native.append(
+            {
+                "group": [str(v) for v in g.get("group", {}).values()],
+                "n": g.get("n_units")
+                if "n_units" in g
+                else (mets.get("count") or 0)
+                - next((v for k, v in mets.items() if k.startswith("n_missing:")), 0),
+                "mean": next((v for k, v in mets.items() if k.startswith("mean:")), None),
+                "sem": next((v for k, v in mets.items() if k.startswith("sem:")), None),
+            }
+        )
+    expected = {tuple(str(r.get(b)) for b in by): r for r in gold} if isinstance(gold, list) else {}
+    problems = []
+    got = {tuple(r["group"]): r for r in native}
+    for key, row in expected.items():
+        hit = got.get(key)
+        if hit is None:
+            problems.append(f"group {key} missing")
+            continue
+        if hit["n"] != row.get("n"):
+            problems.append(f"group {key}: n {hit['n']} != {row.get('n')}")
+        for f in ("mean", "sem"):
+            e, v = row.get(f), hit[f]
+            if e is None and v is None:
+                continue
+            if e is None or v is None or abs(float(e) - float(v)) > tolerance:
+                problems.append(f"group {key}: {f} {v} != {e}")
+    extra = sorted(set(got) - set(expected))
+    if extra:
+        problems.append(f"unexpected group(s) {extra}")
     return {
-        "status": "ok",
-        "groups": groups,
-        "n_matches_gold": native_n == gold_n,
-        "note": "service aggregate counts rows and returns no SEM; "
-        + (
-            "rows == units here"
-            if native_n == gold_n
-            else "rows != animals: the unit-of-analysis gap"
-        ),
+        "status": "pass" if not problems else "fail",
+        "groups": native,
+        **({"detail": "; ".join(problems)} if problems else {}),
+    }
+
+
+def _probe(
+    svc: Any, src: ServiceRowSource, config: dict[str, Any], compute: Any, gold: Any
+) -> dict[str, Any] | None:
+    """Native probe for a group_stats computation, or for each group_stats part of a bundle."""
+    probe = native_aggregate_probe(svc, src, config, compute, gold)
+    if probe is None and compute and compute.get("op") == "bundle":
+        parts = {
+            name: native_aggregate_probe(
+                svc, src, config, sub, (gold or {}).get(name) if isinstance(gold, dict) else None
+            )
+            for name, sub in compute["parts"].items()
+        }
+        parts = {k: v for k, v in parts.items() if v is not None}
+        if parts:
+            statuses = {v["status"] for v in parts.values()}
+            return {"status": "pass" if statuses == {"pass"} else "fail", "parts": parts}
+    return probe
+
+
+def _unit_args(unit: list[str], reduce: str, value: str) -> dict[str, Any]:
+    """Metric arguments for one value: per-unit reduction first when a unit is declared."""
+    if unit:
+        op = reduce if reduce in {"sum", "mean"} else "mean"  # 'single': mean of one value
+        return {
+            "unit": unit,
+            "unit_metrics": [{"op": op, "column": value, "name": "v"}],
+            "metrics": [{"op": "mean", "column": "v"}, {"op": "sem", "column": "v"}],
+        }
+    return {
+        "metrics": [
+            {"op": "count"},
+            {"op": "n_missing", "column": value},
+            {"op": "mean", "column": value},
+            {"op": "sem", "column": value},
+        ]
     }
 
 
@@ -445,6 +587,9 @@ def main() -> int:
     scorer = _scorer()
     gold_reader = None if args.names_as_is else FileRowSource(pkg / "source", config)
     src = ServiceRowSource(svc, config, gold_reader)
+    src.transform_crosswalks = dict(
+        (_condition(args.ingest.resolve()) or {}).get("transform_crosswalks") or {}
+    )
     missing = set(filter(None, args.missing_capabilities.split(",")))
 
     rows = []
@@ -475,15 +620,7 @@ def main() -> int:
                 rec["retrieval"] = {"outcome": "pass" if ok else "wrong", "answer": answer}
                 if why:
                     rec["retrieval"]["detail"] = why
-            probe = native_aggregate_probe(svc, src, config, compute, q["expected"])
-            if probe is None and compute and compute.get("op") == "bundle":
-                parts = {
-                    name: native_aggregate_probe(
-                        svc, src, config, sub, (q["expected"] or {}).get(name)
-                    )
-                    for name, sub in compute["parts"].items()
-                }
-                probe = {k: v for k, v in parts.items() if v is not None} or None
+            probe = _probe(svc, src, config, compute, q["expected"])
             if probe is not None:
                 rec["native_aggregate"] = probe
         else:
@@ -501,10 +638,25 @@ def main() -> int:
                         q.get("provisional_answer"), sort_keys=True, default=str
                     )
                     rec["evidence"]["matches_provisional"] = same
+            if q["status"] == "pending":
+                probe = _probe(svc, src, config, compute, q.get("provisional_answer"))
+                if probe is not None:
+                    rec["native_aggregate"] = {"against": "provisional_answer", **probe}
         rows.append(rec)
 
     answerable = [r for r in rows if r["status"] == "answerable"]
+    probed = [r for r in rows if "native_aggregate" in r]
     summary = {
+        "native_aggregate": {
+            "probed": len(probed),
+            "pass": sorted(r["id"] for r in probed if r["native_aggregate"]["status"] == "pass"),
+            "not_pass": {
+                r["id"]: r["native_aggregate"]["status"]
+                for r in probed
+                if r["native_aggregate"]["status"] != "pass"
+            },
+        },
+        "service_tools_used": sorted(src.tools_used),
         "answerable": len(answerable),
         "retrieval_pass": sum(r["retrieval"]["outcome"] == "pass" for r in answerable),
         "retrieval_wrong": sum(r["retrieval"]["outcome"] == "wrong" for r in answerable),

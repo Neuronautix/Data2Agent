@@ -232,10 +232,19 @@ ignored), so naming conventions do not fail a question but a wrong header row
 or a missing upper label does; `--names-as-is` restores name-only matching,
 which can pass a question by reading a same-named column elsewhere in the
 sheet. A failure is classified by the retrieval gap behind it (`header_detection`, `multi_table_sheet`, `boris_tsv_preamble`,
-...). For aggregation questions it also calls the service's own `aggregate`
-tool once, which has no per-unit reduction and no SEM, and reports whether its
-row count equals the gold's number of animals. For abstention and pending
-questions it checks whether the evidence an agent would need is retrievable.
+...). A cell above a table's data (a block title, a banner) is read the way an
+agent would read it, through `inspect_table(..., include_rows_above_data=True)`.
+
+For aggregation questions it also makes one native service call and scores it
+against the gold's n (units), mean and sem: `aggregate` with the declared `unit`
+and per-unit reduction, or `aggregate_join` when the grouping column lives in
+another table -- through the declared crosswalk when the gold join uses an
+identifier transform (`transform_crosswalks` in the ingest condition). A table
+whose service rows extend beyond the declared data rows (another block, a
+footer) is reported as `mixes_blocks` rather than aggregated. Pending questions
+are probed against their provisional answer. For abstention and pending
+questions it also checks whether the evidence an agent would need is
+retrievable. The report lists every service tool the run used.
 
 ## Scope
 

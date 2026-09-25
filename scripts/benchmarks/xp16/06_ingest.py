@@ -9,7 +9,8 @@ Public and data-free. The condition is read from the package:
         "declared":   {"output": "ingest_declared",
                        "layout": "layouts.json",               # ingest --layout
                        "relationships": "relationships.json",  # relationships --declarations
-                       "crosswalks": {"<name>": "crosswalk.csv"}}}}  # --crosswalk NAME=PATH
+                       "crosswalks": {"<name>": "crosswalk.csv"},  # --crosswalk NAME=PATH
+                       "transform_crosswalks": {"<gold transform>": "<name>"}}}}
 
 (paths relative to ``<pkg>/config``), and run as
 
@@ -135,6 +136,9 @@ def ingest(pkg: Path, name: str, *, force: bool = False) -> Path:
         "dataset_id": checksums["dataset_id"],
         "mode": mode,
         "declarations": declarations,
+        # which declared crosswalk realises which gold identifier transform, so the
+        # baseline can hand a cross-file aggregation to aggregate_join
+        "transform_crosswalks": dict(cond.get("transform_crosswalks") or {}),
         "manifest_sha256": sha256_file(out / "manifest.json"),
         "relationships_sha256": (
             sha256_file(out / "relationships.json")
