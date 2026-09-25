@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .. import query
+from .. import query, relationships
 from ..errors import ModeError, OutputError
 from ..evidence import EvidenceLedger
 from ..ingest.checksum import hash_file
@@ -65,15 +65,28 @@ class DatasetService:
         *,
         source_dir: Path | None = None,
         mode: str = DEFAULT_MODE,
+        load_relationships: bool = True,
     ) -> None:
         self.output_dir = Path(output_dir).expanduser().resolve()
         self.mode: Mode = resolve_mode(mode)
 
         self.manifest = _load_json(self.output_dir / MANIFEST_FILENAME)
+        # The manifest records how the bytes were read (missing-value convention,
+        # profiles); relationship assessments are only valid under that reading.
+        self.manifest_sha256 = hash_file(self.output_dir / MANIFEST_FILENAME)
         self.provenance = _load_json(self.output_dir / PROVENANCE_FILENAME)
         evidence = _load_json(self.output_dir / EVIDENCE_FILENAME)
         _require_one_dataset(self.manifest, self.provenance, evidence)
         self.ledger = EvidenceLedger.from_dict(evidence)
+        self.relationship_bundle = (
+            _load_relationship_bundle(
+                self.output_dir / relationships.RELATIONSHIPS_FILENAME,
+                self.dataset_id,
+                self.manifest_sha256,
+            )
+            if load_relationships
+            else None
+        )
 
         recorded_source = self.provenance.get("source_path")
         candidate = (
@@ -119,6 +132,7 @@ class DatasetService:
 
     def dataset_inventory(self) -> dict[str, Any]:
         """Summarise the dataset without reading any file content."""
+        relationship_listing = self.list_relationships()
         return {
             "dataset_id": self.dataset_id,
             "manifest_version": self.manifest.get("manifest_version"),
@@ -137,10 +151,12 @@ class DatasetService:
             "metadata_files": self.manifest.get("metadata_files", []),
             "metadata_candidates": self.manifest.get("metadata_candidates", []),
             "identifier_count": len(self.manifest.get("identifiers", [])),
-            # Empty means "this version does not determine relationships", not
-            # "this dataset has none". The distinction matters for FAIR scoring.
-            "relationships": self.manifest.get("relationships", []),
-            "relationships_determined": False,
+            # Relationship resolution is a derived layer, not part of ingest.
+            # Without relationships.json, empty means "not determined".
+            "relationships": relationship_listing["relationships"],
+            "relationships_determined": relationship_listing["determined"],
+            "relationship_status_counts": relationship_listing.get("status_counts", {}),
+            "relationships_integrity": relationship_listing.get("source_integrity"),
             "warnings": self.manifest.get("warnings", []),
             "skipped": self.manifest.get("skipped", []),
             "mode": self.mode.name,
@@ -582,6 +598,206 @@ class DatasetService:
         payload.update(result)
         return payload
 
+    def build_relationships(
+        self,
+        declarations: list[dict[str, Any]] | None = None,
+        *,
+        declaration_source: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve structural candidates and explicit relationship declarations.
+
+        Structural overlap is always a candidate. Only an explicit declaration
+        (or a future supported deterministic convention) may produce a
+        relationship eligible for named execution.
+        """
+        tables = {
+            path: profile
+            for path, profile in self.manifest.get("tables", {}).items()
+            if isinstance(profile, dict) and profile.get("profiled", True)
+        }
+        supplied = list(declarations or [])
+        records: dict[str, dict[str, Any]] = {}
+        skipped: list[dict[str, Any]] = []
+
+        for index, declaration in enumerate(supplied):
+            spec = _validate_declaration(declaration, index)
+            basis: dict[str, Any] = {
+                "method": "explicit-declaration",
+                "note": spec.get("note") or "relationship explicitly declared by configuration",
+            }
+            if declaration_source:
+                basis["declaration_source"] = dict(declaration_source)
+            record = self._assess_relationship_spec(
+                spec,
+                status="declared",
+                basis=basis,
+                expected_cardinality=spec.get("expected_cardinality"),
+            )
+            records[record["id"]] = record
+
+        for spec in relationships.candidate_key_specs(tables):
+            candidate_id = relationships.stable_relationship_id(
+                self.dataset_id,
+                spec["left"],
+                spec["right"],
+                spec["left_keys"],
+                spec["right_keys"],
+            )
+            if candidate_id in records:
+                continue
+            try:
+                record = self._assess_relationship_spec(
+                    spec,
+                    status="candidate",
+                    basis=spec["basis"],
+                )
+            except ValueError as error:
+                skipped.append(
+                    {
+                        "left": spec["left"],
+                        "right": spec["right"],
+                        "left_keys": spec["left_keys"],
+                        "right_keys": spec["right_keys"],
+                        "reason": str(error),
+                    }
+                )
+                continue
+            # A shared column name with zero observed key overlap is not a
+            # relationship candidate; preserving it would turn absence into noise.
+            if record["matched_distinct_keys"]:
+                records[record["id"]] = record
+
+        ordered = [records[key] for key in sorted(records)]
+        status_counts: dict[str, int] = {}
+        for record in ordered:
+            status = record["status"]
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        payload: dict[str, Any] = {
+            "relationships_version": relationships.RELATIONSHIP_VERSION,
+            "dataset_id": self.dataset_id,
+            "manifest_sha256": self.manifest_sha256,
+            "determined": True,
+            "relationship_count": len(ordered),
+            "status_counts": dict(sorted(status_counts.items())),
+            "relationships": ordered,
+            "skipped": sorted(
+                skipped,
+                key=lambda item: (
+                    item["left"],
+                    item["right"],
+                    tuple(item["left_keys"]),
+                    tuple(item["right_keys"]),
+                ),
+            ),
+        }
+        if declaration_source:
+            payload["declaration_source"] = dict(declaration_source)
+        return payload
+
+    def list_relationships(self, status: str | None = None) -> dict[str, Any]:
+        """List saved relationships; absent sidecar means not determined, never none."""
+        if self.relationship_bundle is None:
+            return {
+                "dataset_id": self.dataset_id,
+                "determined": False,
+                "relationships": [],
+                "total": 0,
+                "note": (
+                    "relationship resolution has not been run; use "
+                    "'data2agent relationships <output>' to create relationships.json"
+                ),
+            }
+        records = list(self.relationship_bundle.get("relationships", []))
+        backing_files = sorted(
+            {
+                endpoint["backing_file"]
+                for record in records
+                for endpoint in (record["left"], record["right"])
+            }
+        )
+        integrity = [self.verify_file(path).as_dict() for path in backing_files]
+        drifted = [item for item in integrity if not item["matches"]]
+        if drifted:
+            return {
+                "dataset_id": self.dataset_id,
+                "determined": bool(self.relationship_bundle.get("determined")),
+                "relationships_version": self.relationship_bundle.get("relationships_version"),
+                "relationships": [],
+                "total": 0,
+                "status_counts": self.relationship_bundle.get("status_counts", {}),
+                "skipped": self.relationship_bundle.get("skipped", []),
+                "source_integrity": {"matches": False, "files": integrity},
+                "content_withheld": (
+                    "saved relationship assertions were derived from source bytes that no "
+                    "longer match the dataset manifest; re-ingest and regenerate relationships"
+                ),
+            }
+        if status is not None:
+            if status not in relationships.STATUSES:
+                raise ValueError(
+                    f"unknown relationship status {status!r}; "
+                    f"choose from {sorted(relationships.STATUSES)}"
+                )
+            records = [record for record in records if record.get("status") == status]
+        return {
+            "dataset_id": self.dataset_id,
+            "determined": bool(self.relationship_bundle.get("determined")),
+            "relationships_version": self.relationship_bundle.get("relationships_version"),
+            "relationships": records,
+            "total": len(records),
+            "status_counts": self.relationship_bundle.get("status_counts", {}),
+            "skipped": self.relationship_bundle.get("skipped", []),
+            "source_integrity": {"matches": True, "files": integrity},
+        }
+
+    def get_relationship(self, relationship_id: str) -> dict[str, Any]:
+        """Return one saved relationship record by stable id."""
+        listing = self.list_relationships()
+        if not listing["determined"]:
+            raise KeyError("relationships have not been determined for this dataset")
+        if listing.get("content_withheld"):
+            raise OutputError(listing["content_withheld"])
+        for record in listing["relationships"]:
+            if record.get("id") == relationship_id:
+                return {"dataset_id": self.dataset_id, "relationship": record}
+        raise KeyError(f"no relationship with id {relationship_id!r}")
+
+    def join_relationship(
+        self,
+        relationship_id: str,
+        *,
+        left_columns: list[str] | None = None,
+        right_columns: list[str] | None = None,
+        how: str = "inner",
+        limit: int = _DEFAULT_READ_ROWS,
+    ) -> dict[str, Any]:
+        """Execute a saved declared/deterministic relationship as a join contract."""
+        record = self.get_relationship(relationship_id)["relationship"]
+        status = record["status"]
+        if status not in {"declared", "deterministic"}:
+            raise ValueError(
+                f"relationship {relationship_id!r} has status {status!r}; "
+                "only declared or deterministic relationships can drive a named join"
+            )
+        result = self.join_tables(
+            record["left"]["table"],
+            record["right"]["table"],
+            left_keys=list(record["left"]["keys"]),
+            right_keys=list(record["right"]["keys"]),
+            left_columns=left_columns,
+            right_columns=right_columns,
+            how=how,
+            limit=limit,
+        )
+        result["relationship_contract"] = {
+            "id": relationship_id,
+            "status": status,
+            "cardinality": record["cardinality"],
+            "basis": record["basis"],
+        }
+        return result
+
     def get_metadata(self, path: str | None = None) -> dict[str, Any]:
         """Serve recognised metadata files verbatim.
 
@@ -832,6 +1048,8 @@ class DatasetService:
             return json.dumps(self.ledger.as_dict(), indent=2, ensure_ascii=False)
         if uri == "dataset://metadata":
             return json.dumps(self.get_metadata(), indent=2, ensure_ascii=False)
+        if uri == "dataset://relationships":
+            return json.dumps(self.list_relationships(), indent=2, ensure_ascii=False)
         if uri.startswith("dataset://files/"):
             return json.dumps(
                 self.inspect_file(uri[len("dataset://files/") :]), indent=2, ensure_ascii=False
@@ -946,6 +1164,55 @@ class DatasetService:
             context["scan_complete"] = len(rows) < max_rows
         return context, rows
 
+    def _assess_relationship_spec(
+        self,
+        spec: dict[str, Any],
+        *,
+        status: str,
+        basis: dict[str, Any],
+        expected_cardinality: str | None = None,
+    ) -> dict[str, Any]:
+        left = str(spec["left"])
+        right = str(spec["right"])
+        left_keys = [str(value) for value in spec["left_keys"]]
+        right_keys = [str(value) for value in spec["right_keys"]]
+
+        left_context, left_rows = self._scan_table(
+            left,
+            columns=left_keys,
+            max_rows=_MAX_JOIN_SCAN_ROWS,
+            require_complete=True,
+        )
+        right_context, right_rows = self._scan_table(
+            right,
+            columns=right_keys,
+            max_rows=_MAX_JOIN_SCAN_ROWS,
+            require_complete=True,
+        )
+        drifted = [
+            side
+            for side, context in (("left", left_context), ("right", right_context))
+            if not context["integrity"]["matches"]
+        ]
+        if drifted:
+            raise OutputError(
+                "cannot assess relationships against drifted source bytes: " + ", ".join(drifted)
+            )
+        return relationships.assess_relationship(
+            dataset_id=self.dataset_id,
+            left_table=left,
+            right_table=right,
+            left_keys=left_keys,
+            right_keys=right_keys,
+            left_rows=left_rows,
+            right_rows=right_rows,
+            left_context=left_context,
+            right_context=right_context,
+            status=status,
+            basis=basis,
+            expected_cardinality=expected_cardinality,
+        )
+
     def _require_entry(self, path: str) -> dict[str, Any]:
         entry = self._by_path.get(path)
         if entry is None:
@@ -990,6 +1257,64 @@ def _require_one_dataset(
             "this output directory does not describe a single dataset: "
             f"{detail}. Re-run `data2agent ingest` into a clean directory."
         )
+
+
+def _validate_declaration(declaration: dict[str, Any], index: int) -> dict[str, Any]:
+    if not isinstance(declaration, dict):
+        raise ValueError(f"declaration {index} must be an object")
+    required = ("left", "right", "left_keys", "right_keys")
+    missing = [field for field in required if field not in declaration]
+    if missing:
+        raise ValueError(f"declaration {index} is missing required field(s): {missing}")
+
+    left_keys = declaration["left_keys"]
+    right_keys = declaration["right_keys"]
+    if not isinstance(left_keys, list) or not isinstance(right_keys, list):
+        raise ValueError(f"declaration {index} keys must be arrays")
+    if not left_keys or len(left_keys) != len(right_keys):
+        raise ValueError(
+            f"declaration {index} left_keys/right_keys must be non-empty and equal length"
+        )
+
+    result = {
+        "left": str(declaration["left"]),
+        "right": str(declaration["right"]),
+        "left_keys": [str(value) for value in left_keys],
+        "right_keys": [str(value) for value in right_keys],
+    }
+    if declaration.get("expected_cardinality") is not None:
+        expected = str(declaration["expected_cardinality"])
+        if expected not in relationships.CARDINALITIES:
+            raise ValueError(
+                f"declaration {index} has unsupported expected_cardinality {expected!r}"
+            )
+        result["expected_cardinality"] = expected
+    if declaration.get("note") is not None:
+        result["note"] = str(declaration["note"])
+    return result
+
+
+def _load_relationship_bundle(
+    path: Path, dataset_id: str, manifest_sha256: str
+) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("dataset_id") != dataset_id:
+        raise OutputError(
+            f"{path.name} belongs to dataset {payload.get('dataset_id')!r}, "
+            f"but the manifest describes {dataset_id!r}; regenerate relationships"
+        )
+    # Same bytes, different reading: a re-ingest under another missing-value
+    # convention keeps dataset_id but changes which keys exist, so saved overlap,
+    # cardinality, and declared status no longer describe what a join would do.
+    if payload.get("manifest_sha256") != manifest_sha256:
+        raise OutputError(
+            f"{path.name} was computed against a different manifest.json "
+            "(the dataset was re-ingested, e.g. under another missing-value "
+            "convention); regenerate relationships"
+        )
+    return payload
 
 
 def _bounded_result_limit(limit: int) -> int:

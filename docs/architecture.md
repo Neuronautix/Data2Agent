@@ -20,16 +20,16 @@ workflows — is a layer *on top of* that, and is separable from it by design.
                        service.py ← all behaviour, host-agnostic
                        modes.py   ← benchmark tool gating
                                     │
-                    ┌───────────────┴───────────────┐
-                    │                               │
-              evidence layer                  profiles
-        (src/data2agent/evidence/)      (src/data2agent/profiles/)
-        claim → evidence → file → sha256      fair/ · domain/ (later)
-                    │                    rules · loader · runner · checks
-                    │                               │
-                    └───────────────┬───────────────┘
-                                    │
-              deterministic ingest  (src/data2agent/ingest/)
+            ┌───────────────────────┼───────────────────────┐
+            │                       │                       │
+       query layer             relationships          profiles/evidence
+(src/data2agent/query/)  (src/data2agent/relationships/)  deterministic facts
+ filter · aggregate       candidate/declared links    FAIR rules + ledger
+ join · describe          evidence + cardinality
+            │                       │                       │
+            └───────────────────────┴───────────┬───────────┘
+                                                │
+                         deterministic ingest  (src/data2agent/ingest/)
         inventory · checksum · formats · tabular · structured · conventions
         · identifiers · metadata · provenance · pipeline
                                     │
@@ -91,9 +91,15 @@ compared for equality.
 | --- | --- | --- |
 | `manifest.json` | what the dataset **is** | yes, byte-identical |
 | `provenance.json` | what this **run** was (time, host, tool version) | no, by definition |
-| `evidence.json` | every claim, and what supports it | yes, byte-identical |
+| `evidence.json` | every ingest claim, and what supports it | yes, byte-identical |
+| `relationships.json` | optional derived relationship assessments | yes, for equal manifest + declarations |
 
-They are joined by `dataset_id`.
+The first three are written by ingest. `relationships.json` is written only by
+the explicit relationship-resolution step, so discovering or declaring joins
+never changes `manifest.json`. All artifacts are joined by `dataset_id`;
+`relationships.json` is additionally bound to the SHA-256 of the `manifest.json`
+it was computed against, because a re-ingest of the same bytes under another
+missing-value convention keeps `dataset_id` but changes which keys exist.
 
 ## Why the service and the binding are separate modules
 
@@ -144,6 +150,8 @@ Data2Agent/
 │   ├── evidence/            claim → evidence → file → checksum
 │   ├── profiles/            rule registries + deterministic checks
 │   │   └── fair/            profile.yaml · rules/*.yaml · checks.py
+│   ├── query/               bounded filter/aggregate/join operations
+│   ├── relationships/       evidence-bearing cross-table relationship assessment
 │   ├── mcp/                 service (behaviour) + server (binding) + modes
 │   ├── report.py            evidence-backed Markdown + host connection files
 │   └── cli.py

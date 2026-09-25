@@ -206,6 +206,9 @@ generating bespoke tools per dataset and inheriting the generator's variance.
 | `aggregate(path, metrics, group_by, filters)` | complete-scan count/missing/sum/mean/min/max summaries |
 | `describe_variable(path, column)` | profile + deterministic observed summary for one column |
 | `join_tables(left, right, left_keys, right_keys, ...)` | explicit-key join with cardinality diagnostics |
+| `list_relationships(status?)` | saved declared/deterministic/candidate/rejected table relationships |
+| `get_relationship(id)` | one evidence-bearing relationship record |
+| `join_relationship(id, ...)` | execute only a saved declared/deterministic join contract |
 | `get_metadata(path)` | recognised metadata files, served verbatim |
 | `get_evidence(...)` | what supports a claim |
 | `get_provenance()` | when, how long, with what version this was ingested |
@@ -221,7 +224,7 @@ In the `fair-*` modes only:
 | `validate_identifier(value)` | syntax against the scheme; no network call |
 
 Resources: `dataset://manifest`, `dataset://metadata`, `dataset://provenance`,
-`dataset://evidence`, `dataset://files/{path}`.
+`dataset://evidence`, `dataset://relationships`, `dataset://files/{path}`.
 
 Timestamps live in `provenance.json` rather than the manifest, so that repeated
 ingests of identical bytes still compare byte-for-byte — but they are surfaced
@@ -231,6 +234,40 @@ nobody can reach is as good as absent.
 Every tool re-checksums a file before returning its content, and withholds it on
 a mismatch. An answer drawn from drifted bytes is worse than no answer, because
 it is indistinguishable from a good one.
+
+## Cross-table relationships
+
+Relationship resolution is a derived step and never rewrites the ingest
+manifest. Run:
+
+```bash
+data2agent relationships ./preclinical-agent
+```
+
+to write `relationships.json`. Structural discovery is deliberately
+conservative: a shared subject-identifier-shaped column with overlapping values
+is recorded as `candidate`, never promoted to fact.
+
+Explicit declarations can be supplied as JSON:
+
+```bash
+data2agent relationships ./preclinical-agent \
+  --declarations relationships.declared.json
+```
+
+A declaration records the left/right tables and key columns, including composite
+keys. It can optionally state an expected cardinality. If the observed
+cardinality disagrees, or no complete key overlaps, the relationship is stored
+as `rejected`.
+
+Saved relationship records include backing-file checksums, completeness,
+uniqueness, observed cardinality, overlap counts and example source-row
+locators. `join_relationship(id)` refuses `candidate` and `rejected`
+records; only `declared` or future convention-proven `deterministic`
+relationships can drive a named join.
+
+Until relationship resolution has actually run,
+`relationships_determined: false` remains the API answer.
 
 ## Benchmark modes
 

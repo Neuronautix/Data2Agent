@@ -3,6 +3,7 @@
 data2agent ingest  <dataset> -o <output>   deterministic scan -> manifest/evidence
 data2agent verify  <output>                re-checksum the source against the manifest
 data2agent serve   <output> --mode <mode>  run the Data2MCP server over stdio
+data2agent relationships <output>          resolve cross-table relationships
 data2agent modes                           list benchmark modes and their status
 """
 
@@ -16,10 +17,12 @@ from pathlib import Path
 from . import __version__
 from .errors import Data2AgentError
 from .ingest import ingest
+from .ingest.checksum import hash_file
 from .ingest.conventions import STRICT_CONVENTION, custom
 from .ingest.pipeline import write_json
 from .mcp.modes import DEFAULT_MODE, MODES
 from .mcp.service import DatasetService
+from .relationships import RELATIONSHIPS_FILENAME
 from .report import write_mcp_config, write_report
 
 
@@ -31,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     except Data2AgentError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
-    except (KeyError, FileNotFoundError) as error:
+    except (KeyError, FileNotFoundError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
@@ -97,6 +100,22 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--mode", default=DEFAULT_MODE, choices=sorted(MODES))
     serve_parser.add_argument("--transport", default="stdio")
     serve_parser.set_defaults(handler=_cmd_serve)
+
+    relationships_parser = subparsers.add_parser(
+        "relationships",
+        help="resolve structural relationship candidates and explicit declarations",
+    )
+    relationships_parser.add_argument("output", type=Path, help="an ingest output directory")
+    relationships_parser.add_argument(
+        "--source", type=Path, default=None, help="override the recorded source"
+    )
+    relationships_parser.add_argument(
+        "--declarations",
+        type=Path,
+        default=None,
+        help="JSON file containing explicit relationship declarations",
+    )
+    relationships_parser.set_defaults(handler=_cmd_relationships)
 
     modes_parser = subparsers.add_parser("modes", help="list benchmark modes")
     modes_parser.set_defaults(handler=_cmd_modes)
@@ -179,6 +198,48 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     from .mcp.server import serve
 
     serve(args.output, source_dir=args.source, mode=args.mode, transport=args.transport)
+    return 0
+
+
+def _cmd_relationships(args: argparse.Namespace) -> int:
+    declarations: list[dict] = []
+    declaration_source = None
+    if args.declarations is not None:
+        path = args.declarations.expanduser().resolve()
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            payload = payload.get("relationships")
+        if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+            raise ValueError(
+                "declarations must be a JSON array of relationship objects, or an object "
+                "with a 'relationships' array"
+            )
+        declarations = payload
+        declaration_source = {
+            "kind": "user-configuration",
+            "name": path.name,
+            "sha256": hash_file(path),
+        }
+
+    service = DatasetService(
+        args.output,
+        source_dir=args.source,
+        load_relationships=False,
+    )
+    bundle = service.build_relationships(
+        declarations,
+        declaration_source=declaration_source,
+    )
+    destination = Path(args.output).expanduser().resolve() / RELATIONSHIPS_FILENAME
+    write_json(destination, bundle)
+
+    print(f"dataset_id    : {bundle['dataset_id']}")
+    print(f"relationships : {bundle['relationship_count']}")
+    print(
+        "statuses      : "
+        + ", ".join(f"{count} {status}" for status, count in bundle["status_counts"].items())
+    )
+    print(f"written       : {destination}")
     return 0
 
 

@@ -20,6 +20,24 @@ def test_manifest_matches_its_schema(ingested):
     jsonschema.validate(ingested.manifest, _schema("dataset-manifest.schema.json"))
 
 
+def test_relationship_bundle_matches_its_schema(ingested):
+    from data2agent.mcp import DatasetService
+
+    service = DatasetService(ingested.output_dir, load_relationships=False)
+    bundle = service.build_relationships(
+        [
+            {
+                "left": "animals.csv",
+                "right": "observations.csv",
+                "left_keys": ["animal_id"],
+                "right_keys": ["animal_id"],
+                "expected_cardinality": "one_to_many",
+            }
+        ]
+    )
+    jsonschema.validate(bundle, _schema("relationships.schema.json"))
+
+
 def test_evidence_matches_its_schema(ingested):
     jsonschema.validate(ingested.evidence.as_dict(), _schema("evidence.schema.json"))
 

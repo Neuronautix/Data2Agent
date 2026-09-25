@@ -9,6 +9,7 @@ import pytest
 
 from data2agent.errors import OutputError
 from data2agent.ingest import ingest
+from data2agent.ingest.conventions import STRICT_CONVENTION
 from data2agent.mcp import DatasetService
 
 
@@ -165,6 +166,209 @@ def test_join_tables_uses_explicit_keys_and_reports_cardinality(service):
     assert payload["rows"][0]["source_rows"] == {"left": 2, "right": 2}
 
 
+def test_relationships_remain_undetermined_until_sidecar_exists(service):
+    listing = service.list_relationships()
+    assert listing["determined"] is False
+    assert listing["relationships"] == []
+    assert service.dataset_inventory()["relationships_determined"] is False
+
+
+def test_structural_overlap_is_candidate_not_promoted(service):
+    bundle = service.build_relationships()
+
+    assert bundle["determined"] is True
+    assert bundle["status_counts"] == {"candidate": 1}
+    relation = bundle["relationships"][0]
+    assert relation["status"] == "candidate"
+    assert relation["left"]["table"] == "animals.csv"
+    assert relation["right"]["table"] == "observations.csv"
+    assert relation["left"]["keys"] == ["animal_id"]
+    assert relation["right"]["keys"] == ["animal_id"]
+    assert relation["cardinality"] == "one_to_many"
+    assert relation["matched_distinct_keys"] == 48
+    assert relation["joined_row_count"] == 144
+    assert relation["evidence"]["examples"]
+    # Runtime discovery alone does not mutate the output contract.
+    assert service.dataset_inventory()["relationships_determined"] is False
+
+
+def test_declared_relationship_can_drive_named_join(ingested):
+    builder = DatasetService(ingested.output_dir, load_relationships=False)
+    bundle = builder.build_relationships(
+        [
+            {
+                "left": "animals.csv",
+                "right": "observations.csv",
+                "left_keys": ["animal_id"],
+                "right_keys": ["animal_id"],
+                "expected_cardinality": "one_to_many",
+                "note": "animal registry to repeated observations",
+            }
+        ]
+    )
+    (ingested.output_dir / "relationships.json").write_text(
+        json.dumps(bundle, indent=2) + "\n", encoding="utf-8"
+    )
+
+    service = DatasetService(ingested.output_dir)
+    inventory = service.dataset_inventory()
+    assert inventory["relationships_determined"] is True
+    relation = service.list_relationships(status="declared")["relationships"][0]
+    assert relation["status"] == "declared"
+    assert relation["cardinality"] == "one_to_many"
+
+    joined = service.join_relationship(
+        relation["id"],
+        left_columns=["animal_id", "genotype"],
+        right_columns=["observation_id", "session"],
+        limit=4,
+    )
+    assert joined["total_result_rows"] == 144
+    assert joined["returned"] == 4
+    assert joined["relationship_contract"]["id"] == relation["id"]
+    assert joined["relationship_contract"]["status"] == "declared"
+
+
+def test_composite_declared_relationship_is_representable(tmp_path: Path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "subjects.csv").write_text(
+        "batch,local_id,group\n1,A,control\n1,B,test\n2,A,test\n",
+        encoding="utf-8",
+    )
+    (source / "sessions.csv").write_text(
+        "batch,local_id,session\n1,A,1\n1,A,2\n1,B,1\n2,A,1\n",
+        encoding="utf-8",
+    )
+    result = ingest(source, tmp_path / "out")
+    service = DatasetService(result.output_dir, load_relationships=False)
+
+    bundle = service.build_relationships(
+        [
+            {
+                "left": "subjects.csv",
+                "right": "sessions.csv",
+                "left_keys": ["batch", "local_id"],
+                "right_keys": ["batch", "local_id"],
+                "expected_cardinality": "one_to_many",
+            }
+        ]
+    )
+
+    relation = bundle["relationships"][0]
+    assert relation["status"] == "declared"
+    assert relation["left"]["keys"] == ["batch", "local_id"]
+    assert relation["right"]["keys"] == ["batch", "local_id"]
+    assert relation["cardinality"] == "one_to_many"
+    assert relation["matched_distinct_keys"] == 3
+    assert relation["joined_row_count"] == 4
+
+
+def test_cardinality_violation_rejects_declaration_and_named_join(ingested):
+    builder = DatasetService(ingested.output_dir, load_relationships=False)
+    bundle = builder.build_relationships(
+        [
+            {
+                "left": "animals.csv",
+                "right": "observations.csv",
+                "left_keys": ["animal_id"],
+                "right_keys": ["animal_id"],
+                "expected_cardinality": "one_to_one",
+            }
+        ]
+    )
+    relation = bundle["relationships"][0]
+    assert relation["status"] == "rejected"
+    assert "observed cardinality" in relation["rejection_reasons"][0]
+
+    (ingested.output_dir / "relationships.json").write_text(
+        json.dumps(bundle, indent=2) + "\n", encoding="utf-8"
+    )
+    service = DatasetService(ingested.output_dir)
+    with pytest.raises(ValueError, match="only declared or deterministic"):
+        service.join_relationship(relation["id"])
+
+
+def test_saved_relationship_assertions_are_withheld_after_source_drift(
+    dataset_copy: Path, tmp_path: Path
+):
+    result = ingest(dataset_copy, tmp_path / "out")
+    builder = DatasetService(result.output_dir, load_relationships=False)
+    bundle = builder.build_relationships(
+        [
+            {
+                "left": "animals.csv",
+                "right": "observations.csv",
+                "left_keys": ["animal_id"],
+                "right_keys": ["animal_id"],
+                "expected_cardinality": "one_to_many",
+            }
+        ]
+    )
+    (result.output_dir / "relationships.json").write_text(
+        json.dumps(bundle, indent=2) + "\n", encoding="utf-8"
+    )
+
+    service = DatasetService(result.output_dir)
+    assert service.list_relationships()["total"] == 1
+
+    (dataset_copy / "observations.csv").write_text(
+        "observation_id,animal_id\nOBS1,A001\n", encoding="utf-8"
+    )
+    listing = service.list_relationships()
+    assert listing["determined"] is True
+    assert listing["relationships"] == []
+    assert listing["source_integrity"]["matches"] is False
+    assert "regenerate relationships" in listing["content_withheld"]
+
+
+def test_relationship_sidecar_is_refused_after_reingest_under_another_convention(
+    tmp_path: Path,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "subjects.csv").write_text("subject,group\nNA,control\nS1,test\n", encoding="utf-8")
+    (source / "sessions.csv").write_text("subject,session\nNA,1\nS1,1\n", encoding="utf-8")
+    output = tmp_path / "out"
+    ingest(source, output, convention=STRICT_CONVENTION)
+    bundle = DatasetService(output, load_relationships=False).build_relationships(
+        [
+            {
+                "left": "subjects.csv",
+                "right": "sessions.csv",
+                "left_keys": ["subject"],
+                "right_keys": ["subject"],
+            }
+        ]
+    )
+    (output / "relationships.json").write_text(json.dumps(bundle), encoding="utf-8")
+    assert DatasetService(output).list_relationships(status="declared")["total"] == 1
+
+    # Same bytes, so the same dataset_id -- but NA is now a missing value, not a key.
+    ingest(source, output)
+    with pytest.raises(OutputError, match="different manifest.json"):
+        DatasetService(output)
+
+
+def test_stale_relationship_sidecar_is_refused(ingested):
+    (ingested.output_dir / "relationships.json").write_text(
+        json.dumps(
+            {
+                "relationships_version": "0.1.0",
+                "dataset_id": "sha256:" + "9" * 64,
+                "determined": True,
+                "relationship_count": 0,
+                "status_counts": {},
+                "relationships": [],
+                "skipped": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(OutputError, match="regenerate relationships"):
+        DatasetService(ingested.output_dir)
+
+
 def test_aggregate_rejects_numeric_metrics_on_string_columns(service):
     with pytest.raises(ValueError, match="requires a numeric column"):
         service.aggregate(
@@ -295,6 +499,7 @@ def test_resources_are_served_as_json_text(service):
         "dataset://provenance",
         "dataset://evidence",
         "dataset://metadata",
+        "dataset://relationships",
         "dataset://files/animals.csv",
     ):
         assert service.resource(uri).strip().startswith("{")

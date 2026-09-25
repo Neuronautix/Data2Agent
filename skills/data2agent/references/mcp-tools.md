@@ -15,8 +15,10 @@ Fields worth reading carefully:
   unresolved ambiguous tokens, decode
   failures. An empty list does not mean the dataset is clean; it means nothing
   was flagged by the checks that exist.
-- `relationships_determined: false` — this version does not compute cross-file
-  relationships. The empty `relationships` list is not a finding.
+- `relationships_determined: false` — relationship resolution has not been
+  run. The empty `relationships` list is not a finding. After
+  `data2agent relationships <output>`, saved relationship records are surfaced
+  with explicit epistemic status.
 
 ## `list_files(pattern=None, file_format=None)`
 
@@ -149,6 +151,49 @@ Both inputs must be completely readable under the 50,000-row-per-side join
 safety cap. Output is capped at 1,000 rows, with `total_result_rows` and
 `truncated` stating whether more matches exist.
 
+## Relationship tools
+
+### `list_relationships(status=None)`
+
+Lists the saved `relationships.json` bundle. Status is one of:
+
+- `declared` — explicitly stated in the declaration configuration.
+- `deterministic` — reserved for a supported metadata/convention rule that
+  proves the relationship without model inference.
+- `candidate` — structural overlap worth inspecting, but not established.
+- `rejected` — an explicit declaration whose observed data violate the
+  required relationship, for example wrong cardinality or zero key overlap.
+
+Every record carries left/right tables, possibly composite keys, backing-file
+checksums, key completeness and uniqueness, cardinality, overlap coverage and
+example source-row locators. There is no confidence score: confidence must not
+blur the distinction between candidate and declared facts.
+
+If no relationship sidecar exists, the tool returns
+`determined: false`. If backing source bytes have drifted since resolution,
+saved assertions are withheld.
+
+### `get_relationship(relationship_id)`
+
+Returns one saved evidence-bearing relationship by stable ID.
+
+### `join_relationship(relationship_id, ...)`
+
+Executes the saved keys through the deterministic join engine. Only
+`declared` and `deterministic` relationships are executable. A candidate can
+be inspected, but it cannot silently become an analysis join.
+
+Relationship resolution itself is intentionally **not an MCP write tool**. Use
+the CLI outside the agent session:
+
+```bash
+data2agent relationships <output>
+data2agent relationships <output> --declarations declarations.json
+```
+
+This keeps the MCP surface read-only and makes declarations reviewable input
+artifacts.
+
 ## `get_metadata(path=None)`
 
 With no argument: lists files whose *names* match a published convention
@@ -202,6 +247,7 @@ not evidence that the identifier is valid or resolvable.
 | `dataset://provenance` | run details: time, host, tool version |
 | `dataset://evidence` | the full claim ledger, including the check registry |
 | `dataset://metadata` | recognised metadata files |
+| `dataset://relationships` | saved relationship bundle or explicit not-determined state |
 | `dataset://files/<path>` | one file's record, integrity and preview |
 
 Resources are gated by mode just as tools are. In `raw` only
