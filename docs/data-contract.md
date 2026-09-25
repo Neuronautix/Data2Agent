@@ -107,8 +107,31 @@ The subtle part is what an *empty* or *absent* value means. It is never "none".
 | `column.distinct` + `distinct_exact: false` | an upper bound | the exact cardinality |
 | `format: "unknown"` | no signature or extension matched | the file is corrupt |
 | `detected_by: "extension"` | the *name* said so, the bytes did not | verified format |
+| `format: "ole2-container"` | OLE2 bytes whose directory holds no BIFF workbook stream | a legacy `.xls` |
+| `reader.cell_values: "cached"` | a formula cell was read as its last computed value | the value was typed, or recomputed |
 | `warnings: []` | nothing flagged | the dataset is clean |
 | `skipped: [...]` | present in the directory, absent from the manifest | ignorable |
+
+### Workbook formats
+
+A workbook's format is established from its bytes: OOXML and XLSB by the
+package's part names, ODS by its `mimetype` member, legacy BIFF `.xls` by a
+`Workbook` (BIFF8) or `Book` (BIFF5) stream in the OLE2 directory. The name
+only ever produces an `extension_conflict` when it disagrees.
+
+| Format | Optional extra | Backend (`reader.backend`) |
+| --- | --- | --- |
+| `xlsx` | `xlsx` | `openpyxl` |
+| `xls`, `xlsb`, `ods` | `workbooks` | `calamine` |
+
+Every backend produces the same sheet profile for the same sheet: blank cells
+are empty, whole numbers are integers, dates are midnight datetimes, and
+`source_row` is the spreadsheet's own row number. The backend's version is
+run-specific and lives in `provenance.configuration.workbook_readers`, not in
+the manifest. Without the extra, the workbook is reported as unprofiled with a
+`workbook.reader-unavailable` claim naming the extra, never as a dataset with
+no tables. Merged ranges are not reported by openpyxl's streaming mode or for
+XLSB/ODS, so `merged_ranges: 0` is not evidence of none.
 
 ### Column shape vocabulary
 
