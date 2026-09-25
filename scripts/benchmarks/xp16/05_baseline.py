@@ -67,13 +67,14 @@ from xp16lib import (
 
 sys.path.insert(0, str(REPO / "src"))
 
-# Retrieval gaps of the service as built on main after D2A-97/98/99/100 (header
-# detection and --layout, crosswalks, unit aggregation, .boris projects): only
-# declared multi-block sheets remain. Pass --missing-capabilities to model an
-# older or newer build. unit_aggregation is deliberately never listed: on the
-# retrieval path the arithmetic is the caller's, and the service-native gap is
-# measured separately by the aggregate probe.
-DEFAULT_MISSING = "multi_table_sheet"
+# Retrieval gaps of the service as built on main after D2A-97..106 (header
+# detection and --layout, crosswalks, unit aggregation, declared sheet blocks):
+# a .boris project is recognised and summarised but exposes no table of its
+# behaviour events. Pass --missing-capabilities to model an older or newer
+# build. unit_aggregation is deliberately never listed: on the retrieval path
+# the arithmetic is the caller's, and the service-native gap is measured
+# separately by the aggregate probe.
+DEFAULT_MISSING = "boris_project"
 _ISO_MIDNIGHT = re.compile(r"(\d{4}-\d{2}-\d{2})T00:00:00")
 
 
@@ -585,7 +586,7 @@ def classify(reason: str, config: dict[str, Any], svc: Any) -> str:
     if "no column" in reason and ("column_" in reason or "Subjects:" in reason):
         return "boris_tsv_preamble"
     if "no table" in reason:
-        return "not_inventoried"
+        return "boris_project" if ".boris" in reason else "not_inventoried"
     if "no column" in reason or "above the service's header row" in reason:
         table_id = reason.split(":", 1)[0].strip()
         spec = config.get("tables", {}).get(table_id)

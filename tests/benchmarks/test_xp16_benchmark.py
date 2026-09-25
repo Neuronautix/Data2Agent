@@ -818,3 +818,54 @@ def test_the_baseline_reruns_the_computation_the_gold_actually_used():
     assert baseline.effective_compute(q, answered_yes, set()) == provisional
     # still open: the gold is PENDING, the provisional computation is what exists
     assert baseline.effective_compute(q, {"OQ1": {"status": "open"}}, {"OQ1"}) == provisional
+
+
+def test_boris_projects_read_as_paired_behaviour_intervals(tmp_path: Path):
+    project = {
+        "project_format_version": "7.0",
+        "behaviors_conf": {
+            "0": {"code": "run", "type": "State event"},
+            "1": {"code": "peck", "type": "Point event"},
+        },
+        "observations": {
+            "obs_A": {
+                "events": [  # deliberately out of time order
+                    [5.0, "", "run", "", ""],
+                    [1.0, "", "run", "", ""],
+                    [3.0, "", "peck", "", ""],
+                    [8.0, "", "run", "", ""],  # a start with no stop
+                ]
+            },
+            "obs_B_second_rater": {"events": [[2.0, "", "run", "", ""], [2.5, "", "run", "", ""]]},
+            "other": {"events": [[0.0, "", "run", "", ""], [9.0, "", "run", "", ""]]},
+        },
+    }
+    (tmp_path / "p.boris").write_text(json.dumps(project), encoding="utf-8")
+    config = {"tables": {"ev": {"kind": "boris", "file": "p.boris", "observations": "obs_.*"}}}
+    src = xp16lib.FileRowSource(tmp_path, config)
+    table = src.table("ev")
+    got = [
+        (r.values["Observation id"], r.values["Behavior"], r.values["Duration (s)"])
+        for r in table.rows
+    ]
+    assert got == [
+        ("obs_A", "run", 4),  # 1.0 -> 5.0, paired in time order
+        ("obs_A", "peck", 0),  # a point event is an interval of length 0
+        ("obs_A", "run", None),  # 8.0 never stopped: kept, not closed by assumption
+        ("obs_B_second_rater", "run", 0.5),
+    ]
+    total = xp16lib.evaluate(
+        src,
+        config,
+        {
+            "op": "sum",
+            "table": "ev",
+            "column": "Duration (s)",
+            "where": [
+                {"col": "Observation id", "value": "obs_A"},
+                {"col": "Behavior", "value": "run"},
+                {"col": "Duration (s)", "op": "numeric"},
+            ],
+        },
+    )
+    assert total.answer == 4 and total.sources[0]["range"].startswith("intervals ")

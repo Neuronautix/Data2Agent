@@ -144,6 +144,9 @@ class Table:
     column_letters: dict[str, str]  # column name -> spreadsheet letter / 1-based field index
     rows: list[Row]
     header_rows: list[int]
+    # 'row' (a sheet row / a physical line) or 'interval' (the n-th behaviour
+    # interval a BORIS project yields, see FileRowSource._read_boris)
+    locator_kind: str = "row"
 
     def locator_range(self, column: str | None = None, rows: Iterable[Row] | None = None) -> str:
         chosen = list(rows) if rows is not None else self.rows
@@ -151,6 +154,8 @@ class Table:
             return ""
         lo = min(r.locator for r in chosen)
         hi = max(r.locator for r in chosen)
+        if self.locator_kind == "interval":
+            return f"intervals {lo}-{hi}" + (f", column {column}" if column else "")
         if self.sheet is not None:
             if column is None:
                 return f"{lo}:{hi}"
@@ -261,6 +266,8 @@ class FileRowSource:
             table = self._read_xlsx(table_id, spec)
         elif kind == "delimited":
             table = self._read_delimited(table_id, spec)
+        elif kind == "boris":
+            table = self._read_boris(table_id, spec)
         else:
             raise ValueError(f"table {table_id!r}: unknown kind {kind!r}")
         _apply_derived(table, spec.get("derived", {}))
@@ -301,6 +308,72 @@ class FileRowSource:
             letters,
             rows,
             header_rows,
+        )
+
+    def _read_boris(self, table_id: str, spec: dict[str, Any]) -> Table:
+        """One row per behaviour interval of a BORIS project (JSON).
+
+        A BORIS state event toggles: the first occurrence of a (subject,
+        behaviour) starts it, the next stops it. Occurrences are paired in time
+        order per (subject, behaviour), exactly as that rule states; a point
+        event is an interval of length 0. A start with no matching stop is kept
+        as a row with an empty stop and duration, never closed by assumption.
+        ``observations`` (a regex, optional) limits the observations read.
+        """
+        import json  # noqa: PLC0415
+
+        doc = json.loads((self.source_dir / spec["file"]).read_text(encoding="utf-8"))
+        types = {b.get("code"): b.get("type", "") for b in doc.get("behaviors_conf", {}).values()}
+        pattern = re.compile(spec["observations"]) if spec.get("observations") else None
+        columns = [
+            "Observation id",
+            "Subject",
+            "Behavior",
+            "Type",
+            "Start (s)",
+            "Stop (s)",
+            "Duration (s)",
+        ]
+        rows: list[Row] = []
+        for obs_id in sorted(doc.get("observations", {})):
+            if pattern and not pattern.fullmatch(obs_id):
+                continue
+            events = doc["observations"][obs_id].get("events", [])
+            ordered = sorted(enumerate(events), key=lambda ie: (float(ie[1][0]), ie[0]))
+            open_: dict[tuple[str, str], float] = {}
+            intervals: list[tuple[str, str, str, float, float | None]] = []
+            for _, ev in ordered:
+                t, subject, code = float(ev[0]), str(ev[1]), str(ev[2])
+                if "state" not in types.get(code, "").lower():
+                    intervals.append((subject, code, types.get(code, ""), t, t))
+                elif (subject, code) in open_:
+                    intervals.append((subject, code, types[code], open_.pop((subject, code)), t))
+                else:
+                    open_[(subject, code)] = t
+            for (subject, code), t in open_.items():
+                intervals.append((subject, code, types.get(code, ""), t, None))
+            for subject, code, typ, start, stop in sorted(intervals, key=lambda x: (x[3], x[1])):
+                n = len(rows) + 1
+                values = {
+                    "Observation id": obs_id,
+                    "Subject": subject,
+                    "Behavior": code,
+                    "Type": typ,
+                    "Start (s)": norm_value(start),
+                    "Stop (s)": None if stop is None else norm_value(stop),
+                    "Duration (s)": None if stop is None else round_num(stop - start),
+                }
+                rows.append(Row(values, n, {c: f"interval {n}" for c in columns}))
+        return Table(
+            table_id,
+            spec["file"],
+            self.file_sha(spec["file"]),
+            None,
+            columns,
+            {c: c for c in columns},
+            rows,
+            [],
+            locator_kind="interval",
         )
 
     def _read_delimited(self, table_id: str, spec: dict[str, Any]) -> Table:
