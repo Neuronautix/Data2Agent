@@ -682,3 +682,27 @@ def test_a_banner_cell_above_the_header_is_read_through_inspect_table(package: P
     assert src.raw_cell("registry.xlsx", "Reg", "C2") == "Key"  # the header row itself
     assert src.raw_cell("registry.xlsx", "Reg", "C3") == "C-1_I"  # a data row
     assert "inspect_table(include_rows_above_data=True)" in src.tools_used
+
+
+def test_a_condition_may_readdress_a_table_but_only_a_declared_one(package: Path):
+    _conditions(package)
+    conditions_path = package / "config" / "conditions.json"
+    conditions = json.loads(conditions_path.read_text("utf-8"))
+    conditions["conditions"]["declared"]["service_tables"] = {"reg": "registry.xlsx#Reg"}
+    conditions["conditions"]["typo"] = {
+        "output": "ingest_typo",
+        "service_tables": {"no_such_table": "registry.xlsx#Reg"},
+    }
+    conditions_path.write_text(json.dumps(conditions), encoding="utf-8")
+    assert _run(builder, ["--package", str(package)]) == 0
+    ingest_step.ingest(package, "declared")
+    record = json.loads((package / "ingest_declared" / "condition.json").read_text("utf-8"))
+    assert record["service_tables"] == {"reg": "registry.xlsx#Reg"}
+    assert record["data2agent_src"] == "repository"
+    out = package / "b.json"
+    argv = ["--package", str(package), "--ingest", str(package / "ingest_declared")]
+    assert _run(baseline, [*argv, "--out", str(out)]) == 0
+    ingest_step.ingest(package, "typo")
+    argv = ["--package", str(package), "--ingest", str(package / "ingest_typo")]
+    with pytest.raises(SystemExit, match="unknown gold table"):
+        _run(baseline, [*argv, "--out", str(out)])

@@ -101,6 +101,7 @@ class ServiceRowSource:
         self.column_maps: dict[str, dict[str, Any]] = {}
         self.renames: dict[str, dict[str, str]] = {}  # table id -> {service name: gold name}
         self.tools_used: set[str] = {"read_rows"}
+        self.uncovered_cells: list[str] = []
         self.transform_crosswalks: dict[str, str] = {}  # gold transform -> service crosswalk
 
     def service_name(self, table_id: str, gold_name: str) -> str:
@@ -232,21 +233,44 @@ class ServiceRowSource:
         return table
 
     def raw_cell(self, file: str, sheet: str, cell: str) -> Any:
-        key = f"{file}#{sheet}"
-        profile = self.svc.manifest.get("tables", {}).get(key)
-        if not isinstance(profile, dict):
-            raise KeyError(f"service exposes no table {key!r}")
+        """One cell of a sheet, read through the service as an agent would.
+
+        Data rows come from read_rows; a row above a table's data (a banner, a
+        block title, a raw header row) from inspect_table(include_rows_above_data).
+        When the sheet is declared as blocks it is no longer one table: the cell
+        is looked up in the block whose rows cover it. A row no block covers (a
+        blank spacer between blocks) reads as empty and is listed in the report
+        under ``uncovered_cells``, so that reading is visible, not silent.
+        """
         m = re.fullmatch(r"([A-Z]{1,3})(\d+)", cell)
         if not m:
             raise KeyError(f"bad cell {cell!r}")
-        from openpyxl.utils import column_index_from_string  # noqa: PLC0415
+        letter, row = m.group(1), int(m.group(2))
+        key = f"{file}#{sheet}"
+        tables = self.svc.manifest.get("tables", {})
+        if isinstance(tables.get(key), dict):
+            return self._cell(key, letter, row, strict=True)[1]
+        blocks = sorted(k for k in tables if k.startswith(f"{key}#"))
+        if not blocks:
+            raise KeyError(f"service exposes no table {key!r}")
+        for block in blocks:
+            covered, value = self._cell(block, letter, row, strict=False)
+            if covered:
+                self.tools_used.add("declared blocks (<file>#<sheet>#<block>)")
+                return value
+        self.uncovered_cells.append(f"{key}!{cell}")
+        return None
 
-        col_pos = column_index_from_string(m.group(1)) - 1
-        row = int(m.group(2))
+    def _cell(self, key: str, letter: str, row: int, *, strict: bool) -> tuple[bool, Any]:
+        """(does this table cover the row?, value). Strict: the table is the whole sheet."""
+        profile = self.svc.manifest["tables"][key]
+        col_pos = _col_index(letter) - 1
         columns, positions, raw = self._fetch(key)
         name = next((n for n, p in positions.items() if p == col_pos), None)
         header_row = int(profile.get("header_row") or 1)
-        first_data = min((int(r["source_row"]) for r in raw), default=header_row + 1)
+        data_rows = [int(r["source_row"]) for r in raw]
+        first_data = min(data_rows, default=header_row + 1)
+        last_data = max(data_rows, default=header_row)
         if row < first_data:
             # Not an observation: a banner / preamble row the header rule skipped, or a
             # raw header row. An agent reads those through inspect_table (D2A-102).
@@ -257,21 +281,25 @@ class ServiceRowSource:
             for entry in above.get("rows_above_data", []):
                 if int(entry["row"]) == row:
                     for c in entry.get("cells", []):
-                        if c.get("column_letter") == m.group(1):
-                            return _svc_value(c.get("value"))
+                        if c.get("column_letter") == letter:
+                            return True, _svc_value(c.get("value"))
                     if entry.get("cells_truncated"):
                         raise KeyError(f"row {row} of {key!r}: cells truncated by the service")
-                    return None
+                    return True, None
             if row == header_row:
                 # a single header row is consumed as column names; a letter name means blank
-                return None if name in (None, m.group(1)) else _svc_value(name)
+                return True, (None if name in (None, letter) else _svc_value(name))
+            if not strict:
+                return False, None
             raise KeyError(
                 f"row {row} of {key!r} lies above the data and inspect_table does not expose it"
             )
+        if not strict and row > last_data:
+            return False, None
         hit = next((r for r in raw if int(r["source_row"]) == row), None)
         if hit is None or name is None:
-            return None
-        return _svc_value(hit["values"].get(name))
+            return True, None
+        return True, _svc_value(hit["values"].get(name))
 
 
 _GOLD_DEDUPE = re.compile(r" #\d+$")
@@ -567,12 +595,20 @@ def main() -> int:
     parser.add_argument("--mode", default="structured")
     parser.add_argument("--missing-capabilities", default=DEFAULT_MISSING)
     parser.add_argument(
+        "--data2agent-src", type=Path, default=None, help="evaluate another data2agent src/ tree"
+    )
+    parser.add_argument(
         "--names-as-is",
         action="store_true",
         help="match gold columns to service columns by name only (the pre-D2A-105 behaviour)",
     )
     args = parser.parse_args()
 
+    if args.data2agent_src is not None:
+        # evaluate another data2agent tree (e.g. an unmerged branch); recorded in the report
+        sys.path.insert(0, str(args.data2agent_src.resolve()))
+        for mod in [m for m in sys.modules if m == "data2agent" or m.startswith("data2agent.")]:
+            del sys.modules[mod]
     from data2agent.mcp.service import DatasetService  # noqa: PLC0415
 
     pkg = args.package.resolve()
@@ -586,6 +622,12 @@ def main() -> int:
         sys.exit(f"ingest dataset_id {svc.dataset_id} != gold {gold['dataset_id']}")
     scorer = _scorer()
     gold_reader = None if args.names_as_is else FileRowSource(pkg / "source", config)
+    condition = _condition(args.ingest.resolve()) or {}
+    # the condition may address a declared table by another service key (a block)
+    for table_id, key in (condition.get("service_tables") or {}).items():
+        if table_id not in config["tables"]:
+            sys.exit(f"condition names a service table for unknown gold table {table_id!r}")
+        config["tables"][table_id]["service_table"] = key
     src = ServiceRowSource(svc, config, gold_reader)
     src.transform_crosswalks = dict(
         (_condition(args.ingest.resolve()) or {}).get("transform_crosswalks") or {}
@@ -657,6 +699,7 @@ def main() -> int:
             },
         },
         "service_tools_used": sorted(src.tools_used),
+        "uncovered_cells": len(src.uncovered_cells),
         "answerable": len(answerable),
         "retrieval_pass": sum(r["retrieval"]["outcome"] == "pass" for r in answerable),
         "retrieval_wrong": sum(r["retrieval"]["outcome"] == "wrong" for r in answerable),
@@ -701,6 +744,7 @@ def main() -> int:
         "summary": summary,
         "relationships": _relationships(svc),
         "column_maps": src.column_maps,
+        "uncovered_cells": src.uncovered_cells,
         "questions": rows,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)

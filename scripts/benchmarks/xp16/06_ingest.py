@@ -58,8 +58,8 @@ def _git_commit() -> str | None:
         return None
 
 
-def _run(command: list[str]) -> None:
-    env_path = str(REPO / "src")
+def _run(command: list[str], src: Path) -> None:
+    env_path = str(src)
     import os  # noqa: PLC0415
 
     env = {**os.environ, "PYTHONPATH": env_path + os.pathsep + os.environ.get("PYTHONPATH", "")}
@@ -81,7 +81,18 @@ def verify_snapshot(pkg: Path) -> dict[str, Any]:
     return checksums
 
 
-def ingest(pkg: Path, name: str, *, force: bool = False) -> Path:
+def ingest(
+    pkg: Path,
+    name: str,
+    *,
+    force: bool = False,
+    data2agent_src: Path | None = None,
+    data2agent_label: str | None = None,
+) -> Path:
+    """Run one condition. ``data2agent_src`` runs another checkout's ``src/`` (e.g. an
+    unmerged branch exported for evaluation); it is recorded, with ``data2agent_label``,
+    so such a run can never pass for one on the repository's own build."""
+    src_dir = (data2agent_src or REPO / "src").resolve()
     config_dir = pkg / "config"
     conditions = json.loads((config_dir / "conditions.json").read_text(encoding="utf-8"))
     if name not in conditions["conditions"]:
@@ -117,8 +128,8 @@ def ingest(pkg: Path, name: str, *, force: bool = False) -> Path:
             "sha256": sha256_file(cw),
         }
 
-    _run(ingest_cmd)
-    _run(rel_cmd)
+    _run(ingest_cmd, src_dir)
+    _run(rel_cmd, src_dir)
 
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("dataset_id") != checksums["dataset_id"]:
@@ -139,6 +150,8 @@ def ingest(pkg: Path, name: str, *, force: bool = False) -> Path:
         # which declared crosswalk realises which gold identifier transform, so the
         # baseline can hand a cross-file aggregation to aggregate_join
         "transform_crosswalks": dict(cond.get("transform_crosswalks") or {}),
+        # per-table service keys for this condition, e.g. '<file>#<sheet>#<block>'
+        "service_tables": dict(cond.get("service_tables") or {}),
         "manifest_sha256": sha256_file(out / "manifest.json"),
         "relationships_sha256": (
             sha256_file(out / "relationships.json")
@@ -146,7 +159,12 @@ def ingest(pkg: Path, name: str, *, force: bool = False) -> Path:
             else None
         ),
         "data2agent_version": getattr(data2agent, "__version__", None),
-        "data2agent_commit": _git_commit(),
+        "data2agent_commit": _git_commit() if data2agent_src is None else None,
+        "data2agent_src": (
+            "repository"
+            if data2agent_src is None
+            else f"external: {data2agent_label or src_dir.name}"
+        ),
         "commands": [
             [str(c).replace(str(pkg), "<pkg>") for c in ingest_cmd],
             [str(c).replace(str(pkg), "<pkg>") for c in rel_cmd],
@@ -161,13 +179,23 @@ def main() -> int:
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--condition", required=True, help="a key of config/conditions.json")
     parser.add_argument("--force", action="store_true", help="rebuild an existing output dir")
+    parser.add_argument(
+        "--data2agent-src", type=Path, default=None, help="run another data2agent src/ tree"
+    )
+    parser.add_argument("--data2agent-label", default=None, help="recorded with --data2agent-src")
     args = parser.parse_args()
-    sys.path.insert(0, str(REPO / "src"))
-    out = ingest(args.package.resolve(), args.condition, force=args.force)
+    sys.path.insert(0, str((args.data2agent_src or REPO / "src").resolve()))
+    out = ingest(
+        args.package.resolve(),
+        args.condition,
+        force=args.force,
+        data2agent_src=args.data2agent_src,
+        data2agent_label=args.data2agent_label,
+    )
     record = json.loads((out / "condition.json").read_text(encoding="utf-8"))
     print(
         json.dumps(
-            {k: record[k] for k in ("condition", "declarations", "data2agent_commit")}, indent=2
+            {k: record[k] for k in ("condition", "declarations", "data2agent_src")}, indent=2
         )
     )
     print("ingested to", out)
