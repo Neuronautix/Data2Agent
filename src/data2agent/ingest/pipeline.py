@@ -29,13 +29,14 @@ from time import perf_counter
 from typing import Any
 
 from .. import MANIFEST_VERSION
-from ..errors import OutputError
+from ..errors import LayoutError, OutputError
 from ..evidence import EvidenceItem, EvidenceLedger
 from . import conventions, formats, identifiers, metadata, structured, tabular
 from .checksum import dataset_id as fold_dataset_id
 from .checksum import hash_file
 from .conventions import DEFAULT_CONVENTION, MissingValueConvention
 from .inventory import DEFAULT_EXCLUDES, FileEntry, Inventory, build, walk
+from .layout import HeaderLayout, LayoutDeclarations
 from .provenance import ProvenanceRecord, runtime_fingerprint, tool_fingerprint, utc_now
 
 MANIFEST_FILENAME = "manifest.json"
@@ -68,6 +69,7 @@ def ingest(
     *,
     excludes: frozenset[str] = DEFAULT_EXCLUDES,
     convention: MissingValueConvention | None = None,
+    layouts: LayoutDeclarations | None = None,
     write: bool = True,
 ) -> IngestResult:
     """Ingest ``source`` into ``output``, leaving ``source`` untouched.
@@ -76,6 +78,11 @@ def ingest(
     the dataset's own declaration is used when it makes one, and the built-in
     default otherwise -- in every case the choice is recorded in the manifest
     and cited by each missingness claim.
+
+    ``layouts`` declares where named tables' headers are (D2A-97). A declared
+    table path that matches no profiled table raises :class:`LayoutError`
+    before anything is written: a declaration that silently applied to nothing
+    would leave a user believing a header was fixed when it was not.
     """
     started_at = utc_now()
     started_monotonic = perf_counter()
@@ -104,6 +111,10 @@ def ingest(
     # so it goes to provenance: the manifest names the backend per sheet but
     # never a version, which would break its byte-identity across installs.
     workbook_readers: dict[str, str | None] = {}
+    # Declared table paths whose profile was actually produced under the
+    # declared layout, in THIS ingest. Tracked here rather than on the
+    # declarations object, which is immutable and may be reused across ingests.
+    applied_layouts: set[str] = set()
 
     _record_dataset_claims(ledger, identity, inventory, active_convention)
 
@@ -131,13 +142,21 @@ def ingest(
             )
 
         if entry.format.format_id in formats.TABULAR_FORMATS:
-            profile = tabular.profile_table(absolute, entry.path, active_convention)
+            profile = tabular.profile_table(
+                absolute,
+                entry.path,
+                active_convention,
+                layouts.for_table(entry.path) if layouts else None,
+            )
             if profile is None:
                 warnings.append(f"{entry.path}: could not be read as a delimited table")
             else:
                 tables[entry.path] = profile.as_dict()
+                if _declared_layout_applied(profile.layout):
+                    applied_layouts.add(entry.path)
                 warnings.extend(f"{entry.path}: {note}" for note in profile.warnings)
                 _record_table_claims(ledger, entry, profile, active_convention)
+                _record_header_claim(ledger, entry, entry.path, profile.layout, layouts)
                 if classification is None:
                     _recognise_table(
                         ledger,
@@ -197,11 +216,25 @@ def ingest(
             else:
                 workbook_readers[backend.name] = backend.version()
                 for sheet in workbook_reader.profile_workbook(
-                    absolute, entry.path, active_convention, entry.format.format_id
+                    absolute,
+                    entry.path,
+                    active_convention,
+                    entry.format.format_id,
+                    layout_for=layouts.for_table if layouts else None,
                 ):
                     tables[sheet.path] = sheet.as_dict()
+                    if sheet.profiled and _declared_layout_applied(sheet.layout):
+                        applied_layouts.add(sheet.path)
                     warnings.extend(f"{sheet.path}: {note}" for note in sheet.warnings)
                     _record_sheet_claims(ledger, entry, sheet, active_convention)
+                    _record_header_claim(
+                        ledger,
+                        entry,
+                        sheet.path,
+                        sheet.layout,
+                        layouts,
+                        sheet={"workbook": sheet.workbook, "sheet": sheet.sheet},
+                    )
                     if classification is not None:
                         continue
                     if not sheet.profiled:
@@ -283,6 +316,15 @@ def ingest(
                     ],
                 )
 
+    if layouts is not None and (unapplied := layouts.unapplied(applied_layouts)):
+        raise LayoutError(
+            f"layout declaration {layouts.name!r} names {len(unapplied)} table(s) that this "
+            f"ingest could not apply it to: {unapplied}. Either no such table exists -- "
+            f"table paths are '<file>' for a delimited file and '<workbook>#<sheet>' for a "
+            f"worksheet, exactly as manifest.tables keys them -- or the file could not be "
+            f"profiled as a table. Profiled tables: {sorted(tables)}"
+        )
+
     drift = _verify_source_unchanged(source, inventory, excludes)
     source_unchanged = drift is None
     if drift is not None:
@@ -293,6 +335,7 @@ def ingest(
         source=source,
         inventory=inventory,
         convention=active_convention,
+        layouts=layouts,
         tables=tables,
         structured_docs=structured_docs,
         metadata_files=metadata_files,
@@ -314,6 +357,7 @@ def ingest(
             "excludes": sorted(excludes),
             "manifest_version": MANIFEST_VERSION,
             "missing_value_convention": active_convention.as_dict(),
+            "layout_declaration": layouts.provenance_record() if layouts else None,
             "workbook_readers": dict(sorted(workbook_readers.items())),
         },
     ).as_dict()
@@ -331,6 +375,7 @@ def _build_manifest(
     source: Path,
     inventory: Inventory,
     convention: MissingValueConvention,
+    layouts: LayoutDeclarations | None,
     tables: dict[str, Any],
     structured_docs: dict[str, Any],
     metadata_files: list[dict[str, Any]],
@@ -351,6 +396,11 @@ def _build_manifest(
         # Declared at the top level because it governs how every missingness
         # number below should be read.
         "missing_value_convention": convention.as_dict(),
+        # Like the convention, a layout declaration governs how the tables below
+        # were read, so its digest is part of what the manifest says: a re-ingest
+        # under another declaration is another manifest, and a relationships
+        # sidecar bound to the old one is refused.
+        "layout_declaration": layouts.manifest_record() if layouts else None,
         "file_count": len(inventory.files),
         "total_bytes": inventory.total_bytes,
         "files": [entry.as_dict() for entry in inventory.files],
@@ -539,6 +589,68 @@ def _record_file_claims(ledger: EvidenceLedger, entry: FileEntry) -> None:
             )
         ],
     )
+
+
+def _declared_layout_applied(layout: HeaderLayout | None) -> bool:
+    """Whether a table profile was produced under a declared layout."""
+    return layout is not None and layout.declared is not None
+
+
+_HOW_CHOSEN = {
+    "first-non-empty": "the first non-empty row",
+    "detected": "detected under the named header rule",
+    "declared": "declared by a layout declaration",
+}
+
+
+def _record_header_claim(
+    ledger: EvidenceLedger,
+    entry: FileEntry,
+    table_path: str,
+    layout: HeaderLayout | None,
+    layouts: LayoutDeclarations | None,
+    *,
+    sheet: dict[str, Any] | None = None,
+) -> None:
+    """Record which row was taken as the header, by what, and what was skipped.
+
+    Every column name in the manifest rests on this choice, so it is a claim of
+    its own: an agent asked why a column is called what it is can cite it.
+    """
+    if layout is None or layout.header_row is None:
+        return
+    fields = layout.as_dict()
+    skipped = fields["header_detection"]["skipped_rows"]
+    span = (
+        f"row {layout.header_row}"
+        if layout.header_rows == 1
+        else f"rows {layout.header_row}-{layout.header_row + layout.header_rows - 1}"
+    )
+    statement = f"the header of '{table_path}' is {span}, {_HOW_CHOSEN[fields['header_source']]}"
+    if skipped:
+        statement += f"; row(s) {', '.join(str(item['row']) for item in skipped)} skipped"
+    # A sheet's row is a spreadsheet row; a delimited file's is the line on
+    # which the header record starts.
+    unit = "row" if sheet is not None else "line"
+    evidence = [
+        EvidenceItem(
+            source=entry.path,
+            source_sha256=entry.sha256,
+            check="table.header-layout",
+            result={**(sheet or {}), **fields},
+            locator=f"{unit}:{layout.header_row}",
+        )
+    ]
+    if fields["header_source"] == "declared" and layouts is not None:
+        evidence.append(
+            EvidenceItem(
+                source="",
+                source_sha256="",
+                check="layout.declaration",
+                result=layouts.manifest_record(),
+            )
+        )
+    ledger.record(statement, subject=table_path, evidence=evidence)
 
 
 def _record_sheet_claims(

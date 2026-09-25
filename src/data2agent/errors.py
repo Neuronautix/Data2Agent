@@ -15,3 +15,7 @@ class OutputError(Data2AgentError):
 
 class ModeError(Data2AgentError):
     """The requested benchmark mode is unknown or not available in this version."""
+
+
+class LayoutError(Data2AgentError):
+    """A table layout declaration is malformed, or names a table that does not exist."""

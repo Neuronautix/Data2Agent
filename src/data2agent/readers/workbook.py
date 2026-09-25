@@ -13,12 +13,13 @@ the parser reports; this module records it and profiles what is inside. It does
 not decide which sheet is "the data", does not merge multi-row headers, and does
 not infer meaning from a column name.
 
-**The header is an assumption, and it is recorded as one.** The first non-empty
-row of the used range is taken as the header, exactly as the delimited profiler
-treats a first line. Unlike a CSV, a sheet often has titles, merged banners or
-blank rows above the real header -- XP14's own registry starts on row 2 -- so the
-row that was used is reported in ``header_row`` and anomalies raise warnings.
-The assumption is then auditable rather than invisible.
+**The header is decided by a named rule, and recorded as a decision.** A sheet
+often has titles, merged banners or blank rows above the real header -- XP14's
+own registry starts on row 2. The header row is chosen by
+:mod:`data2agent.ingest.layout`, the same rule the delimited profiler uses
+(D2A-97), or by a declaration when one names the sheet. The row used, the rows
+skipped and why, and whether the choice was detected or declared are reported
+in the profile, so the assumption is auditable rather than invisible.
 
 **Missingness is resolved by the same machinery as CSV.** ``_observe`` from the
 delimited profiler is reused deliberately, so a token means the same thing in a
@@ -39,7 +40,7 @@ that, so it is a stated limitation rather than a silent one.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
@@ -47,8 +48,17 @@ from importlib import metadata as _metadata
 from pathlib import Path
 from typing import Any
 
+from ..errors import LayoutError
+from ..ingest import layout as layouts
 from ..ingest.conventions import DEFAULT_CONVENTION, MissingValueConvention
-from ..ingest.tabular import ColumnProfile, _convention_warnings, _observe, finalise, new_column
+from ..ingest.tabular import (
+    ColumnProfile,
+    _convention_warnings,
+    _observe,
+    finalise,
+    header_fields,
+    new_column,
+)
 
 # Cap on sheets profiled per workbook. A pathological file should slow an
 # ingest, not hang it; the cap is reported rather than applied silently.
@@ -133,6 +143,7 @@ class SheetProfile:
     convention: MissingValueConvention
     warnings: list[str] = field(default_factory=list)
     reader: Backend = OPENPYXL
+    layout: layouts.HeaderLayout | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -141,7 +152,7 @@ class SheetProfile:
             "sheet": self.sheet,
             "sheet_index": self.sheet_index,
             "sheet_state": self.sheet_state,
-            "header_row": self.header_row,
+            **header_fields(self.layout),
             "has_header": self.has_header,
             "profiled": self.profiled,
             "rows": self.rows,
@@ -165,12 +176,15 @@ def profile_workbook(
     relative_path: str,
     convention: MissingValueConvention = DEFAULT_CONVENTION,
     format_id: str = "xlsx",
+    layout_for: Callable[[str], layouts.TableLayout | None] | None = None,
 ) -> list[SheetProfile]:
     """Profile every worksheet in a workbook whose format the bytes established.
 
     Raises :class:`WorkbookReaderUnavailable` when the optional parser is
     missing, so the caller can report a workbook it could not read instead of
-    reporting a dataset with no tables.
+    reporting a dataset with no tables. ``layout_for`` maps a sheet's table path
+    to its declared layout, if any; a declaration the sheet cannot satisfy
+    raises :class:`LayoutError` rather than degrading to an unreadable sheet.
     """
     backend = backend_for(format_id)
     if not backend.available():
@@ -195,8 +209,13 @@ def profile_workbook(
                     )
                 )
                 break
+            declared = layout_for(f"{relative_path}#{name}") if layout_for else None
             try:
-                profiles.append(_profile_sheet(book, name, relative_path, index, convention))
+                profiles.append(
+                    _profile_sheet(book, name, relative_path, index, convention, declared)
+                )
+            except LayoutError:
+                raise  # a wrong declaration is the user's to fix, not a bad sheet
             except Exception as exc:
                 # read_only defers XML parsing until the rows are iterated, so a
                 # sheet can fail long after the workbook opened cleanly. One bad
@@ -437,6 +456,7 @@ def _profile_sheet(
     workbook_path: str,
     index: int,
     convention: MissingValueConvention,
+    declared: layouts.TableLayout | None = None,
 ) -> SheetProfile:
     warnings: list[str] = []
     state = book.sheet_state(name)
@@ -448,21 +468,26 @@ def _profile_sheet(
 
     merged = book.merged_ranges(name)
 
-    header_row_index: int | None = None
-    header: list[str] = []
     columns: list[ColumnProfile] = []
     data_rows = 0
 
-    for row_number, raw_row in enumerate(book.iter_rows(name), start=1):
-        cells = ["" if v is None else str(v) for v in raw_row]
-        if header_row_index is None:
-            if not any(cell.strip() for cell in cells):
-                continue  # leading blank rows are layout, not data
-            header_row_index = row_number
-            header = _header_names(cells, warnings, name, row_number)
-            columns = [new_column(n, i) for i, n in enumerate(header)]
-            continue
+    numbered = (
+        layouts.Row(number, raw_row) for number, raw_row in enumerate(book.iter_rows(name), start=1)
+    )
+    layout, body = layouts.split_header(numbered, declared)
+    warnings.extend(layout.warnings)
+    header_row_index = layout.header_row
+    if header_row_index is not None:
+        header = _header_names(layout.labels, warnings, name, header_row_index)
+        columns = [new_column(n, i) for i, n in enumerate(header)]
+        if layout.header_cells is not None:
+            for column, cells in zip(columns, layout.header_cells, strict=False):
+                column.header_cells = cells
 
+    # Every row from the data start is an observation, blank ones included, as
+    # before D2A-97: the row reader counts offsets over the same rows.
+    for row in body:
+        cells = ["" if v is None else str(v) for v in row.cells]
         data_rows += 1
         if len(cells) > len(columns):
             # Cells to the right of the header row. Recorded, never discarded:
@@ -499,6 +524,7 @@ def _profile_sheet(
         convention=convention,
         warnings=warnings,
         reader=book.backend,
+        layout=layout,
     )
 
 
@@ -533,9 +559,9 @@ def _header_names(cells: list[str], warnings: list[str], sheet: str, row: int) -
     if blanks:
         warnings.append(
             f"header row {row} has {blanks} blank cell(s); those columns are named "
-            f"for their spreadsheet column letter. A sheet whose real header is not "
-            f"its first non-empty row will be mis-labelled here -- the row used is "
-            f"recorded in 'header_row'"
+            f"for their spreadsheet column letter. The row used, and how it was "
+            f"chosen, are recorded in 'header_row' and 'header_source'; declare the "
+            f"layout (--layout) if it is not the real header"
         )
     return names
 

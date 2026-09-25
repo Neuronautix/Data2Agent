@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..ingest.conventions import SENTINEL, MissingValueConvention
+from ..ingest.tabular import numbered_records
 from . import workbook
 
 
@@ -35,16 +36,32 @@ def read_delimited_rows(
     delimiter = profile["delimiter"]
     specs = _column_specs(profile, columns)
 
+    data_starts_row = profile.get("data_starts_row")
+    if data_starts_row is None and profile.get("header_source") is not None:
+        return []  # a header was decided and nothing follows it
+
     rows: list[dict[str, Any]] = []
     data_index = 0
     with path.open("r", encoding=encoding, newline="") as handle:
         reader = csv.reader(handle, delimiter=delimiter)
-        try:
-            next(reader)  # the profiled header
-        except StopIteration:
-            return []
+        if data_starts_row is None:
+            # Manifests written before D2A-97 took the first record as the
+            # header, whatever it held; honour exactly that reading.
+            try:
+                next(reader)
+            except StopIteration:
+                return []
+            records = numbered_records(reader)
+        else:
+            # Records numbered by the line they start on, exactly as the
+            # profiler numbered them: preamble, banner and every header row sit
+            # before data_starts_row and are skipped, and source_row below stays
+            # the file's own line number.
+            start = int(data_starts_row)
+            records = (row for row in numbered_records(reader) if row.number >= start)
 
-        for record in reader:
+        for numbered in records:
+            record = numbered.cells
             if not record:
                 continue  # match the profiler: blank lines carry no observation
             if data_index < offset:
@@ -80,6 +97,11 @@ def read_workbook_rows(
     header_row = profile.get("header_row")
     if header_row is None:
         return []
+    # The header may span several rows, and a declaration may skip rows below
+    # it; data_starts_row says where observations begin. Manifests written
+    # before D2A-97 lack it and had a one-row header, so the row below it.
+    data_starts_row = profile.get("data_starts_row")
+    first_data_row = int(data_starts_row) if data_starts_row is not None else int(header_row) + 1
 
     sheet_name = profile.get("sheet")
     if not sheet_name:
@@ -95,7 +117,7 @@ def read_workbook_rows(
     specs = _column_specs(profile, columns)
     rows: list[dict[str, Any]] = []
     with workbook.open_workbook(path, backend) as book:
-        start_row = int(header_row) + 1 + offset
+        start_row = first_data_row + offset
         for source_row, record in enumerate(
             book.iter_rows(sheet_name, min_row=start_row), start=start_row
         ):

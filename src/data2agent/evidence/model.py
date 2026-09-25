@@ -43,6 +43,17 @@ CHECKS: dict[str, str] = {
     "table.ambiguous-token-count": (
         "Number of cells holding a token that was NOT resolved to missing by any convention"
     ),
+    # One check for both kinds of table: the rule is the same code path for a
+    # sheet and a delimited file, and the result names the sheet when there is one.
+    "table.header-layout": (
+        "Which row was taken as a table's header and where its data starts, by the "
+        "named deterministic rule or by a layout declaration, with every row skipped "
+        "before the data and the reason it was skipped (D2A-97)"
+    ),
+    "layout.declaration": (
+        "A user-supplied layout declaration, identified by the SHA-256 of its bytes, "
+        "that stated a table's header rows instead of the detection rule"
+    ),
     # Workbook checks are distinct from their table.* counterparts on purpose.
     # A sheet-level claim carries a locator its delimited equivalent does not,
     # and collapsing the two would make a claim about one sheet indistinguishable
