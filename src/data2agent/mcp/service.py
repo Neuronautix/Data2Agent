@@ -24,6 +24,15 @@ from ..ingest.checksum import hash_file
 from ..ingest.conventions import MissingValueConvention
 from ..ingest.pipeline import EVIDENCE_FILENAME, MANIFEST_FILENAME, PROVENANCE_FILENAME
 from ..readers.rows import read_delimited_rows, read_workbook_rows
+from ..relationships.crosswalk import (
+    Crosswalk,
+    CrosswalkError,
+    KeyResolver,
+    crosswalk_from_record,
+    key_label,
+    mapping_facts,
+    parse_key_format,
+)
 from .modes import ALL_RESOURCES, DEFAULT_MODE, Mode, resolve_mode
 
 # Content is served in bounded slices; an agent that wants more asks again.
@@ -34,6 +43,10 @@ _MAX_READ_ROWS = 1000
 _MAX_FILTER_SCAN_ROWS = 100_000
 _MAX_COMPLETE_QUERY_ROWS = 100_000
 _MAX_JOIN_SCAN_ROWS = 50_000
+# The resolved join key is carried through query.join_rows in a synthetic
+# column. A NUL cannot occur in a header the readers surface, so it cannot
+# shadow a real column; it is stripped before any row is returned.
+_RESOLVED_KEY = "\x00data2agent:resolved-key"
 
 
 @dataclass
@@ -87,6 +100,10 @@ class DatasetService:
             if load_relationships
             else None
         )
+        # Crosswalks travel inside the bundle, so a join through one needs no
+        # extra input at serve time -- and a crosswalk file edited after the
+        # bundle was built invalidates the bundle rather than being half-applied.
+        self.crosswalks, self.crosswalk_checks = _bundle_crosswalks(self.relationship_bundle)
 
         recorded_source = self.provenance.get("source_path")
         candidate = (
@@ -534,9 +551,26 @@ class DatasetService:
         right_columns: list[str] | None = None,
         how: str = "inner",
         limit: int = _DEFAULT_READ_ROWS,
+        crosswalk: str | None = None,
+        left_key_format: str | None = None,
+        right_key_format: str | None = None,
     ) -> dict[str, Any]:
-        """Join two tables on caller-declared keys; no relationship is inferred."""
+        """Join two tables on caller-declared keys; no relationship is inferred.
+
+        ``crosswalk`` names a crosswalk already declared in relationships.json;
+        a caller cannot supply mappings of its own, because an identity asserted
+        at query time by whoever is asking is exactly the implicit merge the
+        crosswalk exists to prevent. ``*_key_format`` renders a composite key
+        from the side's own declared key columns (rendering, not mapping).
+        """
         requested_limit = _bounded_result_limit(limit)
+        left_resolver, right_resolver = self._key_resolvers(
+            left_keys,
+            right_keys,
+            crosswalk=crosswalk,
+            left_key_format=left_key_format,
+            right_key_format=right_key_format,
+        )
         left_profile = self._table_profile(left)
         right_profile = self._table_profile(right)
         left_available = [column["name"] for column in left_profile.get("columns", [])]
@@ -566,6 +600,9 @@ class DatasetService:
                 "right_columns": right_output,
                 "how": how,
                 "limit": requested_limit,
+                **({"crosswalk": crosswalk} if crosswalk is not None else {}),
+                **({"left_key_format": left_key_format} if left_key_format else {}),
+                **({"right_key_format": right_key_format} if right_key_format else {}),
             },
             "inputs": {"left": left_context, "right": right_context},
         }
@@ -583,6 +620,19 @@ class DatasetService:
                 }
             )
             return payload
+
+        if left_resolver.transforms or right_resolver.transforms:
+            return self._join_resolved(
+                payload,
+                left_rows,
+                right_rows,
+                left_resolver=left_resolver,
+                right_resolver=right_resolver,
+                left_output=left_output,
+                right_output=right_output,
+                how=how,
+                limit=requested_limit,
+            )
 
         result = query.join_rows(
             left_rows,
@@ -603,13 +653,26 @@ class DatasetService:
         declarations: list[dict[str, Any]] | None = None,
         *,
         declaration_source: dict[str, Any] | None = None,
+        crosswalks: list[Crosswalk] | None = None,
     ) -> dict[str, Any]:
         """Resolve structural candidates and explicit relationship declarations.
 
         Structural overlap is always a candidate. Only an explicit declaration
         (or a future supported deterministic convention) may produce a
         relationship eligible for named execution.
+
+        ``crosswalks`` are user-supplied identifier crosswalks. A declaration
+        uses one only by naming it (``key_crosswalk``); structural candidates
+        never do, since a candidate that joined only through a crosswalk would
+        be the crosswalk's assertion wearing the look of an observation.
         """
+        registry: dict[str, Crosswalk] = {}
+        for crosswalk in crosswalks or []:
+            if crosswalk.name in registry:
+                raise ValueError(
+                    f"two crosswalks are named {crosswalk.name!r}; give each a distinct name"
+                )
+            registry[crosswalk.name] = crosswalk
         tables = {
             path: profile
             for path, profile in self.manifest.get("tables", {}).items()
@@ -621,6 +684,13 @@ class DatasetService:
 
         for index, declaration in enumerate(supplied):
             spec = _validate_declaration(declaration, index)
+            named = spec.get("key_crosswalk")
+            if named is not None and named not in registry:
+                known = sorted(registry) or "none supplied"
+                raise ValueError(
+                    f"declaration {index} names key_crosswalk {named!r}, which was not "
+                    f"supplied; supplied crosswalks: {known}"
+                )
             basis: dict[str, Any] = {
                 "method": "explicit-declaration",
                 "note": spec.get("note") or "relationship explicitly declared by configuration",
@@ -632,6 +702,7 @@ class DatasetService:
                 status="declared",
                 basis=basis,
                 expected_cardinality=spec.get("expected_cardinality"),
+                crosswalks=registry,
             )
             records[record["id"]] = record
 
@@ -681,6 +752,7 @@ class DatasetService:
             "relationship_count": len(ordered),
             "status_counts": dict(sorted(status_counts.items())),
             "relationships": ordered,
+            "crosswalks": [registry[name].as_record() for name in sorted(registry)],
             "skipped": sorted(
                 skipped,
                 key=lambda item: (
@@ -727,6 +799,7 @@ class DatasetService:
                 "total": 0,
                 "status_counts": self.relationship_bundle.get("status_counts", {}),
                 "skipped": self.relationship_bundle.get("skipped", []),
+                "crosswalks": self._crosswalk_listing(),
                 "source_integrity": {"matches": False, "files": integrity},
                 "content_withheld": (
                     "saved relationship assertions were derived from source bytes that no "
@@ -748,6 +821,7 @@ class DatasetService:
             "total": len(records),
             "status_counts": self.relationship_bundle.get("status_counts", {}),
             "skipped": self.relationship_bundle.get("skipped", []),
+            "crosswalks": self._crosswalk_listing(),
             "source_integrity": {"matches": True, "files": integrity},
         }
 
@@ -780,6 +854,19 @@ class DatasetService:
                 f"relationship {relationship_id!r} has status {status!r}; "
                 "only declared or deterministic relationships can drive a named join"
             )
+        mapping = record.get("key_mapping") or {}
+        cited = mapping.get("crosswalk")
+        if cited is not None:
+            held = self.crosswalks.get(cited["name"])
+            # The record's facts were computed through one exact crosswalk; a
+            # bundle whose registry holds different bytes under that name would
+            # execute a join its own assessment never described.
+            if held is None or held.sha256 != cited["sha256"]:
+                raise OutputError(
+                    f"relationship {relationship_id!r} was assessed through crosswalk "
+                    f"{cited['name']!r} ({cited['sha256']}), which this bundle no longer "
+                    "holds unchanged; regenerate relationships"
+                )
         result = self.join_tables(
             record["left"]["table"],
             record["right"]["table"],
@@ -789,12 +876,16 @@ class DatasetService:
             right_columns=right_columns,
             how=how,
             limit=limit,
+            crosswalk=cited["name"] if cited is not None else None,
+            left_key_format=(mapping.get("left") or {}).get("key_format"),
+            right_key_format=(mapping.get("right") or {}).get("key_format"),
         )
         result["relationship_contract"] = {
             "id": relationship_id,
             "status": status,
             "cardinality": record["cardinality"],
             "basis": record["basis"],
+            **({"crosswalk": dict(cited)} if cited is not None else {}),
         }
         return result
 
@@ -914,13 +1005,34 @@ class DatasetService:
         occurrences = [
             hit for hit in self.manifest.get("identifiers", []) if hit["value"].lower() == needle
         ]
-        return {
+        payload: dict[str, Any] = {
             "query": value,
             "occurrences": occurrences,
             "found": bool(occurrences),
             "resolved": None,
             "note": "occurrence lookup only; no resolution was attempted",
         }
+        if self.crosswalks:
+            # Crosswalk membership is exact and case-sensitive, like the join
+            # that applies it: a near-miss is not reported as a match.
+            membership = []
+            for name in sorted(self.crosswalks):
+                crosswalk = self.crosswalks[name]
+                canonical = crosswalk.lookup(value)
+                role = "form"
+                if canonical is None and value in crosswalk.canonical_ids:
+                    canonical, role = value, "canonical_id"
+                if canonical is not None:
+                    membership.append(
+                        {
+                            **crosswalk.citation(),
+                            "role": role,
+                            "canonical_id": canonical,
+                            "forms": crosswalk.forms_of(canonical),
+                        }
+                    )
+            payload["crosswalk_membership"] = membership
+        return payload
 
     # -- profile tools (fair-* modes only) ----------------------------------
 
@@ -1164,6 +1276,154 @@ class DatasetService:
             context["scan_complete"] = len(rows) < max_rows
         return context, rows
 
+    def _key_resolvers(
+        self,
+        left_keys: list[str],
+        right_keys: list[str],
+        *,
+        crosswalk: str | Crosswalk | None,
+        left_key_format: str | None,
+        right_key_format: str | None,
+    ) -> tuple[KeyResolver, KeyResolver]:
+        """Build both sides' key resolvers, refusing an undeclared crosswalk."""
+        held: Crosswalk | None
+        if crosswalk is None or isinstance(crosswalk, Crosswalk):
+            held = crosswalk
+        else:
+            held = self.crosswalks.get(crosswalk)
+            if held is None:
+                known = sorted(self.crosswalks) or "none"
+                raise KeyError(
+                    f"no crosswalk named {crosswalk!r} is declared in relationships.json "
+                    f"(declared: {known}); crosswalks are supplied with "
+                    "'data2agent relationships --crosswalk', never at query time"
+                )
+        # A key_format on either side makes both sides compare text, so the
+        # plain side's value is rendered exactly as the template would render it.
+        rendered = bool(left_key_format or right_key_format)
+        try:
+            left = KeyResolver(
+                list(left_keys),
+                key_format=(
+                    parse_key_format(left_key_format, list(left_keys), side="left")
+                    if left_key_format
+                    else None
+                ),
+                crosswalk=held,
+                side="left",
+                as_text=rendered,
+            )
+            right = KeyResolver(
+                list(right_keys),
+                key_format=(
+                    parse_key_format(right_key_format, list(right_keys), side="right")
+                    if right_key_format
+                    else None
+                ),
+                crosswalk=held,
+                side="right",
+                as_text=rendered,
+            )
+        except CrosswalkError as error:
+            raise ValueError(str(error)) from error
+        if not left_keys or not right_keys or left.width != right.width:
+            raise ValueError(
+                "left_keys and right_keys must be non-empty and have equal length "
+                "(a key_format renders its side's key columns as one value)"
+            )
+        return left, right
+
+    def _join_resolved(
+        self,
+        payload: dict[str, Any],
+        left_rows: list[dict[str, Any]],
+        right_rows: list[dict[str, Any]],
+        *,
+        left_resolver: KeyResolver,
+        right_resolver: KeyResolver,
+        left_output: list[str],
+        right_output: list[str],
+        how: str,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Join on the resolved key while returning every raw key value.
+
+        Each returned row carries both sides' raw key values exactly as read
+        and the compared value (the canonical ID when the crosswalk listed the
+        form), so a reader can always see which spellings were identified.
+        """
+        for rows, resolver in ((left_rows, left_resolver), (right_rows, right_resolver)):
+            for row in rows:
+                row["values"][_RESOLVED_KEY] = resolver.resolve(row["values"])
+        left_keys_seen = {row["values"][_RESOLVED_KEY] for row in left_rows} - {None}
+        right_keys_seen = {row["values"][_RESOLVED_KEY] for row in right_rows} - {None}
+        key_mapping: dict[str, Any] = {
+            "crosswalk": (
+                {**left_resolver.crosswalk.citation(), "declared_in": "relationships.json"}
+                if left_resolver.crosswalk is not None
+                else None
+            ),
+            "left": mapping_facts(left_rows, left_resolver, other_keys=right_keys_seen),
+            "right": mapping_facts(right_rows, right_resolver, other_keys=left_keys_seen),
+        }
+        payload["key_mapping"] = key_mapping
+        colliding = [side for side in ("left", "right") if key_mapping[side].get("collisions")]
+        if colliding:
+            payload.update(
+                {
+                    "rows": [],
+                    "returned": 0,
+                    "content_withheld": (
+                        "crosswalk collision on "
+                        + ", ".join(colliding)
+                        + ": one table writes one canonical ID in more than one form; "
+                        "joining would silently merge them (see key_mapping.*.collisions)"
+                    ),
+                }
+            )
+            return payload
+
+        result = query.join_rows(
+            left_rows,
+            right_rows,
+            left_keys=[_RESOLVED_KEY],
+            right_keys=[_RESOLVED_KEY],
+            how=how,
+            limit=limit,
+        )
+        projected = []
+        for row in result["rows"]:
+            left_values = row["left"]
+            right_values = row.get("right")
+            key = left_values.get(_RESOLVED_KEY)
+            out = _project_joined_row(row, left_output, right_output)
+            out["key"] = {
+                "left_raw": [left_values.get(name) for name in left_resolver.keys],
+                "right_raw": (
+                    [right_values.get(name) for name in right_resolver.keys]
+                    if isinstance(right_values, dict)
+                    else None
+                ),
+                **(key_label(key, left_resolver) if key is not None else {"key": None}),
+            }
+            projected.append(out)
+        result["rows"] = projected
+        unmapped = [side for side in ("left", "right") if key_mapping[side].get("unmapped_rows")]
+        if unmapped:
+            result.setdefault("warnings", []).append(
+                "key value(s) absent from the crosswalk on "
+                + ", ".join(unmapped)
+                + " were passed through unchanged and matched only identical unmapped values"
+            )
+        payload.update(result)
+        return payload
+
+    def _crosswalk_listing(self) -> list[dict[str, Any]]:
+        return [
+            {**self.crosswalks[name].summary(), "source_file": self.crosswalk_checks.get(name)}
+            for name in sorted(self.crosswalks)
+        ]
+
     def _assess_relationship_spec(
         self,
         spec: dict[str, Any],
@@ -1171,11 +1431,20 @@ class DatasetService:
         status: str,
         basis: dict[str, Any],
         expected_cardinality: str | None = None,
+        crosswalks: dict[str, Crosswalk] | None = None,
     ) -> dict[str, Any]:
         left = str(spec["left"])
         right = str(spec["right"])
         left_keys = [str(value) for value in spec["left_keys"]]
         right_keys = [str(value) for value in spec["right_keys"]]
+        named = spec.get("key_crosswalk")
+        left_resolver, right_resolver = self._key_resolvers(
+            left_keys,
+            right_keys,
+            crosswalk=(crosswalks or {}).get(named) if named is not None else None,
+            left_key_format=spec.get("left_key_format"),
+            right_key_format=spec.get("right_key_format"),
+        )
 
         left_context, left_rows = self._scan_table(
             left,
@@ -1211,6 +1480,8 @@ class DatasetService:
             status=status,
             basis=basis,
             expected_cardinality=expected_cardinality,
+            left_resolver=left_resolver if left_resolver.transforms else None,
+            right_resolver=right_resolver if right_resolver.transforms else None,
         )
 
     def _require_entry(self, path: str) -> dict[str, Any]:
@@ -1271,9 +1542,22 @@ def _validate_declaration(declaration: dict[str, Any], index: int) -> dict[str, 
     right_keys = declaration["right_keys"]
     if not isinstance(left_keys, list) or not isinstance(right_keys, list):
         raise ValueError(f"declaration {index} keys must be arrays")
-    if not left_keys or len(left_keys) != len(right_keys):
+    formats = {
+        side: declaration.get(f"{side}_key_format")
+        for side in ("left", "right")
+        if declaration.get(f"{side}_key_format") is not None
+    }
+    for side, template in formats.items():
+        if not isinstance(template, str) or not template:
+            raise ValueError(f"declaration {index} {side}_key_format must be a non-empty string")
+    # A key_format renders its side's key columns as one value, so equal
+    # length is checked on the widths that will actually be compared.
+    left_width = 1 if "left" in formats else len(left_keys)
+    right_width = 1 if "right" in formats else len(right_keys)
+    if not left_keys or not right_keys or left_width != right_width:
         raise ValueError(
-            f"declaration {index} left_keys/right_keys must be non-empty and equal length"
+            f"declaration {index} left_keys/right_keys must be non-empty and equal length "
+            "(or rendered to one value each with left_key_format/right_key_format)"
         )
 
     result = {
@@ -1291,6 +1575,13 @@ def _validate_declaration(declaration: dict[str, Any], index: int) -> dict[str, 
         result["expected_cardinality"] = expected
     if declaration.get("note") is not None:
         result["note"] = str(declaration["note"])
+    for side, template in formats.items():
+        result[f"{side}_key_format"] = template
+    if declaration.get("key_crosswalk") is not None:
+        named = declaration["key_crosswalk"]
+        if not isinstance(named, str) or not named:
+            raise ValueError(f"declaration {index} key_crosswalk must be a crosswalk name")
+        result["key_crosswalk"] = named
     return result
 
 
@@ -1315,6 +1606,46 @@ def _load_relationship_bundle(
             "convention); regenerate relationships"
         )
     return payload
+
+
+def _bundle_crosswalks(
+    bundle: dict[str, Any] | None,
+) -> tuple[dict[str, Crosswalk], dict[str, dict[str, Any]]]:
+    """Rebuild the bundle's crosswalks and re-check each against its source file.
+
+    The verbatim copy inside the bundle is what joins apply, and it must still
+    hash to its recorded sha256. When the file it was read from is still where
+    it was, it is re-hashed too: a crosswalk edited after the bundle was built
+    means the saved overlap and cardinality describe a mapping that no longer
+    exists, so the bundle is refused until regenerated. A file that has moved
+    away is not an error -- the cited inline copy remains authoritative -- but
+    the listing says it could not be re-checked.
+    """
+    if not bundle:
+        return {}, {}
+    crosswalks: dict[str, Crosswalk] = {}
+    checks: dict[str, dict[str, Any]] = {}
+    for record in bundle.get("crosswalks", []) or []:
+        try:
+            crosswalk = crosswalk_from_record(record)
+        except CrosswalkError as error:
+            raise OutputError(f"{error}; regenerate relationships") from error
+        source_path = record.get("source_path")
+        check: dict[str, Any] = {"path": source_path}
+        if source_path and Path(source_path).is_file():
+            observed = hash_file(Path(source_path))
+            if observed != crosswalk.sha256:
+                raise OutputError(
+                    f"crosswalk {crosswalk.name!r} changed after relationships.json was "
+                    f"built (recorded {crosswalk.sha256}, now {observed}); regenerate "
+                    "relationships"
+                )
+            check["status"] = "matches"
+        else:
+            check["status"] = "not re-checked: source file not found; the inline copy is served"
+        crosswalks[crosswalk.name] = crosswalk
+        checks[crosswalk.name] = check
+    return crosswalks, checks
 
 
 def _bounded_result_limit(limit: int) -> int:

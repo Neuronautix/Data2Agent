@@ -186,11 +186,22 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         right_columns: list[str] | None = None,
         how: str = "inner",
         limit: int = 100,
+        crosswalk: str | None = None,
+        left_key_format: str | None = None,
+        right_key_format: str | None = None,
     ) -> dict[str, Any]:
         """Join tables only on keys explicitly supplied by the caller.
 
         Key uniqueness and cardinality are diagnosed and returned. No
-        relationship is inferred or promoted by this operation.
+        relationship is inferred or promoted by this operation. Keys match by
+        exact equality unless `crosswalk` names an identifier crosswalk already
+        declared in relationships.json (list_relationships shows them); you
+        cannot supply mappings yourself. Through a crosswalk, each row returns
+        both sides' raw key values plus the canonical ID compared; values absent
+        from the crosswalk pass through unchanged and are counted, and a table
+        writing one canonical ID in two forms is reported as a collision with
+        rows withheld. `left_key_format`/`right_key_format` (e.g. "{cage}-{tail}")
+        render a composite key from that side's own key columns.
         """
         return service.join_tables(
             left,
@@ -201,13 +212,20 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
             right_columns=right_columns,
             how=how,
             limit=limit,
+            crosswalk=crosswalk,
+            left_key_format=left_key_format,
+            right_key_format=right_key_format,
         )
 
     def list_relationships(status: str | None = None) -> dict[str, Any]:
         """List saved cross-table relationships with epistemic status and evidence.
 
         Candidate relationships are structural suggestions only. They are not
-        equivalent to declared or deterministic relationships.
+        equivalent to declared or deterministic relationships. A record with
+        `key_mapping` was assessed through a declared identifier crosswalk (cited
+        by name and sha256): its cardinality and overlap are on canonical IDs, and
+        it counts mapped, unmapped and unmatched key values per side. The
+        bundle's declared crosswalks are listed under `crosswalks`.
         """
         return service.list_relationships(status)
 
@@ -226,6 +244,9 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
 
         Candidate or rejected relationships are refused. This prevents a
         plausible structural overlap from silently becoming a scientific fact.
+        A relationship declared through an identifier crosswalk is joined through
+        that exact crosswalk; each row carries both raw key values and the
+        canonical ID, and the contract cites the crosswalk's name and sha256.
         """
         return service.join_relationship(
             relationship_id,
@@ -257,7 +278,13 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         )
 
     def resolve_identifier(value: str) -> dict[str, Any]:
-        """Find where an identifier occurs in the dataset. No network resolution is attempted."""
+        """Find where an identifier occurs in the dataset. No network resolution is attempted.
+
+        When relationships.json declares identifier crosswalks, also reports
+        exact (case-sensitive) crosswalk membership: the canonical ID a written
+        form maps to and all its listed forms. Membership is a declaration by the
+        crosswalk's author, not an observation.
+        """
         return service.resolve_identifier(value)
 
     def get_provenance() -> dict[str, Any]:

@@ -208,7 +208,8 @@ Relationship status is epistemic, not a confidence score:
 Every record contains table/key endpoints, backing checksums, complete and
 incomplete key-row counts, uniqueness, observed cardinality, overlap coverage,
 and bounded source-row examples. Composite keys are arrays and are never
-collapsed into concatenated strings.
+collapsed into concatenated strings unless a declaration says how (a
+`key_format`, below).
 
 A declaration can state `expected_cardinality`; disagreement makes the record
 `rejected`. Candidate and rejected records cannot drive
@@ -216,6 +217,100 @@ A declaration can state `expected_cardinality`; disagreement makes the record
 
 Saved relationship assertions are withheld if their backing source files no
 longer match the manifest checksums.
+
+### Identifier crosswalks
+
+Joins compare key values by exact equality. When two files write the same
+subject differently (a registry's `X-1_I` against a measurement file's `X1-I`,
+a digit zero against a letter O), nothing is normalised implicitly: a rule that
+connects two spellings of one animal can equally merge two different animals,
+and the merged rows would look exactly like correct ones. Identity across
+written forms is only ever **declared**, in a crosswalk file a person wrote.
+
+**File format** (`data2agent-crosswalk-csv/1`): UTF-8 CSV (a BOM is tolerated),
+header required, one row per written form.
+
+```csv
+canonical_id,form,note
+X-1_I,X-1_I,registry spelling
+X-1_I,X1-I,measurement files drop the cage dash
+```
+
+| Column | Required | Meaning |
+| --- | --- | --- |
+| `canonical_id` | yes | the one identifier the forms denote |
+| `form` | yes | a written form, compared byte for byte |
+| `source`, `note` | no | free text, kept verbatim for citation |
+
+Validation is strict and reports every problem at once: a form mapped to two
+canonical IDs (both named, with line numbers), a form listed twice, an empty
+`canonical_id` or `form`, a missing or unknown column, a ragged row. Values are
+never stripped or case-folded. A canonical ID is **not** implicitly one of its
+own forms: list it if a table writes it that way.
+
+**Declaring it.** Crosswalks are supplied to the relationships step and applied
+only where a declaration names one:
+
+```text
+data2agent relationships OUT --declarations rel.json --crosswalk ids=ids.csv
+```
+
+```json
+{
+  "left": "registry.csv", "right": "sessions.csv",
+  "left_keys": ["cage", "tail"], "right_keys": ["animal"],
+  "left_key_format": "{cage}-{tail}",
+  "key_crosswalk": "ids",
+  "expected_cardinality": "one_to_many"
+}
+```
+
+`key_crosswalk` is per relationship, not per side: both sides pass through the
+same crosswalk, so both resolve into one canonical namespace. Two per-side
+crosswalks would compare IDs from two namespaces — an identification nobody
+declared. Structural candidates never use a crosswalk.
+
+**Composite keys.** A crosswalk maps single written forms. A key split across
+columns is rendered by a declared `left_key_format`/`right_key_format` template
+(`{column}` placeholders, `{{`/`}}` for literal braces). The template must use
+every declared key column of its side and nothing else. Rendering is
+concatenation of values as read (non-strings via `str()`), not normalisation;
+the rendered string is then looked up in the crosswalk like any other form. A
+key_format may also be declared without a crosswalk, in which case the rendered
+string is compared by exact equality.
+
+**What a lookup does.**
+
+| Key value | Treatment |
+| --- | --- |
+| listed as a `form` | replaced by its `canonical_id` for comparison |
+| not listed | passed through unchanged and counted; it matches only an identical unlisted value on the other side, never a canonical ID — even one it happens to equal (reported under `unmapped_values_equal_to_a_canonical_id`) |
+| two different forms in the **same table** mapping to one canonical ID | a **collision**: reported with source rows, never merged. A declared relationship with a collision is `rejected`; an ad-hoc `join_tables` withholds its rows |
+
+**Recorded facts.** Overlap, uniqueness, cardinality and completeness of a
+relationship declared through a crosswalk are computed on canonical IDs. The
+record gains `key_mapping`: the crosswalk cited by name and SHA-256, and per
+side the key_format, mapped/unmapped row counts, distinct mapped and unmapped
+values, unmatched distinct keys, bounded examples and collisions. Evidence
+examples carry `mapping: crosswalk|unmapped`. A declared mapping is part of the
+relationship id, so the same columns joined exactly and through a crosswalk are
+two different relationships.
+
+**Binding.** The bundle's `crosswalks` array holds each crosswalk's verbatim
+text and the SHA-256 of the file bytes. At load, the service re-hashes the text
+(an edit inside `relationships.json` is refused) and, if the recorded
+`source_path` still exists, the file itself: a crosswalk edited after the bundle
+was built invalidates the bundle until relationships are regenerated. A file
+that has moved away is not an error; the cited inline copy is served and the
+listing says it could not be re-checked.
+
+**Serving.** `join_relationship` applies the relationship's crosswalk and
+key_format with no extra input. Every returned row carries `key.left_raw` and
+`key.right_raw` (the raw key values exactly as read) plus `key.canonical_id`
+and `key.mapping`; the contract cites the crosswalk. `join_tables` accepts
+`crosswalk` only as the name of one already declared in the bundle — an agent
+cannot supply mappings at query time. `resolve_identifier` reports exact,
+case-sensitive crosswalk membership.
 
 ## Missingness, precisely
 
