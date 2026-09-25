@@ -112,6 +112,11 @@ def to_number(value: Any) -> float | None:
     return None
 
 
+def is_blank(value: Any) -> bool:
+    """None, or a string holding only whitespace. Never a unit, a group or a value."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 def round_num(x: float) -> int | float:
     r = round(float(x), FLOAT_DIGITS)
     return int(r) if r == int(r) and abs(r) < 1e15 else r
@@ -312,8 +317,11 @@ class FileRowSource:
         col_index = [(ci, un) for (ci, _), un in zip(col_index, unique, strict=True)]
         letters = {name: str(ci + 1) for ci, name in col_index}
         first = int(spec.get("first_row", header_rows[-1] + 1))
+        last = spec.get("last_row")  # honoured exactly as for workbooks
         rows = []
         for lineno, record in enumerate(lines, start=1):
+            if last is not None and lineno > int(last):
+                break
             if lineno < first or not record or all(not f.strip() for f in record):
                 continue
             values = {name: (record[ci] if ci < len(record) else None) for ci, name in col_index}
@@ -569,7 +577,7 @@ def _op_count(src: RowSource, config: dict[str, Any], spec: dict[str, Any]) -> R
     distinct = spec.get("distinct")
     if distinct:
         _need(t, distinct)
-        n = len({r.values.get(distinct) for r in rows if r.values.get(distinct) is not None})
+        n = len({r.values.get(distinct) for r in rows if not is_blank(r.values.get(distinct))})
         how = f"number of distinct non-empty '{distinct}'"
         rng = t.locator_range(distinct, rows)
     else:
@@ -596,12 +604,30 @@ def _op_sum(src: RowSource, config: dict[str, Any], spec: dict[str, Any]) -> Res
     )
 
 
+def _op_row_sum(src: RowSource, config: dict[str, Any], spec: dict[str, Any]) -> Result:
+    """Sum of several columns of the single row matching a filter."""
+    t = src.table(spec["table"])
+    cols = list(spec["columns"])
+    _need(t, *cols)
+    rows = select(t, spec.get("where"))
+    if len(rows) != 1:
+        raise GoldError(f"row_sum: expected exactly one row in {t.table_id}, matched {len(rows)}")
+    nums = [to_number(rows[0].values.get(c)) for c in cols]
+    if any(n is None for n in nums):
+        raise GoldError(f"row_sum: non-numeric cell among {cols} in {t.table_id}")
+    return Result(
+        round_num(sum(nums)),  # type: ignore[arg-type]
+        [_src(t, ",".join(rows[0].cells[c] for c in cols), rows)],
+        f"sum of {cols} in the single row of table '{t.table_id}' matching {spec.get('where')}",
+    )
+
+
 def _op_values(src: RowSource, config: dict[str, Any], spec: dict[str, Any]) -> Result:
     t = src.table(spec["table"])
     col = spec["column"]
     _need(t, col)
     rows = select(t, spec.get("where"))
-    vals = sorted({str(r.values[col]) for r in rows if r.values.get(col) not in (None, "")})
+    vals = sorted({str(r.values[col]) for r in rows if not is_blank(r.values.get(col))})
     return Result(
         vals,
         [_src(t, t.locator_range(col, rows), rows)],
@@ -616,8 +642,13 @@ def _op_group_count(src: RowSource, config: dict[str, Any], spec: dict[str, Any]
     _need(t, *by, *([distinct] if distinct else []))
     rows = select(t, spec.get("where"))
     groups: dict[tuple, set | list] = {}
+    skipped = 0
     for r in rows:
         k = tuple(r.values.get(b) for b in by)
+        # a blank group key or a blank counted id is not a group / a unit
+        if any(is_blank(x) for x in k) or (distinct and is_blank(r.values.get(distinct))):
+            skipped += 1
+            continue
         groups.setdefault(k, set() if distinct else [])
         if distinct:
             groups[k].add(r.values.get(distinct))
@@ -631,7 +662,8 @@ def _op_group_count(src: RowSource, config: dict[str, Any], spec: dict[str, Any]
         table_out,
         [_src(t, t.locator_range(b, rows), rows) for b in by],
         f"count of {'distinct ' + distinct if distinct else 'rows'} per {by} "
-        f"in table '{t.table_id}' where {spec.get('where')}",
+        f"in table '{t.table_id}' where {spec.get('where')}"
+        + (f"; {skipped} row(s) with a blank group key or id excluded" if skipped else ""),
     )
 
 
@@ -970,6 +1002,7 @@ _OPS: dict[str, Callable[[RowSource, dict[str, Any], dict[str, Any]], Result]] =
     "raw_cell": _op_raw_cell,
     "count": _op_count,
     "sum": _op_sum,
+    "row_sum": _op_row_sum,
     "values": _op_values,
     "group_count": _op_group_count,
     "group_stats": _op_group_stats,

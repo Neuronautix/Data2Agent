@@ -28,6 +28,12 @@ Rules the builder enforces:
 * A question blocked by an open owner question gets ``expected: PENDING-<ids>``.
   Its computation, if any, is still evaluated and kept apart as
   ``provisional_answer`` so the owner can see what the answer would become.
+* Once answered, the question's ``on_answer: {<decision>: {<answer>: outcome}}``
+  decides what happens -- ``compute`` (the hypothesis held: its computation
+  becomes gold), ``abstain`` (e.g. for "no" or "unknown": the correct reply is
+  "cannot be determined"), or an alternative computation ``{op: ...}``. The
+  answer key is the decision's ``answer_key`` or its normalised ``answer``. An
+  answer with no declared outcome fails the build; nothing defaults.
 * Nothing is written with a timestamp, so reruns are byte-identical.
 """
 
@@ -108,6 +114,83 @@ def open_decisions(pkg: Path) -> tuple[dict[str, Any], set[str]]:
     return items, {qid for qid, q in items.items() if q.get("status") != "answered"}
 
 
+# What an owner answer does to a blocked question is declared per question, per
+# decision, per answer -- never inferred from the fact that it was answered. An
+# answer of "no" must not promote a computation that assumed "yes", and an
+# owner-confirmed "unknown" makes "cannot be determined" the correct reply.
+OUTCOME_COMPUTE = "compute"  # the question's own `compute:` (the hypothesis held)
+OUTCOME_ABSTAIN = frozenset({"abstain", "unanswerable"})
+
+
+def answer_key(decision: dict[str, Any]) -> str:
+    """The key an answered decision is looked up under in `on_answer`.
+
+    `answer_key` when the owner's prose answer needs a short handle, otherwise
+    the answer itself, normalised (so `Yes` and `yes` are one key).
+    """
+    raw = decision.get("answer_key")
+    if raw is None:
+        raw = decision.get("answer")
+    return " ".join(str(raw).split()).casefold()
+
+
+def _outcome_problems(qid: str, q: dict[str, Any]) -> list[str]:
+    problems = []
+    on_answer = q.get("on_answer") or {}
+    for oq, mapping in on_answer.items():
+        if oq not in q.get("blocked_by", []):
+            problems.append(f"{qid}: on_answer names {oq}, which is not in blocked_by")
+        if not isinstance(mapping, dict) or not mapping:
+            problems.append(f"{qid}: on_answer.{oq} must map answers to outcomes")
+            continue
+        for key, outcome in mapping.items():
+            if isinstance(outcome, dict):
+                if outcome.get("op") not in OPS:
+                    problems.append(
+                        f"{qid}: on_answer.{oq}.{key}: unknown op {outcome.get('op')!r}"
+                    )
+            elif outcome == OUTCOME_COMPUTE:
+                if "compute" not in q:
+                    problems.append(f"{qid}: on_answer.{oq}.{key} = compute, but no compute:")
+            elif outcome not in OUTCOME_ABSTAIN:
+                problems.append(f"{qid}: on_answer.{oq}.{key}: unknown outcome {outcome!r}")
+    return problems
+
+
+def resolve_blocked(
+    q: dict[str, Any], decisions: dict[str, Any]
+) -> tuple[str | dict[str, Any], dict[str, str]]:
+    """Outcome of a question whose blocking decisions are all answered.
+
+    Returns (outcome, {decision id: answer key}). An answer the question does not
+    map is an error, so a new owner answer can never silently fall through to a
+    default -- in particular not to the provisional computation.
+    """
+    keys: dict[str, str] = {}
+    outcomes: list[str | dict[str, Any]] = []
+    on_answer = q.get("on_answer") or {}
+    for oq in q.get("blocked_by", []):
+        key = answer_key(decisions[oq])
+        keys[oq] = key
+        mapping = {
+            " ".join(str(k).split()).casefold(): v for k, v in (on_answer.get(oq) or {}).items()
+        }
+        if key not in mapping:
+            raise GoldError(
+                f"{oq} is answered {key!r}, but {q['id']} declares no outcome for that answer "
+                f"(on_answer.{oq} covers {sorted(mapping) or 'nothing'})"
+            )
+        outcomes.append(mapping[key])
+    if any(o in OUTCOME_ABSTAIN for o in outcomes if isinstance(o, str)):
+        return "abstain", keys
+    alternatives = [o for o in outcomes if isinstance(o, dict)]
+    if len(alternatives) > 1:
+        raise GoldError(f"{q['id']}: several answers each select an alternative computation")
+    if alternatives:
+        return alternatives[0], keys
+    return OUTCOME_COMPUTE, keys
+
+
 def validate(spec: dict[str, Any], decisions: dict[str, Any]) -> list[str]:
     problems = []
     seen = set()
@@ -128,6 +211,7 @@ def validate(spec: dict[str, Any], decisions: dict[str, Any]) -> list[str]:
                 problems.append(f"{qid}: references owner question {oq} not in decisions.yaml")
         if "compute" in q and q["compute"].get("op") not in OPS:
             problems.append(f"{qid}: unknown op {q['compute'].get('op')!r}")
+        problems.extend(_outcome_problems(qid, q))
     return problems
 
 
@@ -154,12 +238,26 @@ def build(pkg: Path) -> dict[str, str]:
         if q.get("related_owner_questions"):
             record["related_owner_questions"] = list(q["related_owner_questions"])
         blocking_open = [b for b in q.get("blocked_by", []) if b in open_ids]
+        outcome: str | dict[str, Any] = OUTCOME_COMPUTE
         try:
             result = evaluate(src, config, q["compute"]) if "compute" in q else None
+            if q.get("blocked_by") and not blocking_open:
+                outcome, keys = resolve_blocked(q, decisions)
+                record["resolved_by"] = keys
+                if isinstance(outcome, dict):
+                    result = evaluate(src, config, outcome)
         except (GoldError, KeyError, ValueError) as exc:
             sys.exit(f"{q['id']}: {exc}")
 
-        if blocking_open:
+        if outcome == "abstain":
+            record["status"] = "abstain"
+            record["expected"] = ABSTAIN
+            record["abstain_reason"] = (
+                "owner answer(s) "
+                + ", ".join(f"{k}={v!r}" for k, v in record["resolved_by"].items())
+                + " leave the question undeterminable"
+            )
+        elif blocking_open:
             record["status"] = "pending"
             record["expected"] = PENDING_PREFIX + "+".join(blocking_open)
             if result is not None:

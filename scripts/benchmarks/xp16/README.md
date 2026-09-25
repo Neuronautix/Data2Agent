@@ -128,8 +128,23 @@ An ambiguity is never filled from plausibility. It becomes an entry in
 that depends on it lists it in `blocked_by:` and its gold answer is
 `PENDING-<ids>`. Its computation still runs and is stored apart as
 `provisional_answer`, so the owner sees what the answer would become; the
-scorer never uses it. Answering the owner question and rebuilding turns the
-provisional answer into gold. "unknown" is a valid owner answer.
+scorer never uses it. "unknown" is a valid owner answer.
+
+What an answer does is declared per question, never inferred from the decision
+merely being answered:
+
+```yaml
+blocked_by: [OQ1]
+on_answer:
+  OQ1:
+    yes: compute                  # hypothesis held: the provisional computation becomes gold
+    no: {op: count, table: t2}    # or: abstain
+    unknown: abstain              # owner-confirmed unknown -> "cannot be determined"
+```
+
+The answer key is the decision's `answer_key` (a short handle for a prose
+answer) or its normalised `answer`. An answered decision whose answer the
+question does not map fails the build.
 
 ## Capability tags
 
@@ -170,8 +185,13 @@ should fail today so the report shows where prediction and outcome disagree.
   question scores 0 (over-abstention);
 - **citation** -- the file must belong to the snapshot, a given sha256 must
   match, the sheet and cell / range / line must exist, and a scalar answer
-  citing one cell must be what that cell holds. `verified` requires a matching
-  sha256.
+  citing one cell must be what that cell holds. A source is `verified` only with
+  a matching sha256 and an existing locator; a citation set takes the status of
+  its weakest source (`invalid` < `sha_unverified` < `sha_only` < `verified`),
+  and per-source statuses are kept in the report.
+
+Blank identifiers and blank group keys (None or whitespace only) are never
+counted as units, distinct values or groups, in every counting path.
 
 Breakdowns are reported per category and per capability tag.
 

@@ -34,7 +34,9 @@ and is counted as over-abstention -- safe, but not useful.
 **Citation.** Each cited source must name a file of the frozen snapshot; its
 sha256, when given, must match; the sheet and cell / range / line must exist;
 and for a scalar answer citing one cell, that cell must hold the answer. A
-citation is ``verified`` only with a matching sha256 and an existing locator.
+source is ``verified`` only with a matching sha256 and an existing locator, and a
+citation set takes the status of its weakest source (invalid < sha_unverified <
+sha_only < verified); per-source statuses are kept in the report.
 
 Per-category and per-capability breakdowns follow from the questions'
 ``category`` and ``requires`` tags. ``--capabilities`` restricts scoring to the
@@ -332,18 +334,26 @@ class CitationContext:
             if len(cells) == 1 and ":" not in str(loc):
                 return True, ws[f"{cells[0][0]}{cells[0][1]}"].value
             return True, _NO_VALUE
+        # 'line 6, field 4', 'lines 4-12, field 4', or a composed column
+        # 'lines 4-12, field 1+3' (a key built from fields 1 and 3)
         m = re.fullmatch(
-            r"lines? (\d+)(?:-(\d+))?(?:, field (\d+))?", str(src.get("range", "")).strip()
+            r"lines? (\d+)(?:-(\d+))?(?:, field (\d+(?:\+\d+)*))?",
+            str(src.get("range", "")).strip(),
         )
         if m and src.get("line") is None:
             lo, hi, fld = m.group(1), m.group(2), m.group(3)
-            if hi is None:
-                src = {**src, "line": int(lo), **({"field": int(fld)} if fld else {})}
+            fields = [int(f) for f in fld.split("+")] if fld else []
+            if hi is None and len(fields) <= 1:
+                src = {**src, "line": int(lo), **({"field": fields[0]} if fields else {})}
             else:
                 lines = self._delimited(file)
                 if lines is None:
                     return None, _NO_VALUE
-                return 1 <= int(lo) <= int(hi) <= len(lines), _NO_VALUE
+                lo_i, hi_i = int(lo), int(hi or lo)
+                if not 1 <= lo_i <= hi_i <= len(lines):
+                    return False, _NO_VALUE
+                width = max((len(r) for r in lines[lo_i - 1 : hi_i]), default=0)
+                return all(1 <= f <= width for f in fields), _NO_VALUE
         if src.get("line") is not None:
             lines = self._delimited(file)
             if lines is None:
@@ -362,6 +372,15 @@ class CitationContext:
 
 _NO_VALUE = object()
 
+# Per-source citation statuses, weakest first. The status of a citation set is
+# the weakest of its sources.
+#   invalid         file not in the snapshot, sha256 mismatch, missing locator,
+#                   or a cited cell that does not hold the answer
+#   sha_unverified  no sha256 given, so the bytes behind it are not pinned
+#   sha_only        sha256 matches, locator could not be checked
+#   verified        sha256 matches and the locator exists (and supports a scalar)
+CITATION_STRENGTH = {"invalid": 0, "sha_unverified": 1, "sha_only": 2, "verified": 3}
+
 
 def citation_status(
     entry: dict[str, Any], question: dict[str, Any], ctx: CitationContext | None
@@ -373,18 +392,13 @@ def citation_status(
         return {"status": "unchecked", "checks": []}
     scalar = question.get("answer_type") in {"number", "integer", "string", "exact"}
     checks = [ctx.check(s, entry.get("answer"), scalar and len(sources) == 1) for s in sources]
-    statuses = {c["status"] for c in checks}
-    if "invalid" in statuses:
-        status = "invalid"
-    elif "verified" in statuses:
-        status = "verified"
-    elif "sha_only" in statuses:
-        status = "sha_only"
-    else:
-        status = "sha_unverified"
+    # A citation set is only as strong as its weakest source: one verified source
+    # must not vouch for another that could not be checked.
+    status = min((c["status"] for c in checks), key=CITATION_STRENGTH.__getitem__)
     gold_files = {s.get("file") for s in question.get("sources", [])}
     return {
         "status": status,
+        "per_source": [c["status"] for c in checks],
         "checks": checks,
         "cites_a_gold_source_file": any(s.get("file") in gold_files for s in sources),
     }

@@ -57,6 +57,8 @@ def package(tmp_path: Path) -> Path:
         ("C-1", "II", "C-1_II", "wt", 22.0),
         ("C-2", "I", "C-2_I", "ko", 25.0),
         ("C-2", "II", "C-2_II", "ko", "?"),
+        ("C-3", "I", "   ", "wt", None),  # blank identifier: never a unit
+        ("C-3", "II", "C-3_II", "  ", None),  # blank group key: never a group
     ]
     for r, values in enumerate(rows, start=3):
         for c, v in enumerate(values, start=1):
@@ -73,6 +75,8 @@ def package(tmp_path: Path) -> Path:
             lines.append(
                 f"{animal}\t900\t{b * 300}-{(b + 1) * 300}\t{b + (2 if animal == 'C2-I' else 1)}\t1"
             )
+    # a footer block after the declared last_row, which must never be read as data
+    lines += ["", "Totals\t\t\t999\t9", "C9-IX\t900\t0-300\t50\t1"]
     # bytes, not text: write_text would turn "\r\n" into "\r\r\n" on Windows
     (origin / "sub" / "bins.tsv").write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
 
@@ -97,6 +101,7 @@ def package(tmp_path: Path) -> Path:
                         "header_rows": [2, 3],
                         "drop": ["Behaviors:", "Subjects:"],
                         "first_row": 4,
+                        "last_row": 12,
                     },
                 },
             }
@@ -175,6 +180,7 @@ def package(tmp_path: Path) -> Path:
                         "columns": ["Group"],
                     },
                 },
+                "on_answer": {"OQ1": {"yes": "compute", "no": "abstain", "unknown": "abstain"}},
             },
         ]
     }
@@ -364,7 +370,7 @@ def test_build_is_byte_identical_pending_is_explicit_and_source_untouched(packag
 
     gold = yaml.safe_load((package / "gold" / "questions.yaml").read_text(encoding="utf-8"))
     by_id = {q["id"]: q for q in gold["questions"]}
-    assert by_id["Q-count"]["expected"] == 4
+    assert by_id["Q-count"]["expected"] == 5  # C-3_II counts; the blank-key row does not
     assert by_id["Q-count"]["sources"][0]["sheet"] == "Reg"
     assert by_id["Q-missing-weight"]["expected"] == "ABSTAIN"
     blocked = by_id["Q-blocked"]
@@ -388,7 +394,7 @@ def test_score_run_breaks_down_by_capability_and_filters(package: Path):
     assert _run(builder, ["--package", str(package)]) == 0
     gold = yaml.safe_load((package / "gold" / "questions.yaml").read_text(encoding="utf-8"))
     answers = {
-        "Q-count": {"answer": 4},
+        "Q-count": {"answer": 5},
         "Q-unit": {"answer": [{"n": 9}]},  # counted rows, not animals
         "Q-missing-weight": {"answer": 0},  # confident on unanswerable
         "Q-blocked": {"abstain": True},
@@ -406,3 +412,141 @@ def test_freeze_refuses_to_refreeze_a_drifted_snapshot(package: Path, tmp_path: 
     (origin / "sub" / "bins.tsv").write_text("changed\n", encoding="utf-8")
     with pytest.raises(SystemExit, match="refusing to refreeze"):
         _run(freeze, ["--source", str(origin), "--package", str(package)])
+
+
+# ---------------------------------------------------------------- owner answers
+
+
+def _answer(package: Path, answer: str) -> None:
+    (package / "adjudication" / "decisions.yaml").write_text(
+        yaml.safe_dump({"questions": [{"id": "OQ1", "status": "answered", "answer": answer}]}),
+        encoding="utf-8",
+    )
+
+
+def _blocked(package: Path) -> dict:
+    gold = yaml.safe_load((package / "gold" / "questions.yaml").read_text(encoding="utf-8"))
+    return {q["id"]: q for q in gold["questions"]}["Q-blocked"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "status", "expected_kind"),
+    [
+        ("yes", "answerable", list),  # the hypothesis holds: provisional becomes gold
+        ("No", "abstain", str),  # it does not: the provisional computation is void
+        ("unknown", "abstain", str),  # owner-confirmed unknown: "cannot be determined"
+    ],
+)
+def test_only_an_affirmative_answer_promotes_the_provisional_computation(
+    package: Path, answer: str, status: str, expected_kind: type
+):
+    _answer(package, answer)
+    assert _run(builder, ["--package", str(package)]) == 0
+    blocked = _blocked(package)
+    assert blocked["status"] == status
+    assert isinstance(blocked["expected"], expected_kind)
+    assert "provisional_answer" not in blocked
+    assert blocked["resolved_by"] == {"OQ1": answer.casefold()}
+    if status == "abstain":
+        assert blocked["expected"] == "ABSTAIN"
+
+
+def test_an_answer_without_a_declared_outcome_fails_the_build(package: Path):
+    _answer(package, "only for males")
+    with pytest.raises(SystemExit, match="declares no outcome"):
+        _run(builder, ["--package", str(package)])
+
+
+def test_an_answered_decision_on_a_question_without_on_answer_fails(package: Path):
+    spec_path = package / "config" / "questions.spec.yaml"
+    spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    for q in spec["questions"]:
+        q.pop("on_answer", None)
+    spec_path.write_text(yaml.safe_dump(spec), encoding="utf-8")
+    _answer(package, "yes")
+    with pytest.raises(SystemExit, match="declares no outcome"):
+        _run(builder, ["--package", str(package)])
+
+
+def test_a_no_answer_can_select_a_declared_alternative_computation(package: Path):
+    spec_path = package / "config" / "questions.spec.yaml"
+    spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    alternative = {"op": "count", "table": "bins", "distinct": "Obs"}
+    for q in spec["questions"]:
+        if q["id"] == "Q-blocked":
+            q["on_answer"]["OQ1"]["no"] = alternative
+    spec_path.write_text(yaml.safe_dump(spec), encoding="utf-8")
+    _answer(package, "no")
+    assert _run(builder, ["--package", str(package)]) == 0
+    blocked = _blocked(package)
+    assert (blocked["status"], blocked["expected"]) == ("answerable", 3)
+
+
+# ---------------------------------------------------------------- reader edges
+
+
+def test_delimited_last_row_excludes_a_footer_block(package: Path):
+    config = yaml.safe_load((package / "config" / "tables.yaml").read_text(encoding="utf-8"))
+    table = xp16lib.FileRowSource(package / "source", config).table("bins")
+    assert len(table.rows) == 9 and table.rows[-1].locator == 12
+    assert {r.values["Obs"] for r in table.rows} == {"C1-I", "C1-II", "C2-I"}
+
+
+def test_blank_identifiers_and_group_keys_are_never_counted(package: Path):
+    config = yaml.safe_load((package / "config" / "tables.yaml").read_text(encoding="utf-8"))
+    src = xp16lib.FileRowSource(package / "source", config)
+    assert (
+        xp16lib.evaluate(src, config, {"op": "count", "table": "reg", "distinct": "Key"}).answer
+        == 5
+    )
+    assert (
+        "   "
+        not in xp16lib.evaluate(
+            src, config, {"op": "values", "table": "reg", "column": "Key"}
+        ).answer
+    )
+    groups = xp16lib.evaluate(
+        src, config, {"op": "group_count", "table": "reg", "by": ["Group"], "distinct": "Key"}
+    )
+    assert groups.answer == [{"Group": "ko", "n": 2}, {"Group": "wt", "n": 2}]
+    assert "2 row(s) with a blank group key or id excluded" in groups.computation
+    rows = xp16lib.evaluate(src, config, {"op": "group_count", "table": "reg", "by": ["Group"]})
+    assert rows.answer == [{"Group": "ko", "n": 2}, {"Group": "wt", "n": 3}]
+
+
+# ---------------------------------------------------------------- citation strength
+
+
+def test_a_citation_set_is_only_as_strong_as_its_weakest_source(package: Path):
+    checksums = json.loads((package / "checksums.json").read_text(encoding="utf-8"))
+    sha = {f["path"]: f["sha256"] for f in checksums["files"]}
+    ctx = score.CitationContext(checksums, package / "source")
+    q = {"id": "Q", "category": "retrieval", "answer_type": "table", "expected": [], "requires": []}
+    verified = {
+        "file": "registry.xlsx",
+        "sha256": sha["registry.xlsx"],
+        "sheet": "Reg",
+        "cell": "E4",
+    }
+    sha_only = {"file": "sub/bins.tsv", "sha256": sha["sub/bins.tsv"]}  # no locator to check
+    result = score.citation_status({"answer": [], "sources": [verified, sha_only]}, q, ctx)
+    assert result["status"] == "sha_only"
+    assert result["per_source"] == ["verified", "sha_only"]
+    unpinned = {"file": "registry.xlsx", "sheet": "Reg", "cell": "E4"}
+    result = score.citation_status({"answer": [], "sources": [verified, unpinned]}, q, ctx)
+    assert result["status"] == "sha_unverified"
+    both = score.citation_status({"answer": [], "sources": [verified, verified]}, q, ctx)
+    assert both["status"] == "verified"
+    # a composed key column (fields 1 and 3) over a line range, as the gold writes it
+    composed = {
+        "file": "sub/bins.tsv",
+        "sha256": sha["sub/bins.tsv"],
+        "range": "lines 4-12, field 1+3",
+    }
+    assert (
+        score.citation_status({"answer": [], "sources": [composed]}, q, ctx)["status"] == "verified"
+    )
+    too_wide = {**composed, "range": "lines 4-12, field 1+30"}
+    assert (
+        score.citation_status({"answer": [], "sources": [too_wide]}, q, ctx)["status"] == "invalid"
+    )
