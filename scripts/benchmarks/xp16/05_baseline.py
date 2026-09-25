@@ -77,6 +77,36 @@ DEFAULT_MISSING = "multi_table_sheet"
 _ISO_MIDNIGHT = re.compile(r"(\d{4}-\d{2}-\d{2})T00:00:00")
 
 
+def _builder():
+    spec = importlib.util.spec_from_file_location(
+        "xp16_build", Path(__file__).with_name("02_build_gold.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def effective_compute(
+    question: dict[str, Any], decisions: dict[str, Any], open_ids: set[str]
+) -> dict[str, Any] | None:
+    """The computation the gold actually used for this question.
+
+    Once every blocking owner question is answered, the builder evaluates the
+    outcome the question declares for those answers (``on_answer``), which may
+    be an alternative computation. The baseline must re-run that one, through
+    the builder's own resolver, or it would grade the service against a
+    computation the gold no longer uses.
+    """
+    compute = question.get("compute")
+    blocked = set(question.get("blocked_by", []))
+    if blocked and not (blocked & open_ids):
+        outcome, _ = _builder().resolve_blocked(question, decisions)
+        if isinstance(outcome, dict):
+            return outcome
+    return compute
+
+
 def _scorer():
     spec = importlib.util.spec_from_file_location(
         "xp16_score", Path(__file__).with_name("03_score.py")
@@ -465,6 +495,11 @@ def native_aggregate_probe(
             )
             src.tools_used.add("aggregate" + ("(unit)" if units else ""))
     except (KeyError, ValueError) as exc:
+        if "many-to-many" in str(exc):
+            # the service refuses to aggregate a join whose keys repeat on both
+            # sides -- correct behaviour, but a gap for questions whose gold
+            # collapses consistent repeats (right_rows_agree)
+            return {"status": "refused_many_to_many", "reason": str(exc)}
         return {"status": "error", "reason": str(exc)}
 
     native = []
@@ -623,6 +658,7 @@ def main() -> int:
         q["id"]: q for q in load_yaml(pkg / "config" / "questions.spec.yaml")["questions"]
     }
     gold = load_yaml(pkg / "gold" / "questions.yaml")
+    decisions, open_ids = _builder().open_decisions(pkg)
     svc = DatasetService(args.ingest.resolve(), source_dir=pkg / "source", mode=args.mode)
     if svc.dataset_id != gold["dataset_id"]:
         sys.exit(f"ingest dataset_id {svc.dataset_id} != gold {gold['dataset_id']}")
@@ -642,7 +678,7 @@ def main() -> int:
 
     rows = []
     for q in gold["questions"]:
-        compute = spec_by_id[q["id"]].get("compute")
+        compute = effective_compute(spec_by_id[q["id"]], decisions, open_ids)
         predicted = not (set(q["requires"]) & missing)
         rec: dict[str, Any] = {
             "id": q["id"],

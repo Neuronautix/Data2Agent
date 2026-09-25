@@ -801,3 +801,20 @@ def test_a_repeated_right_key_joins_only_when_declared_and_consistent():
     right.rows[1].values["animal"] = "Z"  # the repeats now disagree
     with pytest.raises(xp16lib.GoldError, match="disagree"):
         xp16lib.evaluate(src, {}, spec)
+
+
+def test_the_baseline_reruns_the_computation_the_gold_actually_used():
+    provisional = {"op": "count", "table": "t"}
+    alternative = {"op": "sum", "table": "t", "column": "v"}
+    q = {
+        "id": "Q",
+        "blocked_by": ["OQ1"],
+        "compute": provisional,
+        "on_answer": {"OQ1": {"yes": "compute", "no": alternative, "unknown": "abstain"}},
+    }
+    answered = {"OQ1": {"id": "OQ1", "status": "answered", "answer": "no"}}
+    assert baseline.effective_compute(q, answered, set()) == alternative
+    answered_yes = {"OQ1": {"id": "OQ1", "status": "answered", "answer": "yes"}}
+    assert baseline.effective_compute(q, answered_yes, set()) == provisional
+    # still open: the gold is PENDING, the provisional computation is what exists
+    assert baseline.effective_compute(q, {"OQ1": {"status": "open"}}, {"OQ1"}) == provisional
