@@ -89,6 +89,9 @@
           },
           {
             "$ref": "#/$defs/workbookSheetProfile"
+          },
+          {
+            "$ref": "#/$defs/borisTableProfile"
           }
         ]
       }
@@ -183,6 +186,114 @@
           ],
           "minimum": 0,
           "description": "Ethogram entries ('behaviors_conf')."
+        }
+      }
+    },
+    "borisTableProfile": {
+      "type": "object",
+      "description": "A table derived from a BORIS project (D2A-109): '<file>#events', '<file>#intervals' or '<file>#observations'. Counts and column profiles only; rows are derived from the checksum-verified project at query time. 'rows' is null when the table could not be derived (an event or observation layout this version does not read), because no row count was observed.",
+      "required": [
+        "path",
+        "boris",
+        "profiled",
+        "rows",
+        "columns"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "'<project path>#<table>'"
+        },
+        "boris": {
+          "type": "object",
+          "required": [
+            "file",
+            "table"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "type": "string",
+              "description": "The inventoried .boris file the table is read from."
+            },
+            "table": {
+              "enum": [
+                "events",
+                "intervals",
+                "observations"
+              ]
+            }
+          }
+        },
+        "profiled": {
+          "type": "boolean"
+        },
+        "rows": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "column_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "row_locator": {
+          "type": "string",
+          "description": "What each row's source_row locates inside the project."
+        },
+        "missing_convention": {
+          "$ref": "#/$defs/missingValueConvention"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/columnProfile"
+          }
+        },
+        "missing": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pairing": {
+          "type": "object",
+          "description": "Intervals table only: how many intervals each pairing outcome produced under BORIS's toggle rule.",
+          "required": [
+            "paired",
+            "point",
+            "unmatched_start",
+            "unknown_type"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "paired": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "point": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unmatched_start": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unknown_type": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
         }
       }
     },

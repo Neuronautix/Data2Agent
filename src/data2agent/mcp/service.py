@@ -24,6 +24,7 @@ from ..ingest.checksum import hash_file
 from ..ingest.conventions import MissingValueConvention
 from ..ingest.pipeline import EVIDENCE_FILENAME, MANIFEST_FILENAME, PROVENANCE_FILENAME
 from ..readers.rows import (
+    read_boris_rows,
     read_delimited_rows,
     read_rows_above_data,
     read_workbook_rows,
@@ -286,19 +287,12 @@ class DatasetService:
         self._require_entry(backing or path)
 
         if profile is None:
-            inner = sorted(k for k in tables if k.startswith(f"{path}#"))
-            if inner:
-                # A workbook holds sheets; a sheet or file declared as blocks
-                # holds blocks (D2A-103). Either way the key names a container.
-                blocks = all(isinstance(tables[k].get("block"), dict) for k in inner)
-                if blocks:
-                    raise KeyError(
-                        f"'{path}' was declared as {len(inner)} block(s), each its own "
-                        f"table; inspect one of {inner}"
-                    )
-                raise KeyError(
-                    f"'{path}' is a workbook holding {len(inner)} sheet(s); inspect one of {inner}"
-                )
+            # A workbook holds sheets; a sheet or file declared as blocks holds
+            # blocks (D2A-103); a BORIS project holds derived tables (D2A-109).
+            # Either way the key names a container.
+            container = _container_error(path, tables, "inspect")
+            if container is not None:
+                raise container
             raise KeyError(
                 f"'{path}' was not profiled as a table; "
                 "call inspect_file for its format and preview"
@@ -350,7 +344,7 @@ class DatasetService:
             backing = _backing_file(profile, path)
             entry = {
                 "path": path,
-                "kind": "worksheet" if profile.get("workbook") else "delimited",
+                "kind": _table_kind(profile),
                 "backing_file": backing,
                 "profiled": profile.get("profiled", True),
                 "rows": profile.get("rows"),
@@ -386,11 +380,9 @@ class DatasetService:
         tables = self.manifest.get("tables", {})
         profile = tables.get(path)
         if not isinstance(profile, dict):
-            if "#" not in path and any(key.startswith(f"{path}#") for key in tables):
-                sheets = sorted(key for key in tables if key.startswith(f"{path}#"))
-                raise KeyError(
-                    f"'{path}' is a workbook holding {len(sheets)} sheet(s); read one of {sheets}"
-                )
+            container = _container_error(path, tables, "read") if "#" not in path else None
+            if container is not None:
+                raise container
             raise KeyError(f"'{path}' was not profiled as a table")
 
         if profile.get("profiled") is False:
@@ -442,29 +434,14 @@ class DatasetService:
             return payload
 
         convention = _missing_convention(self.manifest.get("missing_value_convention", {}))
-        absolute = self._resolve(backing)
-        if profile.get("workbook"):
-            observed = read_workbook_rows(
-                absolute,
-                profile,
-                columns=selected,
-                offset=applied_offset,
-                limit=applied_limit,
-                convention=convention,
-            )
-            payload["row_locator"] = "1-based worksheet row"
-        else:
-            observed = read_delimited_rows(
-                absolute,
-                profile,
-                columns=selected,
-                offset=applied_offset,
-                limit=applied_limit,
-                convention=convention,
-            )
-            payload["row_locator"] = (
-                "1-based physical line on which the CSV/TSV logical record ends"
-            )
+        observed, payload["row_locator"] = _read_table_rows(
+            self._resolve(backing),
+            profile,
+            columns=selected,
+            offset=applied_offset,
+            limit=applied_limit,
+            convention=convention,
+        )
 
         total_rows = profile.get("rows")
         payload.update(
@@ -1653,11 +1630,9 @@ class DatasetService:
         tables = self.manifest.get("tables", {})
         profile = tables.get(path)
         if not isinstance(profile, dict):
-            if "#" not in path and any(key.startswith(f"{path}#") for key in tables):
-                sheets = sorted(key for key in tables if key.startswith(f"{path}#"))
-                raise KeyError(
-                    f"'{path}' is a workbook holding {len(sheets)} sheet(s); use one of {sheets}"
-                )
+            container = _container_error(path, tables, "use") if "#" not in path else None
+            if container is not None:
+                raise container
             raise KeyError(f"'{path}' was not profiled as a table")
         if profile.get("profiled") is False:
             raise KeyError(f"'{path}' exists but was not successfully profiled")
@@ -1703,29 +1678,14 @@ class DatasetService:
             return context, []
 
         convention = _missing_convention(self.manifest.get("missing_value_convention", {}))
-        absolute = self._resolve(backing)
-        if profile.get("workbook"):
-            rows = read_workbook_rows(
-                absolute,
-                profile,
-                columns=columns,
-                offset=0,
-                limit=max_rows,
-                convention=convention,
-            )
-            context["row_locator"] = "1-based worksheet row"
-        else:
-            rows = read_delimited_rows(
-                absolute,
-                profile,
-                columns=columns,
-                offset=0,
-                limit=max_rows,
-                convention=convention,
-            )
-            context["row_locator"] = (
-                "1-based physical line on which the CSV/TSV logical record ends"
-            )
+        rows, context["row_locator"] = _read_table_rows(
+            self._resolve(backing),
+            profile,
+            columns=columns,
+            offset=0,
+            limit=max_rows,
+            convention=convention,
+        )
 
         if not isinstance(total_rows, int):
             context["scan_complete"] = len(rows) < max_rows
@@ -2423,14 +2383,71 @@ def _flatten_joined_row(
     return {"source_row": dict(row["source_rows"]), "values": values}
 
 
+def _read_table_rows(
+    absolute: Path,
+    profile: dict[str, Any],
+    *,
+    columns: list[str],
+    offset: int,
+    limit: int,
+    convention: MissingValueConvention,
+) -> tuple[list[dict[str, Any]], str]:
+    """Rows of any profiled table, with the reader that matches how it was profiled.
+
+    The caller has verified the backing file's checksum; this only dispatches.
+    Returns the rows and a description of what their ``source_row`` locates.
+    """
+    bounds = {"columns": columns, "offset": offset, "limit": limit, "convention": convention}
+    if isinstance(profile.get("boris"), dict):
+        locator = profile.get("row_locator") or "position inside the BORIS project"
+        return read_boris_rows(absolute, profile, **bounds), f"BORIS project: {locator}"
+    if profile.get("workbook"):
+        return read_workbook_rows(absolute, profile, **bounds), "1-based worksheet row"
+    return (
+        read_delimited_rows(absolute, profile, **bounds),
+        "1-based physical line on which the CSV/TSV logical record ends",
+    )
+
+
+def _table_kind(profile: dict[str, Any]) -> str:
+    derived = profile.get("boris")
+    if isinstance(derived, dict):
+        return f"boris-{derived.get('table')}"
+    return "worksheet" if profile.get("workbook") else "delimited"
+
+
+def _container_error(path: str, tables: dict[str, Any], verb: str) -> KeyError | None:
+    """The error for a key that names a file holding several tables, if it does."""
+    inner = sorted(key for key in tables if key.startswith(f"{path}#"))
+    if not inner:
+        return None
+    if all(isinstance(tables[key], dict) and tables[key].get("boris") for key in inner):
+        return KeyError(
+            f"'{path}' is a BORIS project holding {len(inner)} table(s); {verb} one of {inner}"
+        )
+    if all(
+        isinstance(tables[key], dict) and isinstance(tables[key].get("block"), dict)
+        for key in inner
+    ):
+        return KeyError(
+            f"'{path}' was declared as {len(inner)} block(s), each its own table; "
+            f"{verb} one of {inner}"
+        )
+    return KeyError(f"'{path}' is a workbook holding {len(inner)} sheet(s); {verb} one of {inner}")
+
+
 def _backing_file(profile: dict[str, Any], path: str) -> str:
     """The inventoried file whose bytes a table is read from.
 
     A worksheet names its workbook; a declared block of a delimited file names
     its file in ``block.file`` (D2A-103), because its key '<file>#<block>' is
-    not a path. Every other table is keyed by its own file.
+    not a path; a table derived from a BORIS project names its project in
+    ``boris.file`` (D2A-109). Every other table is keyed by its own file.
     """
     block = profile.get("block")
+    derived = profile.get("boris")
+    if isinstance(derived, dict) and derived.get("file"):
+        return str(derived["file"])
     if profile.get("workbook"):
         return str(profile["workbook"])
     if isinstance(block, dict) and block.get("file"):
