@@ -19,8 +19,11 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from ..ingest.metadata import is_subject_identifier_name, normalise_column_name
+from .crosswalk import KeyResolver, key_label, mapping_facts
 
-RELATIONSHIP_VERSION = "0.1.0"
+# 0.2.0: optional declared key mapping (crosswalk and/or key_format) per record
+# and the bundle-level ``crosswalks`` registry. Bundles without them read as 0.1.0.
+RELATIONSHIP_VERSION = "0.2.0"
 STATUSES = frozenset({"declared", "deterministic", "candidate", "rejected"})
 CARDINALITIES = frozenset({"one_to_one", "one_to_many", "many_to_one", "many_to_many"})
 _MAX_EVIDENCE_KEYS = 10
@@ -84,11 +87,21 @@ def assess_relationship(
     status: str,
     basis: dict[str, Any],
     expected_cardinality: str | None = None,
+    left_resolver: KeyResolver | None = None,
+    right_resolver: KeyResolver | None = None,
 ) -> dict[str, Any]:
-    """Assess one declared or candidate relationship from complete row scans."""
+    """Assess one declared or candidate relationship from complete row scans.
+
+    With resolvers (a declared crosswalk and/or key_format), every fact --
+    overlap, uniqueness, cardinality, completeness -- is computed on the
+    resolved key, i.e. on canonical IDs, because that is what a join through the
+    same declaration would compare. What the mapping did is recorded beside it
+    in ``key_mapping`` so the canonical-level facts are never detached from the
+    raw values they came from.
+    """
     if status not in STATUSES - {"rejected"}:
         raise ValueError(f"unsupported relationship status {status!r}")
-    if not left_keys or len(left_keys) != len(right_keys):
+    if not left_keys or not right_keys:
         raise ValueError("left_keys and right_keys must be non-empty and have equal length")
     if expected_cardinality is not None and expected_cardinality not in CARDINALITIES:
         raise ValueError(
@@ -96,8 +109,22 @@ def assess_relationship(
             f"choose from {sorted(CARDINALITIES)}"
         )
 
-    left = _key_facts(left_rows, left_keys)
-    right = _key_facts(right_rows, right_keys)
+    transformed = any(
+        resolver is not None and resolver.transforms for resolver in (left_resolver, right_resolver)
+    )
+    if transformed:
+        left_resolver = left_resolver or KeyResolver(list(left_keys), side="left", as_text=True)
+        right_resolver = right_resolver or KeyResolver(list(right_keys), side="right", as_text=True)
+        if (left_resolver.crosswalk is None) != (right_resolver.crosswalk is None):
+            raise ValueError("a crosswalk must apply to both sides of a relationship")
+        if left_resolver.width != right_resolver.width:
+            raise ValueError(
+                "after key_format rendering, left and right keys must have the same width"
+            )
+    elif len(left_keys) != len(right_keys):
+        raise ValueError("left_keys and right_keys must be non-empty and have equal length")
+    left = _key_facts(left_rows, left_keys, left_resolver if transformed else None)
+    right = _key_facts(right_rows, right_keys, right_resolver if transformed else None)
     overlap = sorted(set(left["counts"]) & set(right["counts"]), key=_key_sort_key)
     cardinality = _cardinality(left["unique"], right["unique"])
     joined_rows = sum(left["counts"][key] * right["counts"][key] for key in overlap)
@@ -113,7 +140,73 @@ def assess_relationship(
             f"observed cardinality is {cardinality}, expected {expected_cardinality}"
         )
 
+    key_mapping: dict[str, Any] | None = None
+    if transformed:
+        assert left_resolver is not None and right_resolver is not None
+        key_mapping = {
+            "crosswalk": (
+                left_resolver.crosswalk.citation() if left_resolver.crosswalk is not None else None
+            ),
+            "left": mapping_facts(left_rows, left_resolver, other_keys=set(right["counts"])),
+            "right": mapping_facts(right_rows, right_resolver, other_keys=set(left["counts"])),
+            "note": (
+                "overlap, uniqueness and cardinality were computed on the resolved key; "
+                "a value absent from the crosswalk was passed through unchanged, kept apart "
+                "from canonical IDs, and never guessed"
+                if left_resolver.crosswalk is not None
+                else "overlap, uniqueness and cardinality were computed on the key as rendered "
+                "by the declared key_format; no crosswalk was applied"
+            ),
+        }
+        for side in ("left", "right"):
+            rendered = key_mapping[side].get("rendering_collisions") or []
+            if rendered and status in {"declared", "deterministic"}:
+                final_status = "rejected"
+                rejection_reasons.append(
+                    f"rendering collision on the {side} side: {len(rendered)} rendered key(s) "
+                    "are produced by more than one distinct raw key, so the rendered key "
+                    "cannot tell those subjects apart"
+                )
+            collisions = key_mapping[side].get("collisions") or []
+            if collisions and status in {"declared", "deterministic"}:
+                final_status = "rejected"
+                rejection_reasons.append(
+                    f"crosswalk collision on the {side} side: {len(collisions)} canonical ID(s) "
+                    "are written in more than one form within the same table; joining through "
+                    "the crosswalk would merge them, which only the data owner can confirm"
+                )
+
     warnings: list[str] = []
+    if key_mapping is not None:
+        for side, resolver in (("left", left_resolver), ("right", right_resolver)):
+            facts = key_mapping[side]
+            if resolver.key_format is not None and resolver.key_format.adjacent_placeholders:
+                warnings.append(
+                    f"{side}_key_format {resolver.key_format.template!r} places key columns "
+                    "side by side with no separator, so distinct raw keys can render alike"
+                )
+            if facts.get("rendering_collisions"):
+                warnings.append(
+                    f"{side}: {len(facts['rendering_collisions'])} rendered key(s) come from "
+                    "more than one distinct raw key (reported, not merged)"
+                )
+            if facts.get("collisions"):
+                warnings.append(
+                    f"{side}: {len(facts['collisions'])} canonical ID(s) collect more than one "
+                    "distinct written form in this table (reported, not merged)"
+                )
+            if facts.get("unmapped_rows"):
+                warnings.append(
+                    f"{side}: {facts['unmapped_rows']} row(s) carry "
+                    f"{facts['unmapped_distinct_values']} key value(s) absent from the crosswalk; "
+                    "they were passed through unchanged and match only identical unmapped values"
+                )
+            if facts.get("unmapped_values_equal_to_a_canonical_id"):
+                warnings.append(
+                    f"{side}: unmapped value(s) equal a canonical ID but are not listed as a "
+                    "form, so they do not join that canonical ID; list them as forms if they "
+                    "denote it"
+                )
     if cardinality == "many_to_many":
         warnings.append(
             "both sides contain duplicate complete keys; a join would multiply rows "
@@ -125,7 +218,12 @@ def assess_relationship(
         warnings.append(f"{right['incomplete_rows']} right row(s) have an incomplete key")
 
     relationship_id = stable_relationship_id(
-        dataset_id, left_table, right_table, left_keys, right_keys
+        dataset_id,
+        left_table,
+        right_table,
+        left_keys,
+        right_keys,
+        mapping=_mapping_identity(left_resolver, right_resolver) if transformed else None,
     )
     record: dict[str, Any] = {
         "id": relationship_id,
@@ -140,10 +238,17 @@ def assess_relationship(
         "basis": basis,
         "evidence": {
             "kind": "observed-key-overlap",
-            "examples": _evidence_examples(overlap, left["rows_by_key"], right["rows_by_key"]),
+            "examples": _evidence_examples(
+                overlap,
+                left["rows_by_key"],
+                right["rows_by_key"],
+                resolver=left_resolver if transformed else None,
+            ),
         },
         "warnings": warnings,
     }
+    if key_mapping is not None:
+        record["key_mapping"] = key_mapping
     if expected_cardinality is not None:
         record["expected_cardinality"] = expected_cardinality
     if rejection_reasons:
@@ -157,16 +262,27 @@ def stable_relationship_id(
     right_table: str,
     left_keys: list[str],
     right_keys: list[str],
+    mapping: dict[str, Any] | None = None,
 ) -> str:
-    """Stable relation identity independent of candidate/declaration status."""
+    """Stable relation identity independent of candidate/declaration status.
+
+    A declared key mapping is part of the identity: the same columns joined by
+    exact equality and joined through a crosswalk are different relationships
+    with different facts. The crosswalk is identified by name, not hash, so a
+    corrected crosswalk keeps the relationship id while its facts are re-derived.
+    Without a mapping the payload is unchanged, so existing ids are stable.
+    """
+    identity: dict[str, Any] = {
+        "dataset_id": dataset_id,
+        "left": left_table,
+        "right": right_table,
+        "left_keys": left_keys,
+        "right_keys": right_keys,
+    }
+    if mapping:
+        identity["key_mapping"] = mapping
     payload = json.dumps(
-        {
-            "dataset_id": dataset_id,
-            "left": left_table,
-            "right": right_table,
-            "left_keys": left_keys,
-            "right_keys": right_keys,
-        },
+        identity,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -202,13 +318,33 @@ def _columns_by_normalised_name(profile: dict[str, Any]) -> dict[str, dict[str, 
     return by_name
 
 
-def _key_facts(rows: list[dict[str, Any]], keys: list[str]) -> dict[str, Any]:
+def _mapping_identity(left: KeyResolver | None, right: KeyResolver | None) -> dict[str, Any] | None:
+    identity: dict[str, Any] = {}
+    for side, resolver in (("left", left), ("right", right)):
+        if resolver is not None and resolver.key_format is not None:
+            identity[f"{side}_key_format"] = resolver.key_format.template
+    crosswalk = (left.crosswalk if left is not None else None) or (
+        right.crosswalk if right is not None else None
+    )
+    if crosswalk is not None:
+        identity["crosswalk"] = crosswalk.name
+    return identity or None
+
+
+def _key_facts(
+    rows: list[dict[str, Any]], keys: list[str], resolver: KeyResolver | None = None
+) -> dict[str, Any]:
     counts: Counter[tuple[Any, ...]] = Counter()
     rows_by_key: dict[tuple[Any, ...], list[int | None]] = defaultdict(list)
     incomplete = 0
     for row in rows:
-        key = tuple(row["values"].get(column) for column in keys)
-        if any(value is None for value in key):
+        if resolver is not None:
+            key = resolver.resolve(row["values"])
+        else:
+            key = tuple(row["values"].get(column) for column in keys)
+            if any(value is None for value in key):
+                key = None
+        if key is None:
             incomplete += 1
             continue
         counts[key] += 1
@@ -263,15 +399,25 @@ def _evidence_examples(
     overlap: list[tuple[Any, ...]],
     left_rows: dict[tuple[Any, ...], list[int | None]],
     right_rows: dict[tuple[Any, ...], list[int | None]],
+    *,
+    resolver: KeyResolver | None = None,
 ) -> list[dict[str, Any]]:
-    return [
-        {
+    examples = []
+    for key in overlap[:_MAX_EVIDENCE_KEYS]:
+        example: dict[str, Any] = {
             "key": list(key),
             "left_source_rows": left_rows[key][:_MAX_EVIDENCE_KEYS],
             "right_source_rows": right_rows[key][:_MAX_EVIDENCE_KEYS],
         }
-        for key in overlap[:_MAX_EVIDENCE_KEYS]
-    ]
+        if resolver is not None:
+            # The internal namespace tag stays internal: the example's key is the
+            # compared value, and ``mapping`` says whether it is a canonical ID.
+            label = key_label(key, resolver)
+            example["key"] = label["key"]
+            if "mapping" in label:
+                example["mapping"] = label["mapping"]
+        examples.append(example)
+    return examples
 
 
 def _key_sort_key(key: tuple[Any, ...]) -> tuple[str, ...]:

@@ -48,6 +48,13 @@
         "$ref": "#/$defs/relationship"
       }
     },
+    "crosswalks": {
+      "type": "array",
+      "description": "Identifier crosswalks supplied to the relationships step (data2agent relationships --crosswalk). A declaration applies one only by naming it in key_crosswalk; nothing is applied implicitly. Absent in 0.1.0 bundles.",
+      "items": {
+        "$ref": "#/$defs/crosswalk"
+      }
+    },
     "skipped": {
       "type": "array",
       "items": {
@@ -218,6 +225,13 @@
                         "null"
                       ]
                     }
+                  },
+                  "mapping": {
+                    "enum": [
+                      "crosswalk",
+                      "unmapped"
+                    ],
+                    "description": "whether key is a canonical ID from the crosswalk or an unlisted value passed through unchanged"
                   }
                 }
               }
@@ -235,6 +249,229 @@
           "items": {
             "type": "string"
           }
+        },
+        "key_mapping": {
+          "$ref": "#/$defs/key_mapping"
+        }
+      }
+    },
+    "crosswalk": {
+      "type": "object",
+      "required": [
+        "name",
+        "sha256",
+        "format",
+        "columns",
+        "form_count",
+        "canonical_id_count",
+        "content"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "the name declarations cite in key_crosswalk"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the crosswalk file bytes, which equal the UTF-8 encoding of content"
+        },
+        "format": {
+          "const": "data2agent-crosswalk-csv/1"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "canonical_id",
+              "form",
+              "source",
+              "note"
+            ]
+          }
+        },
+        "form_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "canonical_id_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "content": {
+          "type": "string",
+          "description": "verbatim file text; re-hashed at load, so an edit inside the bundle is refused"
+        },
+        "source_path": {
+          "type": "string",
+          "description": "where the file was read from; if it still exists at load and hashes differently, the bundle is refused"
+        }
+      }
+    },
+    "key_mapping_side": {
+      "type": "object",
+      "required": [
+        "keys",
+        "unmatched_distinct_keys",
+        "unmatched_examples",
+        "rendering_collisions"
+      ],
+      "properties": {
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "key_format": {
+          "type": "string",
+          "description": "declared template rendering the key columns as one value, e.g. {cage}-{tail}"
+        },
+        "unmatched_distinct_keys": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unmatched_examples": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "mapped_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unmapped_rows": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mapped_distinct_values": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mapped_distinct_canonical_ids": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unmapped_distinct_values": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unmapped_examples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "value",
+              "source_rows"
+            ]
+          }
+        },
+        "unmapped_values_equal_to_a_canonical_id": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "collisions": {
+          "type": "array",
+          "description": "canonical IDs written in more than one distinct form within this table; any collision rejects a declared relationship",
+          "items": {
+            "type": "object",
+            "required": [
+              "canonical_id",
+              "forms"
+            ],
+            "properties": {
+              "canonical_id": {
+                "type": "string"
+              },
+              "forms": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "form",
+                    "source_rows"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "rendering_collisions": {
+          "type": "array",
+          "description": "rendered keys (key_format or text rendering) produced by more than one distinct raw key in this table, detected before any crosswalk lookup; any rendering collision rejects a declared relationship",
+          "items": {
+            "type": "object",
+            "required": [
+              "rendered",
+              "raw_keys"
+            ],
+            "properties": {
+              "rendered": {
+                "type": "string"
+              },
+              "raw_keys": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "raw",
+                    "source_rows"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "key_mapping": {
+      "type": "object",
+      "description": "present only when the relationship was declared with key_crosswalk and/or a key_format; every overlap/cardinality fact of the record is then computed on the resolved (canonical) key",
+      "required": [
+        "crosswalk",
+        "left",
+        "right",
+        "note"
+      ],
+      "properties": {
+        "crosswalk": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "name",
+                "sha256"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            }
+          ]
+        },
+        "left": {
+          "$ref": "#/$defs/key_mapping_side"
+        },
+        "right": {
+          "$ref": "#/$defs/key_mapping_side"
+        },
+        "note": {
+          "type": "string"
         }
       }
     }

@@ -5,6 +5,7 @@ data2agent ingest  <dataset> -o <output>   deterministic scan -> manifest/eviden
 data2agent verify  <output>                re-checksum the source against the manifest
 data2agent serve   <output> --mode <mode>  run the Data2MCP server over stdio
 data2agent relationships <output>          resolve cross-table relationships
+    [--declarations rel.json] [--crosswalk [NAME=]ids.csv ...]
 data2agent modes                           list benchmark modes and their status
 """
 
@@ -24,7 +25,7 @@ from .ingest.layout import load_declarations
 from .ingest.pipeline import write_json
 from .mcp.modes import DEFAULT_MODE, MODES
 from .mcp.service import DatasetService
-from .relationships import RELATIONSHIPS_FILENAME
+from .relationships import RELATIONSHIPS_FILENAME, load_crosswalk_file
 from .report import write_mcp_config, write_report
 
 
@@ -130,6 +131,19 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="JSON file containing explicit relationship declarations",
+    )
+    relationships_parser.add_argument(
+        "--crosswalk",
+        action="append",
+        default=[],
+        metavar="[NAME=]PATH",
+        help=(
+            "identifier crosswalk CSV with columns canonical_id,form (optional: source, "
+            "note), one row per written form. A declaration applies it only by naming it "
+            "in 'key_crosswalk' (NAME defaults to the file name). Its verbatim content "
+            "and sha256 are stored in relationships.json; editing the file afterwards "
+            "invalidates the bundle. Repeatable."
+        ),
     )
     relationships_parser.set_defaults(handler=_cmd_relationships)
 
@@ -245,6 +259,8 @@ def _cmd_relationships(args: argparse.Namespace) -> int:
             "sha256": hash_file(path),
         }
 
+    crosswalks = [_load_crosswalk_argument(value) for value in args.crosswalk]
+
     service = DatasetService(
         args.output,
         source_dir=args.source,
@@ -253,6 +269,7 @@ def _cmd_relationships(args: argparse.Namespace) -> int:
     bundle = service.build_relationships(
         declarations,
         declaration_source=declaration_source,
+        crosswalks=crosswalks,
     )
     destination = Path(args.output).expanduser().resolve() / RELATIONSHIPS_FILENAME
     write_json(destination, bundle)
@@ -263,8 +280,21 @@ def _cmd_relationships(args: argparse.Namespace) -> int:
         "statuses      : "
         + ", ".join(f"{count} {status}" for status, count in bundle["status_counts"].items())
     )
+    for crosswalk in bundle.get("crosswalks", []):
+        print(
+            f"crosswalk     : {crosswalk['name']} ({crosswalk['form_count']} forms -> "
+            f"{crosswalk['canonical_id_count']} canonical IDs, sha256 {crosswalk['sha256'][:12]})"
+        )
     print(f"written       : {destination}")
     return 0
+
+
+def _load_crosswalk_argument(value: str):
+    """Parse ``[NAME=]PATH``; a prefix that looks like a path is part of the path."""
+    name, separator, rest = value.partition("=")
+    if separator and name and not any(char in name for char in "/\\:"):
+        return load_crosswalk_file(Path(rest), name=name)
+    return load_crosswalk_file(Path(value))
 
 
 def _cmd_modes(_: argparse.Namespace) -> int:
