@@ -14,10 +14,18 @@ Two paths are reported per question:
 
 ``retrieval``
     gold computation over rows from ``read_rows`` -- what an agent with the
-    read tools and correct arithmetic could compute. The service's own column
-    names are used as-is; nothing is renamed to the gold's names. A column the
-    service does not expose under the name the gold reads is a header-detection
-    failure and is reported as one.
+    read tools and correct arithmetic could compute. A gold column is found in
+    the service table only at the SAME physical column, and only if the gold's
+    header parts are a suffix of the service's (the service may carry extra
+    upper labels, never fewer; dedupe suffixes '.N' / ' #N' are ignored). So
+    naming conventions do not fail a question, but a wrong header row, a missing
+    upper label, or a same-named column elsewhere in the sheet still does -- the
+    last one is what name-only matching got wrong (``--names-as-is`` keeps that
+    behaviour for comparison). Each run records its column map.
+
+The ingest condition (declared layout / relationships / crosswalk sha256s, as
+written by ``06_ingest.py`` to ``condition.json``) is copied into the report,
+together with the status of every declared relationship.
 
 ``native_aggregate``
     for aggregation questions only: one call to the service's ``aggregate``
@@ -46,6 +54,7 @@ from typing import Any
 
 from xp16lib import (
     REPO,
+    FileRowSource,
     GoldError,
     Row,
     Table,
@@ -58,19 +67,13 @@ from xp16lib import (
 
 sys.path.insert(0, str(REPO / "src"))
 
-# Retrieval gaps of the service as built today (see README). unit_aggregation is
-# deliberately absent: on the retrieval path the arithmetic is the caller's, and
-# the service-native gap is measured separately by the aggregate probe.
-DEFAULT_MISSING = ",".join(
-    [
-        "header_detection",
-        "multi_table_sheet",
-        "duplicate_headers",
-        "boris_tsv_preamble",
-        "boris_project",
-        "crosswalk",
-    ]
-)
+# Retrieval gaps of the service as built on main after D2A-97/98/99/100 (header
+# detection and --layout, crosswalks, unit aggregation, .boris projects): only
+# declared multi-block sheets remain. Pass --missing-capabilities to model an
+# older or newer build. unit_aggregation is deliberately never listed: on the
+# retrieval path the arithmetic is the caller's, and the service-native gap is
+# measured separately by the aggregate probe.
+DEFAULT_MISSING = "multi_table_sheet"
 _ISO_MIDNIGHT = re.compile(r"(\d{4}-\d{2}-\d{2})T00:00:00")
 
 
@@ -87,11 +90,15 @@ def _scorer():
 class ServiceRowSource:
     """RowSource backed by the Data2Agent service's read_rows."""
 
-    def __init__(self, service: Any, config: dict[str, Any]) -> None:
+    def __init__(self, service: Any, config: dict[str, Any], gold: Any = None) -> None:
         self.svc = service
         self.config = config
+        # The gold reader's declared tables, used ONLY for where each gold column
+        # physically sits and what its header cells say -- never for values.
+        self.gold = gold
         self._raw: dict[str, tuple[list[str], dict[str, int], list[dict[str, Any]]]] = {}
         self._tables: dict[str, Table] = {}
+        self.column_maps: dict[str, dict[str, Any]] = {}
 
     def file_sha(self, file: str) -> str:
         entry = next((f for f in self.svc.list_files() if f["path"] == file), None)
@@ -120,6 +127,47 @@ class ServiceRowSource:
             self._raw[key] = (list(page["columns"]), positions, rows)
         return self._raw[key]
 
+    def _resolve_columns(
+        self, table_id: str, columns: list[str], positions: dict[str, int], delimited: bool
+    ) -> dict[str, str]:
+        """Service column name -> gold column name, by physical column and header text.
+
+        A gold column is found in the service table only when the service has a
+        column at the same physical position whose header parts END WITH the gold
+        column's header parts (the service may carry extra upper labels, never
+        fewer; dedupe suffixes on either side are ignored). So a naming
+        convention (' / ' vs ' | ', '.1' vs ' #2') does not fail a question, but
+        a wrong header row, or a missing upper label such as a BORIS behaviour
+        name, still does. Without a gold reader, names are used as they come.
+        """
+        if self.gold is None:
+            return {}
+        gold_table = self.gold.table(table_id)
+        by_position = {p: n for n, p in positions.items()}
+        rename: dict[str, str] = {}
+        unmatched = []
+        for gname in gold_table.columns:
+            letter = gold_table.column_letters.get(gname, "")
+            if "+" in letter:
+                continue  # derived from other columns; rebuilt from them below
+            pos = int(letter) - 1 if delimited else _col_index(letter) - 1
+            sname = by_position.get(pos)
+            if sname is not None and _labels_compatible(gname, sname, set(columns)):
+                rename[sname] = gname
+            else:
+                unmatched.append({"gold": gname, "position": pos + 1, "service": sname})
+        # an unmatched service column must never stand in for a gold column by name
+        gold_names = set(gold_table.columns)
+        for name in columns:
+            if name not in rename and name in gold_names:
+                rename[name] = f"{name} [service label at another position]"
+        self.column_maps[table_id] = {
+            "service_table": self.config["tables"][table_id]["service_table"],
+            "matched": sum(1 for v in rename.values() if not v.endswith("position]")),
+            "unmatched": unmatched,
+        }
+        return rename
+
     def table(self, table_id: str) -> Table:
         if table_id in self._tables:
             return self._tables[table_id]
@@ -127,8 +175,11 @@ class ServiceRowSource:
         key = spec["service_table"]
         columns, positions, raw = self._fetch(key)
         delimited = spec.get("kind") == "delimited"
+        rename = self._resolve_columns(table_id, columns, positions, delimited)
         letters = {
-            name: (str(positions[name] + 1) if delimited else _col_letter(positions[name] + 1))
+            rename.get(name, name): (
+                str(positions[name] + 1) if delimited else _col_letter(positions[name] + 1)
+            )
             for name in columns
         }
         first = int(spec.get("first_row", spec["header_rows"][-1] + 1))
@@ -138,14 +189,14 @@ class ServiceRowSource:
             loc = int(r["source_row"])
             if loc < first or (last is not None and loc > int(last)):
                 continue
-            values = {name: _svc_value(r["values"].get(name)) for name in columns}
+            values = {rename.get(name, name): _svc_value(r["values"].get(name)) for name in columns}
             if all(v is None or v == "" for v in values.values()):
                 continue
             cells = {
                 name: (
                     f"line {loc}, field {letters[name]}" if delimited else f"{letters[name]}{loc}"
                 )
-                for name in columns
+                for name in values
             }
             rows.append(Row(values, loc, cells))
         file = spec["file"]
@@ -154,7 +205,7 @@ class ServiceRowSource:
             file,
             self.file_sha(file),
             None if delimited else spec["sheet"],
-            list(columns),
+            [rename.get(name, name) for name in columns],
             letters,
             rows,
             list(spec["header_rows"]),
@@ -162,7 +213,7 @@ class ServiceRowSource:
         derived = {
             name: tpl
             for name, tpl in spec.get("derived", {}).items()
-            if all(f in columns for f in re.findall(r"{([^}]+)}", tpl))
+            if all(f in table.columns for f in re.findall(r"{([^}]+)}", tpl))
         }
         _apply_derived(table, derived)
         self._tables[table_id] = table
@@ -194,6 +245,34 @@ class ServiceRowSource:
         if hit is None or name is None:
             return None
         return _svc_value(hit["values"].get(name))
+
+
+_GOLD_DEDUPE = re.compile(r" #\d+$")
+_SERVICE_DEDUPE = re.compile(r"^(.*)\.\d+$")
+
+
+def _labels_compatible(gold_name: str, service_name: str, service_names: set[str]) -> bool:
+    """Do the gold header parts form a suffix of the service header parts?
+
+    Dedupe suffixes are removed first: ' #N' on the gold side; '.N' on the
+    service side only when the name without it is itself a column of that table
+    (that is how the service de-duplicates), so a numeric header such as '0.4'
+    is never mistaken for a suffixed '0'.
+    """
+    base = _SERVICE_DEDUPE.match(service_name)
+    if base and base.group(1) in service_names:
+        service_name = base.group(1)
+    gold = [" ".join(p.split()) for p in _GOLD_DEDUPE.sub("", gold_name).split(" | ")]
+    service = [" ".join(p.split()) for p in service_name.split(" / ")]
+    gold = [p for p in gold if p]
+    service = [p for p in service if p]
+    return len(gold) <= len(service) and service[len(service) - len(gold) :] == gold
+
+
+def _col_index(letter: str) -> int:
+    from openpyxl.utils import column_index_from_string  # noqa: PLC0415
+
+    return column_index_from_string(letter)
 
 
 def _svc_value(v: Any) -> Any:
@@ -312,6 +391,32 @@ def classify(reason: str, config: dict[str, Any], svc: Any) -> str:
     return "other"
 
 
+def _condition(ingest: Path) -> dict[str, Any] | None:
+    """The declaration record 06_ingest.py wrote, so a result names its exact condition."""
+    path = ingest / "condition.json"
+    if not path.exists():
+        return {"condition": "unrecorded", "note": "ingest not produced by 06_ingest.py"}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _relationships(svc: Any) -> dict[str, Any]:
+    listing = svc.list_relationships()
+    declared = [
+        {
+            "status": r["status"],
+            "left": r["left"]["table"],
+            "right": r["right"]["table"],
+            "left_matched_distinct_keys": r["left"].get("matched_distinct_keys"),
+            "right_matched_distinct_keys": r["right"].get("matched_distinct_keys"),
+            "cardinality": r.get("cardinality"),
+            "warnings": r.get("warnings", []),
+        }
+        for r in listing.get("relationships", [])
+        if (r.get("basis") or {}).get("method") == "explicit-declaration"
+    ]
+    return {"status_counts": listing.get("status_counts"), "declared": declared}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--package", type=Path, required=True)
@@ -319,6 +424,11 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--mode", default="structured")
     parser.add_argument("--missing-capabilities", default=DEFAULT_MISSING)
+    parser.add_argument(
+        "--names-as-is",
+        action="store_true",
+        help="match gold columns to service columns by name only (the pre-D2A-105 behaviour)",
+    )
     args = parser.parse_args()
 
     from data2agent.mcp.service import DatasetService  # noqa: PLC0415
@@ -333,7 +443,8 @@ def main() -> int:
     if svc.dataset_id != gold["dataset_id"]:
         sys.exit(f"ingest dataset_id {svc.dataset_id} != gold {gold['dataset_id']}")
     scorer = _scorer()
-    src = ServiceRowSource(svc, config)
+    gold_reader = None if args.names_as_is else FileRowSource(pkg / "source", config)
+    src = ServiceRowSource(svc, config, gold_reader)
     missing = set(filter(None, args.missing_capabilities.split(",")))
 
     rows = []
@@ -429,7 +540,15 @@ def main() -> int:
         "service_mode": args.mode,
         "data2agent_src": str(Path(sys.modules["data2agent"].__file__).parent),
         "missing_capabilities_declared": sorted(missing),
+        "condition": _condition(args.ingest.resolve()),
+        "column_resolution": (
+            "names as the service reports them"
+            if args.names_as_is
+            else "same physical column + gold header parts a suffix of the service's"
+        ),
         "summary": summary,
+        "relationships": _relationships(svc),
+        "column_maps": src.column_maps,
         "questions": rows,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)

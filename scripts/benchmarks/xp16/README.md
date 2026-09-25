@@ -24,6 +24,7 @@ scripts/benchmarks/xp16/            (tracked, data-free)
 ├── 03_score.py         scorer: correctness, abstention, citations, per-capability breakdown
 ├── 04_run_agent.py     runs one agent condition through the MCP server (reuses xp14/08_run_agent.py)
 ├── 05_baseline.py      deterministic baseline through DatasetService (no LLM)
+├── 06_ingest.py        ingest under a declared condition; records declaration sha256s
 └── prompt_qa.md        the prompt template; questions are substituted at run time
 
 benchmarks/<package>/               (local only, git-ignored)
@@ -35,7 +36,11 @@ benchmarks/<package>/               (local only, git-ignored)
 ├── adjudication/decisions.yaml     owner questions; the only place ambiguity is resolved
 ├── gold/questions.yaml             GENERATED expected answers, sources, computations
 ├── gold/audit_facts.yaml           GENERATED
-├── ingest/                         `data2agent ingest` output, for the baseline and runs
+├── config/conditions.json          ingest conditions: undeclared / declared
+├── config/layouts.json             declared table headers (`ingest --layout`)
+├── config/relationships.json       declared relationships (`relationships --declarations`)
+├── config/crosswalk.csv            declared identifier crosswalk (`--crosswalk NAME=...`)
+├── ingest_<condition>/             ingest output + condition.json (declaration sha256s)
 └── results/, runs/                 baseline reports, agent runs, scores
 ```
 
@@ -46,11 +51,12 @@ python scripts/benchmarks/xp16/01_freeze.py  --source <origin-dir> --package <pk
 python scripts/benchmarks/xp16/02_build_gold.py --package <pkg>
 python scripts/benchmarks/xp16/02_build_gold.py --package <pkg> --check   # byte-identical?
 
-data2agent ingest <pkg>/source -o <pkg>/ingest --mode structured
-python scripts/benchmarks/xp16/05_baseline.py --package <pkg> --ingest <pkg>/ingest \
-    --out <pkg>/results/baseline.json
+python scripts/benchmarks/xp16/06_ingest.py --package <pkg> --condition declared
+python scripts/benchmarks/xp16/06_ingest.py --package <pkg> --condition undeclared
+python scripts/benchmarks/xp16/05_baseline.py --package <pkg> --ingest <pkg>/ingest_declared \
+    --out <pkg>/results/baseline_declared.json
 
-python scripts/benchmarks/xp16/04_run_agent.py --package <pkg> --ingest <pkg>/ingest \
+python scripts/benchmarks/xp16/04_run_agent.py --package <pkg> --ingest <pkg>/ingest_declared \
     --out <pkg>/runs/<cell> --mode structured --model <model> [--capabilities a,b]
 python scripts/benchmarks/xp16/03_score.py --questions <pkg>/gold/questions.yaml \
     --answers <pkg>/runs/<cell>/answers.json --package <pkg> [--capabilities a,b]
@@ -195,12 +201,37 @@ counted as units, distinct values or groups, in every counting path.
 
 Breakdowns are reported per category and per capability tag.
 
+## Ingest conditions
+
+The ingest is part of the benchmark condition. `06_ingest.py` runs
+`data2agent ingest` and `data2agent relationships` exactly as
+`config/conditions.json` declares, and writes `condition.json` beside the
+output: the sha256 of the layout, relationship and crosswalk declarations, the
+dataset_id, the data2agent version and commit, and the commands. The baseline
+report and every agent run copy it, so a number is always tied to one exact
+configuration; a manifest whose recorded layout sha256 is not the declared
+file's is refused.
+
+- **undeclared** -- no declarations; measures whether the tool finds headers
+  and identities by itself.
+- **declared** -- the declared layout, relationships and crosswalk; the agent
+  is given the right tables, so discovering layout is not what is measured:
+  retrieval, computation, joins and abstention are.
+
+Report both when comparing builds; use **declared** as the headline condition
+for agent runs, because it isolates the data-plane skills this benchmark is
+about from layout discovery, which the undeclared condition tracks separately.
+
 ## Baseline
 
 `05_baseline.py` re-runs every gold computation with rows obtained from
-`DatasetService.read_rows` instead of the independent reader. The service's
-column names are used as they come; a failure is classified by the retrieval
-gap behind it (`header_detection`, `multi_table_sheet`, `boris_tsv_preamble`,
+`DatasetService.read_rows` instead of the independent reader. A gold column is
+matched to the service column at the same physical position whose header parts
+end with the gold's (extra upper labels allowed, fewer not; dedupe suffixes
+ignored), so naming conventions do not fail a question but a wrong header row
+or a missing upper label does; `--names-as-is` restores name-only matching,
+which can pass a question by reading a same-named column elsewhere in the
+sheet. A failure is classified by the retrieval gap behind it (`header_detection`, `multi_table_sheet`, `boris_tsv_preamble`,
 ...). For aggregation questions it also calls the service's own `aggregate`
 tool once, which has no per-unit reduction and no SEM, and reports whether its
 row count equals the gold's number of animals. For abstention and pending

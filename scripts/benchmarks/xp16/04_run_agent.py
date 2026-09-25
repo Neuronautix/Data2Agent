@@ -134,6 +134,12 @@ def main() -> int:
         json.dumps(
             {
                 "dataset_id": gold["dataset_id"],
+                # the declared ingest condition (06_ingest.py); None = unrecorded
+                "condition": (
+                    json.loads((ingest / "condition.json").read_text(encoding="utf-8"))
+                    if (ingest / "condition.json").exists()
+                    else None
+                ),
                 "mode": args.mode,
                 "host": f"{args.host}/{xp14._host_version(host)}",
                 "model": args.model or xp14._reported_model(envelope) or "host-default",
