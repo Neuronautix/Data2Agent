@@ -222,6 +222,13 @@ Report both when comparing builds; use **declared** as the headline condition
 for agent runs, because it isolates the data-plane skills this benchmark is
 about from layout discovery, which the undeclared condition tracks separately.
 
+A condition may also re-address declared gold tables through `service_tables`
+(for instance a sheet declared as blocks, `<file>#<sheet>#<block>`); an unknown
+gold table id is refused. `--data2agent-src <tree>/src` runs (06) and evaluates
+(05) another data2agent tree, such as an unmerged branch under review; the
+condition record and the report then name that tree and claim no commit, so
+such a number can never pass for one on the repository's own build.
+
 ## Baseline
 
 `05_baseline.py` re-runs every gold computation with rows obtained from
