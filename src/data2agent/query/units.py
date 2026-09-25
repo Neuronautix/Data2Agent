@@ -54,8 +54,15 @@ def aggregate_units(
     dtypes: dict[str, str],
     on_inconsistent_unit: str = "refuse",
     unit_sample: int = 50,
+    listed_columns: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Reduce rows to units, then summarise units per group."""
+    """Reduce rows to units, then summarise units per group.
+
+    ``listed_columns`` names columns whose distinct values are listed on each
+    unit in the audit trail -- for example the raw spellings behind a canonical
+    ID -- so a reader can see what a unit was assembled from.
+    """
+    listed = list(listed_columns or [])
     if not isinstance(unit, list) or not unit:
         raise ValueError("unit must be a non-empty list of column names")
     unknown = [name for name in unit if name not in dtypes]
@@ -174,6 +181,9 @@ def aggregate_units(
             "missing": _missing_profile(unit_rows, unit_specs),
             "source_rows": [row.get("source_row") for row in unit_rows[:_SOURCE_ROWS_PER_UNIT]],
             "source_rows_truncated": len(unit_rows) > _SOURCE_ROWS_PER_UNIT,
+            "distinct_values": {
+                name: _distinct(row["values"].get(name) for row in unit_rows) for name in listed
+            },
         }
 
     # -- stage 2: summarise units per group --------------------------------
@@ -255,9 +265,17 @@ def _public(record: dict[str, Any]) -> dict[str, Any]:
             if any(v != "complete" for v in record["missing"].values())
             else {}
         ),
+        **({"distinct_values": record["distinct_values"]} if record["distinct_values"] else {}),
         "source_rows": record["source_rows"],
         "source_rows_truncated": record["source_rows_truncated"],
     }
+
+
+def _distinct(values: Any) -> list[Any]:
+    """Distinct values in a stable order, missing included as null, bounded."""
+    seen = {(type(value).__name__, value): value for value in values}
+    ordered = [seen[key] for key in sorted(seen, key=lambda item: (item[0], str(item[1])))]
+    return ordered[:_SOURCE_ROWS_PER_UNIT]
 
 
 def _named(names: list[str], key: tuple[Any, ...]) -> dict[str, Any]:

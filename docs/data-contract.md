@@ -573,6 +573,31 @@ contract when one was used. Many-to-many joins are refused; in a one-to-many
 join a row-level metric over the unique side is warned about, since each of its
 values is repeated once per match. Row locators are `{"left": …, "right": …}`.
 
+The join is the same one `join_tables` / `join_relationship` runs. A
+relationship id brings its saved keys, `key_format`s and crosswalk; an explicit
+spec may add `crosswalk` (a name declared in `relationships.json`, never a
+mapping supplied at query time) and `left_key_format` / `right_key_format`. Keys
+are resolved and checked by the same code, so a rendering collision or a
+crosswalk collision withholds the aggregation (`groups: []`, `content_withheld`,
+`key_mapping` with the evidence) instead of merging keys.
+
+When the join resolves its keys, `key.*` pseudo-columns are addressable in
+`group_by`, `unit` and `filters`:
+
+| Pseudo-column | Value |
+| --- | --- |
+| `key.canonical_id` | the crosswalk's canonical ID for the row's key; null if unmapped or missing (crosswalk joins only) |
+| `key.mapping` | `crosswalk`, `unmapped`, or null (crosswalk joins only) |
+| `key.left_form`, `key.right_form` | each side's key as written, rendered through its `key_format` if declared |
+
+`unit: ["key.canonical_id", …]` reduces per canonical animal whatever each file's
+spelling; each listed unit then shows `distinct_values` of `key.left_form` and
+`key.right_form`, the raw forms it was assembled from. An unmapped key has no
+canonical ID, so its rows land in `rows_with_missing_unit_key` rather than in a
+unit of their own. `aggregation_key_mapping` counts mapped, unmapped, missing-key
+and unmatched rows among the rows that actually entered the aggregation (after
+filters); `key_mapping` keeps the whole-table facts.
+
 ## Integrity at serve time
 
 The MCP service re-checksums a file before returning any of its content. On a

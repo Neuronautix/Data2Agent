@@ -206,6 +206,9 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         left_keys: list[str] | None = None,
         right_keys: list[str] | None = None,
         how: str = "inner",
+        crosswalk: str | None = None,
+        left_key_format: str | None = None,
+        right_key_format: str | None = None,
         group_by: list[str] | None = None,
         filters: list[dict[str, Any]] | None = None,
         unit: list[str] | None = None,
@@ -215,12 +218,23 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
     ) -> dict[str, Any]:
         """Aggregate over a complete join, e.g. group measurements by a registry column.
 
-        Name the join by a declared relationship_id, or give left, right,
-        left_keys and right_keys explicitly. Every column reference (group_by,
-        unit, metrics, filters) is qualified as "left.<column>" or
-        "right.<column>". Metrics, units and missing values behave exactly as in
-        aggregate. Many-to-many joins are refused; both backing files are
-        re-checksummed and cited, with the join cardinality and diagnostics.
+        Name the join by a declared relationship_id (its saved keys, key formats
+        and identifier crosswalk are used exactly as join_relationship uses
+        them), or give left, right, left_keys and right_keys explicitly, with
+        optionally a crosswalk declared in relationships.json by name and
+        left/right_key_format. Every column reference (group_by, unit, metrics,
+        filters) is qualified as "left.<column>" or "right.<column>".
+
+        Through a crosswalk, "key.canonical_id" names the canonical ID of the
+        join key (null when unmapped), so unit=["key.canonical_id", ...] reduces
+        per canonical animal whatever each file's spelling; units then list the
+        raw forms seen. Also "key.mapping", "key.left_form", "key.right_form".
+        Rendering or crosswalk collisions refuse the aggregation.
+
+        Metrics, units and missing values behave exactly as in aggregate.
+        Many-to-many joins are refused; both backing files and the crosswalk
+        are cited, with join cardinality, key-mapping facts and the mapped /
+        unmapped / unmatched counts of the rows aggregated.
         """
         return service.aggregate_join(
             metrics=metrics,
@@ -230,6 +244,9 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
             left_keys=left_keys,
             right_keys=right_keys,
             how=how,
+            crosswalk=crosswalk,
+            left_key_format=left_key_format,
+            right_key_format=right_key_format,
             group_by=group_by,
             filters=filters,
             unit=unit,
