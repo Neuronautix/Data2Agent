@@ -144,6 +144,9 @@ class Table:
     column_letters: dict[str, str]  # column name -> spreadsheet letter / 1-based field index
     rows: list[Row]
     header_rows: list[int]
+    # 'row' (a sheet row / a physical line) or 'interval' (the n-th behaviour
+    # interval a BORIS project yields, see FileRowSource._read_boris)
+    locator_kind: str = "row"
 
     def locator_range(self, column: str | None = None, rows: Iterable[Row] | None = None) -> str:
         chosen = list(rows) if rows is not None else self.rows
@@ -151,6 +154,8 @@ class Table:
             return ""
         lo = min(r.locator for r in chosen)
         hi = max(r.locator for r in chosen)
+        if self.locator_kind == "interval":
+            return f"intervals {lo}-{hi}" + (f", column {column}" if column else "")
         if self.sheet is not None:
             if column is None:
                 return f"{lo}:{hi}"
@@ -261,6 +266,8 @@ class FileRowSource:
             table = self._read_xlsx(table_id, spec)
         elif kind == "delimited":
             table = self._read_delimited(table_id, spec)
+        elif kind == "boris":
+            table = self._read_boris(table_id, spec)
         else:
             raise ValueError(f"table {table_id!r}: unknown kind {kind!r}")
         _apply_derived(table, spec.get("derived", {}))
@@ -301,6 +308,72 @@ class FileRowSource:
             letters,
             rows,
             header_rows,
+        )
+
+    def _read_boris(self, table_id: str, spec: dict[str, Any]) -> Table:
+        """One row per behaviour interval of a BORIS project (JSON).
+
+        A BORIS state event toggles: the first occurrence of a (subject,
+        behaviour) starts it, the next stops it. Occurrences are paired in time
+        order per (subject, behaviour), exactly as that rule states; a point
+        event is an interval of length 0. A start with no matching stop is kept
+        as a row with an empty stop and duration, never closed by assumption.
+        ``observations`` (a regex, optional) limits the observations read.
+        """
+        import json  # noqa: PLC0415
+
+        doc = json.loads((self.source_dir / spec["file"]).read_text(encoding="utf-8"))
+        types = {b.get("code"): b.get("type", "") for b in doc.get("behaviors_conf", {}).values()}
+        pattern = re.compile(spec["observations"]) if spec.get("observations") else None
+        columns = [
+            "Observation id",
+            "Subject",
+            "Behavior",
+            "Type",
+            "Start (s)",
+            "Stop (s)",
+            "Duration (s)",
+        ]
+        rows: list[Row] = []
+        for obs_id in sorted(doc.get("observations", {})):
+            if pattern and not pattern.fullmatch(obs_id):
+                continue
+            events = doc["observations"][obs_id].get("events", [])
+            ordered = sorted(enumerate(events), key=lambda ie: (float(ie[1][0]), ie[0]))
+            open_: dict[tuple[str, str], float] = {}
+            intervals: list[tuple[str, str, str, float, float | None]] = []
+            for _, ev in ordered:
+                t, subject, code = float(ev[0]), str(ev[1]), str(ev[2])
+                if "state" not in types.get(code, "").lower():
+                    intervals.append((subject, code, types.get(code, ""), t, t))
+                elif (subject, code) in open_:
+                    intervals.append((subject, code, types[code], open_.pop((subject, code)), t))
+                else:
+                    open_[(subject, code)] = t
+            for (subject, code), t in open_.items():
+                intervals.append((subject, code, types.get(code, ""), t, None))
+            for subject, code, typ, start, stop in sorted(intervals, key=lambda x: (x[3], x[1])):
+                n = len(rows) + 1
+                values = {
+                    "Observation id": obs_id,
+                    "Subject": subject,
+                    "Behavior": code,
+                    "Type": typ,
+                    "Start (s)": norm_value(start),
+                    "Stop (s)": None if stop is None else norm_value(stop),
+                    "Duration (s)": None if stop is None else round_num(stop - start),
+                }
+                rows.append(Row(values, n, {c: f"interval {n}" for c in columns}))
+        return Table(
+            table_id,
+            spec["file"],
+            self.file_sha(spec["file"]),
+            None,
+            columns,
+            {c: c for c in columns},
+            rows,
+            [],
+            locator_kind="interval",
         )
 
     def _read_delimited(self, table_id: str, spec: dict[str, Any]) -> Table:
@@ -422,7 +495,22 @@ def _match(row: Row, rule: dict[str, Any]) -> bool:
         if x is None or t is None:
             return False
         return {"gt": x > t, "ge": x >= t, "lt": x < t, "le": x <= t}[op]
+    if op in {"span_ge", "span_lt"}:
+        # an interval cell 'start-end' (e.g. a time bin '300.000-600.000'),
+        # compared by its length; a cell that is not such an interval never matches
+        span, t = _span(v), to_number(target)
+        if span is None or t is None:
+            return False
+        tol = 1e-6
+        return span >= t - tol if op == "span_ge" else span < t - tol
     raise ValueError(f"unknown filter op {op!r}")
+
+
+def _span(value: Any) -> float | None:
+    m = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]*)?)\s*-\s*([0-9]+(?:\.[0-9]*)?)\s*", str(value or ""))
+    if not m:
+        return None
+    return float(m.group(2)) - float(m.group(1))
 
 
 def select(table: Table, where: list[dict[str, Any]] | None) -> list[Row]:
@@ -507,7 +595,20 @@ def _attach(
         if k is None:
             continue
         if k in index:
-            raise GoldError(f"join key {k!r} is not unique in {other.table_id}")
+            # A repeated right key is allowed only when declared (right_rows_agree)
+            # AND every repeat carries the same joined values -- e.g. several time
+            # bins of one observation that all name the same animal and genotype.
+            # Anything else would be a choice between rows, and is refused.
+            same = all(
+                norm_value(index[k].values.get(c)) == norm_value(r.values.get(c))
+                for c in join["columns"]
+            )
+            if not (join.get("right_rows_agree") and same):
+                raise GoldError(
+                    f"join key {k!r} is not unique in {other.table_id}"
+                    + ("" if same else " and its rows disagree on the joined columns")
+                )
+            continue
         index[k] = r
     out: list[Row] = []
     unmatched: list[str] = []
@@ -682,6 +783,7 @@ def _op_group_stats(src: RowSource, config: dict[str, Any], spec: dict[str, Any]
     units = [unit_spec] if isinstance(unit_spec, str) else list(unit_spec or [])
     rows = select(t, spec.get("where"))
     sources: list[dict[str, Any]] = []
+    unmatched: list[str] = []
     if spec.get("join"):
         rows, unmatched = _attach(src, config, t, rows, spec["join"], sources)
         if unmatched and not spec["join"].get("allow_unmatched", False):
@@ -742,6 +844,12 @@ def _op_group_stats(src: RowSource, config: dict[str, Any], spec: dict[str, Any]
         )
     if skipped:
         comp += f"; {len(skipped)} non-numeric cell(s) excluded: {skipped}"
+    if unmatched:
+        # allowed by the declaration (allow_unmatched), but never silent
+        comp += (
+            f"; {len(unmatched)} row(s) matched no right-table row and are outside the "
+            f"selection ({len(set(unmatched))} distinct key(s))"
+        )
     return Result(out, sources, comp)
 
 

@@ -706,3 +706,166 @@ def test_a_condition_may_readdress_a_table_but_only_a_declared_one(package: Path
     argv = ["--package", str(package), "--ingest", str(package / "ingest_typo")]
     with pytest.raises(SystemExit, match="unknown gold table"):
         _run(baseline, [*argv, "--out", str(out)])
+
+
+# ---------------------------------------------------------------- windows and joins
+
+
+class _Tables:
+    """A minimal RowSource over in-memory tables, for evaluator unit tests."""
+
+    def __init__(self, **tables):
+        self.tables = tables
+
+    def table(self, table_id):
+        return self.tables[table_id]
+
+    def file_sha(self, file):
+        return "0" * 64
+
+    def raw_cell(self, file, sheet, cell):
+        raise KeyError(cell)
+
+
+def _mem_table(table_id, columns, rows):
+    return xp16lib.Table(
+        table_id,
+        f"{table_id}.csv",
+        "0" * 64,
+        None,
+        list(columns),
+        {c: str(i + 1) for i, c in enumerate(columns)},
+        [
+            xp16lib.Row(dict(zip(columns, r, strict=True)), n, {})
+            for n, r in enumerate(rows, start=2)
+        ],
+        [1],
+    )
+
+
+def test_span_filters_select_full_and_partial_bins():
+    bins = _mem_table(
+        "bins",
+        ["obs", "interval", "v"],
+        [["o1", "0.000-300.000", 1], ["o1", "300.000-600.000", 2], ["o1", "600.000-774.5", 4]],
+    )
+    src = _Tables(bins=bins)
+    full = [{"col": "interval", "op": "span_ge", "value": 300}]
+    part = [{"col": "interval", "op": "span_lt", "value": 300}]
+    assert (
+        xp16lib.evaluate(
+            src, {}, {"op": "sum", "table": "bins", "column": "v", "where": full}
+        ).answer
+        == 3
+    )
+    assert (
+        xp16lib.evaluate(
+            src, {}, {"op": "sum", "table": "bins", "column": "v", "where": part}
+        ).answer
+        == 4
+    )
+    assert not xp16lib._match(bins.rows[0], {"col": "v", "op": "span_ge", "value": 0})
+
+
+def test_a_repeated_right_key_joins_only_when_declared_and_consistent():
+    left = _mem_table("left", ["obs", "v"], [["o1", 1], ["o1", 2], ["o2", 5], ["o3", 7]])
+    right = _mem_table(
+        "right",
+        ["obs", "animal", "group"],
+        [["o1", "A", "g1"], ["o1", "A", "g1"], ["o2", "B", "g2"], ["o3", "C", "g1"]],
+    )
+    src = _Tables(left=left, right=right)
+    spec = {
+        "op": "group_stats",
+        "table": "left",
+        "unit": "obs",
+        "value": "v",
+        "reduce": "sum",
+        "join": {
+            "table": "right",
+            "left_key": "obs",
+            "right_key": "obs",
+            "columns": ["animal"],
+            "where": [{"col": "group", "value": "g1"}],
+            "right_rows_agree": True,
+            "allow_unmatched": True,
+        },
+    }
+    result = xp16lib.evaluate(src, {}, spec)
+    assert result.answer[0]["n"] == 2 and result.answer[0]["mean"] == 5  # o1: 3, o3: 7
+    assert "1 row(s) matched no right-table row" in result.computation  # o2, filtered out
+
+    undeclared = {**spec, "join": {**spec["join"], "right_rows_agree": False}}
+    with pytest.raises(xp16lib.GoldError, match="not unique"):
+        xp16lib.evaluate(src, {}, undeclared)
+    right.rows[1].values["animal"] = "Z"  # the repeats now disagree
+    with pytest.raises(xp16lib.GoldError, match="disagree"):
+        xp16lib.evaluate(src, {}, spec)
+
+
+def test_the_baseline_reruns_the_computation_the_gold_actually_used():
+    provisional = {"op": "count", "table": "t"}
+    alternative = {"op": "sum", "table": "t", "column": "v"}
+    q = {
+        "id": "Q",
+        "blocked_by": ["OQ1"],
+        "compute": provisional,
+        "on_answer": {"OQ1": {"yes": "compute", "no": alternative, "unknown": "abstain"}},
+    }
+    answered = {"OQ1": {"id": "OQ1", "status": "answered", "answer": "no"}}
+    assert baseline.effective_compute(q, answered, set()) == alternative
+    answered_yes = {"OQ1": {"id": "OQ1", "status": "answered", "answer": "yes"}}
+    assert baseline.effective_compute(q, answered_yes, set()) == provisional
+    # still open: the gold is PENDING, the provisional computation is what exists
+    assert baseline.effective_compute(q, {"OQ1": {"status": "open"}}, {"OQ1"}) == provisional
+
+
+def test_boris_projects_read_as_paired_behaviour_intervals(tmp_path: Path):
+    project = {
+        "project_format_version": "7.0",
+        "behaviors_conf": {
+            "0": {"code": "run", "type": "State event"},
+            "1": {"code": "peck", "type": "Point event"},
+        },
+        "observations": {
+            "obs_A": {
+                "events": [  # deliberately out of time order
+                    [5.0, "", "run", "", ""],
+                    [1.0, "", "run", "", ""],
+                    [3.0, "", "peck", "", ""],
+                    [8.0, "", "run", "", ""],  # a start with no stop
+                ]
+            },
+            "obs_B_second_rater": {"events": [[2.0, "", "run", "", ""], [2.5, "", "run", "", ""]]},
+            "other": {"events": [[0.0, "", "run", "", ""], [9.0, "", "run", "", ""]]},
+        },
+    }
+    (tmp_path / "p.boris").write_text(json.dumps(project), encoding="utf-8")
+    config = {"tables": {"ev": {"kind": "boris", "file": "p.boris", "observations": "obs_.*"}}}
+    src = xp16lib.FileRowSource(tmp_path, config)
+    table = src.table("ev")
+    got = [
+        (r.values["Observation id"], r.values["Behavior"], r.values["Duration (s)"])
+        for r in table.rows
+    ]
+    assert got == [
+        ("obs_A", "run", 4),  # 1.0 -> 5.0, paired in time order
+        ("obs_A", "peck", 0),  # a point event is an interval of length 0
+        ("obs_A", "run", None),  # 8.0 never stopped: kept, not closed by assumption
+        ("obs_B_second_rater", "run", 0.5),
+    ]
+    total = xp16lib.evaluate(
+        src,
+        config,
+        {
+            "op": "sum",
+            "table": "ev",
+            "column": "Duration (s)",
+            "where": [
+                {"col": "Observation id", "value": "obs_A"},
+                {"col": "Behavior", "value": "run"},
+                {"col": "Duration (s)", "op": "numeric"},
+            ],
+        },
+    )
+    assert total.answer == 4 and total.sources[0]["range"].startswith("intervals ")
