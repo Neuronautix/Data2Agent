@@ -16,7 +16,7 @@ from __future__ import annotations
 import csv
 import io
 import re
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -134,9 +134,10 @@ class TableProfile:
     convention: MissingValueConvention
     warnings: list[str]
     layout: layouts.HeaderLayout | None = None
+    block: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "path": self.path,
             "encoding": self.encoding,
             "delimiter": self.delimiter,
@@ -150,6 +151,10 @@ class TableProfile:
             "missing": {column.name: column.missing for column in self.columns},
             "warnings": list(self.warnings),
         }
+        if self.block is not None:
+            # Only on a declared block, so every other table's profile is unchanged.
+            payload["block"] = dict(self.block)
+        return payload
 
 
 def header_fields(layout: layouts.HeaderLayout | None) -> dict[str, Any]:
@@ -198,24 +203,89 @@ def profile_table(
     when given, by its rule otherwise -- and the decision is recorded in the
     profile. Leading blank lines are layout, as they are in a worksheet.
     """
+    opened = _open_delimited(path)
+    if opened is None:
+        return None
+    text, encoding, delimiter, warnings = opened
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
+    return _profile_records(
+        numbered_records(reader),
+        relative_path,
+        encoding,
+        delimiter,
+        convention,
+        declared,
+        warnings,
+    )
+
+
+def profile_table_blocks(
+    path: Path,
+    relative_path: str,
+    convention: MissingValueConvention,
+    declared: layouts.TableBlocks,
+) -> list[TableProfile] | None:
+    """Profile each declared block of a delimited file as a table of its own (D2A-103).
+
+    Each block reads its own region -- from just below the nearest block above
+    it to its ``last_row`` -- sliced to its columns, so the lines between two
+    blocks become the lower block's recorded preamble. Column positions stay the
+    file's own, so a row reader indexes a record exactly as the profile did.
+    """
+    opened = _open_delimited(path)
+    if opened is None:
+        return None
+    text, encoding, delimiter, warnings = opened
+    profiles: list[TableProfile] = []
+    for block in declared.blocks:
+        start = declared.region_start(block)
+        reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
+        seen = layouts.BoundedRows(numbered_records(reader), start, block)
+        profile = _profile_records(
+            seen,
+            f"{relative_path}#{block.name}",
+            encoding,
+            delimiter,
+            convention,
+            block.layout,
+            list(warnings),
+            block=block,
+        )
+        seen.require_end(f"{relative_path}#{block.name}")
+        profile.block = layouts.block_record(block, relative_path, relative_path, start)
+        profiles.append(profile)
+    return profiles
+
+
+def _open_delimited(path: Path) -> tuple[str, str, str, list[str]] | None:
     text, encoding, decode_warning = _read_text(path)
     if text is None:
         return None
-
     warnings: list[str] = []
     if decode_warning:
         warnings.append(decode_warning)
-
     delimiter, delimiter_warning = _resolve_delimiter(path, text)
     if delimiter is None:
         return None
     if delimiter_warning:
         warnings.append(delimiter_warning)
-
     # Split with the same newline handling the row reader's file handle uses
     # (newline=""), so a line number means the same line in both places.
-    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
-    layout, body = layouts.split_header(numbered_records(reader), declared)
+    return text, encoding, delimiter, warnings
+
+
+def _profile_records(
+    records: Iterable[layouts.Row],
+    relative_path: str,
+    encoding: str,
+    delimiter: str,
+    convention: MissingValueConvention,
+    declared: layouts.TableLayout | None,
+    warnings: list[str],
+    *,
+    block: layouts.BlockLayout | None = None,
+) -> TableProfile:
+    layout, body = layouts.split_header(records, declared)
     warnings.extend(layout.warnings)
     if layout.header_row is None:
         return TableProfile(
@@ -231,8 +301,9 @@ def profile_table(
             layout,
         )
 
+    offset = block.first_position if block is not None else 0
     names, renamed = _unique_names(
-        [_header_name(name, index) for index, name in enumerate(layout.labels)]
+        [_header_name(name, offset + index) for index, name in enumerate(layout.labels)]
     )
     columns = [new_column(name, index) for index, name in enumerate(names)]
     if layout.header_cells is not None:
@@ -250,6 +321,8 @@ def profile_table(
         record = numbered.cells
         if not record:
             continue  # A blank line carries no observation.
+        if block is not None and not any(str(cell).strip() for cell in record):
+            continue  # Blank within the block's columns: nothing observed here either.
         rows += 1
         if len(record) != len(columns):
             ragged += 1
@@ -261,6 +334,8 @@ def profile_table(
     for column in columns:
         # Any cell not seen at all (a short row) is an absent value, not a value.
         finalise(column, rows)
+        # Positions are the file's own, even when a block starts past column A.
+        column.position += offset
 
     warnings.extend(_convention_warnings(columns, convention))
     if ragged:

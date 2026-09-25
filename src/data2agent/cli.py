@@ -81,9 +81,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "JSON layout declaration stating where named tables' headers are, overriding "
             'detection: {"layouts": {"<file>" or "<workbook>#<sheet>": {"header_row": N, '
             '"header_rows": K, "data_starts_row": M}}}. Row numbers are 1-based '
-            "spreadsheet rows, or the line a record starts on in a CSV/TSV. A table path "
-            "that matches no profiled table is an error. Its sha256 is recorded in the "
-            "manifest and in provenance"
+            "spreadsheet rows, or the line a record starts on in a CSV/TSV. A table may "
+            'instead declare "blocks": [{"name", "header_row", "last_row", "columns": '
+            '"A:K"?, ...}] to split one sheet or file into several tables, each keyed '
+            "'<table>#<name>'. A table path that matches no profiled table, or overlapping "
+            "blocks, is an error. Its sha256 is recorded in the manifest and in provenance"
         ),
     )
     ingest_parser.set_defaults(handler=_cmd_ingest)

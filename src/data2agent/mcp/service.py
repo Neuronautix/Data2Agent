@@ -280,17 +280,24 @@ class DatasetService:
         """
         tables = self.manifest.get("tables", {})
         profile = tables.get(path)
-        backing = profile.get("workbook") if isinstance(profile, dict) else None
+        backing = _backing_file(profile, path) if isinstance(profile, dict) else None
         if backing is None and "#" in path:
             backing = path.split("#", 1)[0]
         self._require_entry(backing or path)
 
         if profile is None:
-            if "#" not in path and any(key.startswith(f"{path}#") for key in tables):
-                sheets = sorted(k for k in tables if k.startswith(f"{path}#"))
+            inner = sorted(k for k in tables if k.startswith(f"{path}#"))
+            if inner:
+                # A workbook holds sheets; a sheet or file declared as blocks
+                # holds blocks (D2A-103). Either way the key names a container.
+                blocks = all(isinstance(tables[k].get("block"), dict) for k in inner)
+                if blocks:
+                    raise KeyError(
+                        f"'{path}' was declared as {len(inner)} block(s), each its own "
+                        f"table; inspect one of {inner}"
+                    )
                 raise KeyError(
-                    f"'{path}' is a workbook holding {len(sheets)} sheet(s); "
-                    f"inspect one of {sheets}"
+                    f"'{path}' is a workbook holding {len(inner)} sheet(s); inspect one of {inner}"
                 )
             raise KeyError(
                 f"'{path}' was not profiled as a table; "
@@ -340,18 +347,25 @@ class DatasetService:
         for path, profile in sorted(self.manifest.get("tables", {}).items()):
             if not isinstance(profile, dict):
                 continue
-            backing = profile.get("workbook") or path
-            tables.append(
-                {
-                    "path": path,
-                    "kind": "worksheet" if profile.get("workbook") else "delimited",
-                    "backing_file": backing,
-                    "profiled": profile.get("profiled", True),
-                    "rows": profile.get("rows"),
-                    "columns": [column.get("name") for column in profile.get("columns", [])],
-                    "warnings": list(profile.get("warnings", [])),
+            backing = _backing_file(profile, path)
+            entry = {
+                "path": path,
+                "kind": "worksheet" if profile.get("workbook") else "delimited",
+                "backing_file": backing,
+                "profiled": profile.get("profiled", True),
+                "rows": profile.get("rows"),
+                "columns": [column.get("name") for column in profile.get("columns", [])],
+                "warnings": list(profile.get("warnings", [])),
+            }
+            block = profile.get("block")
+            if isinstance(block, dict):
+                # A declared block names where it sits, so a listing shows that
+                # several tables come from one sheet and which rows each covers.
+                entry["block"] = {
+                    key: block.get(key)
+                    for key in ("name", "parent_table", "header_row", "last_row", "columns")
                 }
-            )
+            tables.append(entry)
         return {"dataset_id": self.dataset_id, "tables": tables, "total": len(tables)}
 
     def read_rows(
@@ -382,7 +396,7 @@ class DatasetService:
         if profile.get("profiled") is False:
             raise KeyError(f"'{path}' exists but was not successfully profiled")
 
-        backing = profile.get("workbook") or path
+        backing = _backing_file(profile, path)
         entry = self._require_entry(backing)
         integrity = self.verify_file(backing)
 
@@ -1631,7 +1645,7 @@ class DatasetService:
         available = [column["name"] for column in profile.get("columns", [])]
         _require_known_columns(path, available, columns)
 
-        backing = profile.get("workbook") or path
+        backing = _backing_file(profile, path)
         entry = self._require_entry(backing)
         integrity = self.verify_file(backing)
         total_rows = profile.get("rows")
@@ -2319,6 +2333,21 @@ def _flatten_joined_row(
             else None
         )
     return {"source_row": dict(row["source_rows"]), "values": values}
+
+
+def _backing_file(profile: dict[str, Any], path: str) -> str:
+    """The inventoried file whose bytes a table is read from.
+
+    A worksheet names its workbook; a declared block of a delimited file names
+    its file in ``block.file`` (D2A-103), because its key '<file>#<block>' is
+    not a path. Every other table is keyed by its own file.
+    """
+    block = profile.get("block")
+    if profile.get("workbook"):
+        return str(profile["workbook"])
+    if isinstance(block, dict) and block.get("file"):
+        return str(block["file"])
+    return path
 
 
 def _bounded(value: int, ceiling: int, name: str) -> int:

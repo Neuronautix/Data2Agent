@@ -54,6 +54,11 @@ CHECKS: dict[str, str] = {
         "A user-supplied layout declaration, identified by the SHA-256 of its bytes, "
         "that stated a table's header rows instead of the detection rule"
     ),
+    "layout.block": (
+        "A table is one block of a larger sheet or delimited file, bounded by a layout "
+        "declaration: its parent table, first row read, header row, last row and column "
+        "range (D2A-103)"
+    ),
     # Workbook checks are distinct from their table.* counterparts on purpose.
     # A sheet-level claim carries a locator its delimited equivalent does not,
     # and collapsing the two would make a claim about one sheet indistinguishable

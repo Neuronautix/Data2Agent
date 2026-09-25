@@ -39,7 +39,11 @@ Manifest record plus integrity status plus a bounded UTF-8 preview.
 ## `inspect_table(path)`
 
 For profiled delimited tables and workbook worksheets. A worksheet is addressed
-as `<workbook>#<sheet>`. This tool returns the **recorded structural profile**,
+as `<workbook>#<sheet>`. A sheet or file declared as several stacked (or side by
+side) blocks is replaced by one table per block, addressed `<table>#<block>`
+(e.g. `<workbook>#<sheet>#day2`), whose `block` field gives its parent and row
+range; `list_tables` shows it, and the rows between blocks are that block's
+rows above data. This tool returns the **recorded structural profile**,
 not the source observations: rows, columns, token shapes, missingness and
 warnings. Use `read_rows` when the actual values are needed.
 

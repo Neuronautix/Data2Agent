@@ -267,6 +267,61 @@ run-specific. Tables the declaration names show `header_source: "declared"`,
 with the declaration under `header_detection.declared` and what detection would
 have chosen still in `detected_header_row`.
 
+#### Declaring blocks
+
+A results sheet often stacks several tables, for example one per session or
+drug, each under its own banner and header row somewhere in the middle of the
+sheet. No header rule can tell where one table ends without guessing, so blocks
+are declared, never detected (D2A-103):
+
+```json
+{"layouts": {
+  "results.xlsx#Sheet1": {"blocks": [
+    {"name": "day1", "header_row": 2, "last_row": 27},
+    {"name": "day2", "header_row": 30, "last_row": 55},
+    {"name": "summary", "header_row": 2, "last_row": 20, "columns": "M:R"}
+  ]}
+}}
+```
+
+Each block accepts the header keys of a single-table declaration
+(`header_row`, `header_rows`, `data_starts_row`, `upper_label_fill`, `note`)
+plus:
+
+| Key | Meaning |
+| --- | --- |
+| `name` | required; letters, digits, spaces and `_ . ( ) + -`, unique within the table |
+| `last_row` | required; the block's last row (or line); later rows belong to another block or to none |
+| `columns` | optional column range such as `A:K`; blocks in disjoint columns may sit side by side |
+
+How blocks are read:
+- **Keys.** Each block becomes a table keyed `<table>#<name>`, so a sheet block
+  is `<workbook>#<sheet>#<name>` and a CSV block is `<file>#<name>`. Nothing parses
+  the key. Every block profile carries a `block` record (`name`, `parent_table`,
+  `file`, `first_row`, `header_row`, `last_row`, `columns`) and
+  `header_source: "declared"`.
+- **The parent table.** The parent's whole-range profile is replaced by its
+  blocks: keeping it would count every observation twice under a header that
+  fits only the first block. Inspecting the parent path names its blocks
+  instead.
+- **Region read.** A block is read from `first_row` through `last_row`, where
+  `first_row` is just below the nearest block above it (in overlapping columns).
+  The banners and blank rows between two blocks therefore become the lower
+  block's `skipped_rows` (reason `declared`), readable through
+  `inspect_table(..., include_rows_above_data=true)`.
+- **Positions.** Column positions stay the file's own, so every row reader
+  (`read_rows`, `filter_rows`, `aggregate`, joins, relationships) indexes a
+  record as the profile did. Readers stop at `last_row`, and `source_row` is
+  the file's own row or line.
+- **Evidence.** A `layout.block` evidence claim records where each block sits.
+
+Validation is strict:
+- rows that overlap in overlapping columns are an error;
+- so is a `last_row` above the header, or beyond the end of the table;
+- so is a header row outside the table;
+- so is a block table that was never produced, reported with the other unapplied
+  declarations.
+
 ### Column shape vocabulary
 
 `dtype` is the least upper bound of the token shapes observed in the column:
