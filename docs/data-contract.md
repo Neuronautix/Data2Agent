@@ -771,6 +771,59 @@ its `structured` entry: `project_format_version` and the number of
 `observations`, `subjects` and `behaviors` (ethogram entries). Only counts are
 recorded -- no subject, behaviour or observation name, and no free text.
 
+#### BORIS projects as tables (D2A-109, manifest 0.8.0)
+
+Each project also yields three tables, readable with every table tool
+(`list_tables`, `inspect_table`, `read_rows`, `filter_rows`, `aggregate`, joins).
+Their `manifest.tables` entries carry `boris: {file, table}` naming the backing
+project, and the same column profiles as any other table (dtype, missingness
+under the active convention, distinct counts). Rows are never stored: they are
+derived at query time from the checksum-verified project, by the same function
+that profiled them at ingest, and withheld if the checksum no longer matches.
+Column names follow BORIS's own exports.
+
+| Table | One row per | Columns | `source_row` |
+| --- | --- | --- | --- |
+| `<file>#events` | event, as stored | `Observation id`, `Event index`, `Time (s)`, `Subject`, `Behavior`, `Behavioral category`, `Behavior type`, `Event type`, `Modifiers`, `Comment`, `Frame index` | `{observation_id, event_index}` |
+| `<file>#intervals` | behaviour interval | `Observation id`, `Subject`, `Behavior`, `Behavioral category`, `Behavior type`, `Modifiers`, `Start (s)`, `Stop (s)`, `Duration (s)`, `Pairing`, `Start event index`, `Stop event index`, `Comment start`, `Comment stop` | `{observation_id, start_event_index, stop_event_index}` |
+| `<file>#observations` | observation | `Observation id`, `Observation date`, `Description`, `Observation type`, `Media files`, `Media file count`, `Media duration (s)`, `Events`, `First event (s)`, `Last event (s)` | `{observation_id}` |
+
+- `Event index` is the event's 0-based position in the observation's `events`
+  array in the file. Events are listed in that order; the file's order is not
+  always time order.
+- `Behavior type` is `STATE` or `POINT`, from the ethogram's type. It is null
+  when the behaviour is missing from the ethogram, its type is neither, or its
+  code is defined twice in conflicting ways.
+- **Pairing** follows BORIS's own toggle rule. For one (subject, behaviour,
+  modifiers), state events taken in time order alternate START and STOP. Ties
+  keep the file's order. `Event type` records the result, and each START/STOP
+  pair becomes one `paired` interval. Durations are computed in decimal, so
+  12.3 - 10.1 is 2.2.
+- A point event is a `point` interval with stop = start and duration 0.
+- A state start left open at the end of an observation is an `unmatched_start`
+  row: `Stop (s)` and `Duration (s)` are null. It is never closed at the end of
+  the media, and never dropped, so `count` includes it and `sum` of the
+  duration leaves it out. Under the toggle rule an unpaired event is always the
+  last one and always a start, so there is no `unmatched_stop` outcome. A
+  scorer who began coding mid-behaviour shows up as that toggle, not as a flag.
+- An event whose behaviour has no state/point type is an `unknown_type` row,
+  with a null stop and duration, and is not paired.
+- The intervals entry records `pairing` counts per outcome.
+- `Media files` holds file names only, never their directories, joined by
+  ` | ` in player order. `Media duration (s)` is the summed recorded length of
+  player 1's files, which play one after another. It is null when any of
+  those lengths is missing.
+- `First event (s)` and `Last event (s)` show how much of the media a scoring
+  covers.
+- BORIS records no scorer per observation. No scorer column exists, and none
+  is inferred from observation ids.
+- **Verified layouts only.** An event is read when it is
+  `[time, subject, behavior, modifiers, comment]` or the same plus a frame
+  index: a numeric time and string fields. Those are the layouts found in
+  real projects. Any other layout makes `#events` and `#intervals`
+  `profiled: false` with `rows: null`, a warning naming the event by position,
+  and a `boris.unprofiled` claim. `#observations` is still derived.
+
 ## Versioning
 
 `manifest_version` and `evidence_version` are independent of the package

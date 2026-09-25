@@ -31,7 +31,7 @@ from typing import Any
 from .. import MANIFEST_VERSION
 from ..errors import LayoutError, OutputError
 from ..evidence import EvidenceItem, EvidenceLedger
-from . import conventions, formats, identifiers, metadata, structured, tabular
+from . import boris, conventions, formats, identifiers, metadata, structured, tabular
 from .checksum import dataset_id as fold_dataset_id
 from .checksum import hash_file
 from .conventions import DEFAULT_CONVENTION, MissingValueConvention
@@ -294,6 +294,13 @@ def ingest(
                 recognised = metadata.classify_json_document(entry.path, document)
                 if recognised is not None:
                     _record_content_metadata(ledger, entry, metadata_files, recognised)
+            if entry.format.format_id == "boris" and profile.parse_error is None:
+                # A BORIS project's events are observations, so they are tables
+                # (D2A-109): profiled here, read from the verified file on demand.
+                for derived in boris.profile_project(document, entry.path, active_convention):
+                    tables[derived.path] = derived.as_dict()
+                    warnings.extend(f"{derived.path}: {note}" for note in derived.warnings)
+                    _record_boris_table_claims(ledger, entry, derived, active_convention)
             ledger.record(
                 f"'{entry.path}' is a JSON document with root type '{profile.root_type}'",
                 subject=entry.path,
@@ -770,10 +777,54 @@ def _record_sheet_claims(
         )
 
 
+def _record_boris_table_claims(
+    ledger: EvidenceLedger,
+    entry: FileEntry,
+    profile: boris.BorisTableProfile,
+    convention: MissingValueConvention,
+) -> None:
+    """Claims for one table derived from a BORIS project.
+
+    A profiled table gets exactly the claims a delimited table gets. One that
+    could not be derived gets a claim saying so and why -- never a row count of
+    zero, which would turn an unread shape into a finding about the scoring.
+    """
+    if not profile.profiled:
+        ledger.record(
+            f"'{profile.path}' could not be derived from '{entry.path}': "
+            f"{'; '.join(profile.warnings) or 'no reason recorded'}",
+            subject=profile.path,
+            evidence=[
+                EvidenceItem(
+                    source=entry.path,
+                    source_sha256=entry.sha256,
+                    check="boris.unprofiled",
+                    result={"table": profile.table, "reason": profile.warnings},
+                )
+            ],
+        )
+        return
+    _record_table_claims(ledger, entry, profile, convention)
+    if profile.pairing is not None:
+        ledger.record(
+            f"'{profile.path}' pairs state events under BORIS's toggle rule: "
+            + ", ".join(f"{count} {outcome}" for outcome, count in profile.pairing.items()),
+            subject=profile.path,
+            evidence=[
+                EvidenceItem(
+                    source=entry.path,
+                    source_sha256=entry.sha256,
+                    check="boris.interval-pairing",
+                    result=dict(profile.pairing),
+                )
+            ],
+        )
+
+
 def _record_table_claims(
     ledger: EvidenceLedger,
     entry: FileEntry,
-    profile: tabular.TableProfile,
+    profile: tabular.TableProfile | boris.BorisTableProfile,
     convention: MissingValueConvention,
 ) -> None:
     # Cited alongside every missingness count, so a reader can always see which

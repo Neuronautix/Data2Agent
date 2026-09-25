@@ -141,7 +141,13 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         )
 
     def list_tables() -> dict[str, Any]:
-        """List every profiled delimited table and workbook worksheet.
+        """List every profiled table: delimited files, worksheets, and BORIS projects.
+
+        A BORIS project (.boris) yields three tables: '<file>#events' (one row
+        per coded event), '<file>#intervals' (state events paired start/stop
+        by BORIS's toggle rule, point events as zero-length intervals, an
+        unclosed start kept with Pairing 'unmatched_start' and a null
+        duration) and '<file>#observations' (one row per observation).
 
         This returns table identity and shape only. Use read_rows for the actual
         observations.

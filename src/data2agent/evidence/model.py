@@ -80,6 +80,16 @@ CHECKS: dict[str, str] = {
         "optional reader for that format is not installed"
     ),
     "json.shape": "Top-level type, keys and nesting depth of a JSON document",
+    "boris.unprofiled": (
+        "A table derived from a BORIS project could not be derived, because the "
+        "project's observations or events are not in a layout this version reads; "
+        "it carries no row count, because none was observed"
+    ),
+    "boris.interval-pairing": (
+        "How a BORIS project's events were paired into behaviour intervals under "
+        "BORIS's toggle rule: counts of paired, point, unmatched_start and "
+        "unknown_type intervals"
+    ),
     "metadata.file-convention": "Filename matches a published metadata convention",
     # Distinct from metadata.file-convention, and deliberately so: a claim that a
     # file's *name* follows a convention and a claim that its *structure* does

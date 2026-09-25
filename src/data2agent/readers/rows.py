@@ -17,8 +17,10 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
+from ..ingest import boris
 from ..ingest.conventions import SENTINEL, MissingValueConvention
 from ..ingest.layout import column_index
+from ..ingest.structured import load_json
 from ..ingest.tabular import numbered_records
 from . import workbook
 
@@ -132,6 +134,43 @@ def read_workbook_rows(
                     "missing": missing,
                 }
             )
+    return rows
+
+
+def read_boris_rows(
+    path: Path,
+    profile: dict[str, Any],
+    *,
+    columns: list[str],
+    offset: int,
+    limit: int,
+    convention: MissingValueConvention,
+) -> list[dict[str, Any]]:
+    """Read a bounded slice of a table derived from a BORIS project (D2A-109).
+
+    The project is re-parsed and the table re-derived by the one function that
+    profiled it at ingest, so the rows cannot disagree with their profile. Each
+    row's ``source_row`` is its locator inside the project -- observation id and
+    event index(es) -- because a JSON project has no line numbers worth citing.
+    """
+    table_name = str((profile.get("boris") or {}).get("table", ""))
+    document, error = load_json(path)
+    if error is not None:
+        raise ValueError(f"the BORIS project could not be parsed at query time: {error}")
+    table = boris.build_tables(document).get(table_name)
+    if table is None or table.rows is None:
+        raise ValueError(f"the BORIS project no longer yields its '{table_name}' table")
+    specs = _column_specs(profile, columns)
+    rows: list[dict[str, Any]] = []
+    for derived in table.rows[offset : offset + limit]:
+        values: dict[str, Any] = {}
+        missing: dict[str, dict[str, Any]] = {}
+        for name, _, dtype in specs:
+            value, reason = _normalise(derived["values"].get(name), dtype, convention)
+            values[name] = value
+            if reason is not None:
+                missing[name] = reason
+        rows.append({"source_row": dict(derived["locator"]), "values": values, "missing": missing})
     return rows
 
 

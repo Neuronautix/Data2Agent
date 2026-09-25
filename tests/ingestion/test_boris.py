@@ -130,9 +130,14 @@ def test_the_manifest_records_counts_and_never_contents(tmp_path: Path):
         "subjects": 1,
         "behaviors": 2,
     }
-    text = json.dumps(manifest)
+    # The structured summary counts; it never names. (The project's event tables
+    # carry ordinary column profiles, under the policy every table follows --
+    # see test_boris_tables.py -- so this check is scoped to the summary.)
+    summary = json.dumps(manifest["structured"])
     for private in ("subject-a", "behaviour-a", "obs-1", "free text"):
-        assert private not in text
+        assert private not in summary
+    # The project's own description is not a column of any table either.
+    assert "free text" not in json.dumps(manifest)
     assert not any("not recognised" in warning for warning in manifest["warnings"])
 
 
