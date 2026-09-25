@@ -62,3 +62,5 @@ venv/
 /.ex1/
 /.xp14b/
 /.d2a-out-*/
+# Claude Code local state: agent worktrees and settings, never part of the repo.
+/.claude/
