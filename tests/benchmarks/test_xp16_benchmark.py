@@ -35,6 +35,8 @@ def _load(name: str, filename: str):
 score = _load("xp16_score", "03_score.py")
 freeze = _load("xp16_freeze", "01_freeze.py")
 builder = _load("xp16_build", "02_build_gold.py")
+baseline = _load("xp16_baseline", "05_baseline.py")
+ingest_step = _load("xp16_ingest", "06_ingest.py")
 
 
 # ---------------------------------------------------------------- fixtures
@@ -93,7 +95,12 @@ def package(tmp_path: Path) -> Path:
                     "reg_to_meas": {"regex": r"C-(?P<c>\d)_(?P<t>[IVX]+)", "template": "C{c}-{t}"}
                 },
                 "tables": {
-                    "reg": {"file": "registry.xlsx", "sheet": "Reg", "header_rows": [2]},
+                    "reg": {
+                        "file": "registry.xlsx",
+                        "sheet": "Reg",
+                        "header_rows": [2],
+                        "service_table": "registry.xlsx#Reg",
+                    },
                     "bins": {
                         "kind": "delimited",
                         "file": "sub/bins.tsv",
@@ -102,6 +109,7 @@ def package(tmp_path: Path) -> Path:
                         "drop": ["Behaviors:", "Subjects:"],
                         "first_row": 4,
                         "last_row": 12,
+                        "service_table": "sub/bins.tsv",
                     },
                 },
             }
@@ -550,3 +558,151 @@ def test_a_citation_set_is_only_as_strong_as_its_weakest_source(package: Path):
     assert (
         score.citation_status({"answer": [], "sources": [too_wide]}, q, ctx)["status"] == "invalid"
     )
+
+
+# ---------------------------------------------------------------- declared ingest + baseline
+
+
+@pytest.mark.parametrize(
+    ("gold", "service", "ok"),
+    [
+        ("W1_Date", "Weights / W1_Date", True),  # extra upper label on the service side
+        ("event | Total duration", "event / Total duration", True),
+        ("event | Total duration", "Total duration.2", False),  # upper label missing
+        ("Genotype #2", "Genotype.1", True),  # both dedupe conventions
+        ("0.4", "0.4", True),  # a numeric header is not a dedupe suffix
+        ("0.4", "0.02", False),
+        ("Weight", "Group", False),
+    ],
+)
+def test_service_labels_must_end_with_the_gold_header_parts(gold, service, ok):
+    names = {service, "Genotype", "Total duration"}
+    assert baseline._labels_compatible(gold, service, names) is ok
+
+
+def _conditions(package: Path) -> None:
+    config = package / "config"
+    (config / "layouts.json").write_text(
+        json.dumps(
+            {
+                "layouts": {
+                    "registry.xlsx#Reg": {"header_row": 2},
+                    "sub/bins.tsv": {"header_row": 2, "header_rows": 2, "upper_label_fill": "none"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (config / "conditions.json").write_text(
+        json.dumps(
+            {
+                "conditions": {
+                    "undeclared": {"output": "ingest_undeclared"},
+                    "declared": {"output": "ingest_declared", "layout": "layouts.json"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_declared_ingest_is_recorded_and_changes_what_the_baseline_retrieves(package: Path):
+    _conditions(package)
+    assert _run(builder, ["--package", str(package)]) == 0
+    for condition in ("undeclared", "declared"):
+        ingest_step.ingest(package, condition)
+    record = json.loads((package / "ingest_declared" / "condition.json").read_text("utf-8"))
+    layout_sha = xp16lib.sha256_file(package / "config" / "layouts.json")
+    assert record["condition"] == "declared"
+    assert record["declarations"]["layout"]["sha256"] == layout_sha
+    manifest = json.loads((package / "ingest_declared" / "manifest.json").read_text("utf-8"))
+    assert manifest["layout_declaration"]["sha256"] == layout_sha
+    undeclared = json.loads((package / "ingest_undeclared" / "condition.json").read_text("utf-8"))
+    assert undeclared["declarations"] == {}
+    with pytest.raises(SystemExit, match="exists"):
+        ingest_step.ingest(package, "declared")  # never silently overwritten
+
+    outcomes = {}
+    for condition in ("undeclared", "declared"):
+        out = package / f"baseline_{condition}.json"
+        argv = ["--package", str(package), "--ingest", str(package / f"ingest_{condition}")]
+        assert _run(baseline, [*argv, "--out", str(out)]) == 0
+        report = json.loads(out.read_text("utf-8"))
+        assert report["condition"]["condition"] == condition
+        outcomes[condition] = {
+            q["id"]: (q.get("retrieval") or q.get("evidence"))["outcome"]
+            for q in report["questions"]
+        }
+    # the per-animal export question needs the behaviour label, which only the
+    # declared two-row header carries
+    assert outcomes["undeclared"]["Q-unit"] == "fail"
+    assert outcomes["declared"]["Q-unit"] == "pass"
+    assert outcomes["declared"]["Q-count"] == "pass"
+    # the export carries a footer after last_row that the service's aggregate cannot
+    # exclude by position, so the native probe refuses instead of aggregating it
+    report = json.loads((package / "baseline_declared.json").read_text("utf-8"))
+    native = {q["id"]: q.get("native_aggregate") for q in report["questions"]}
+    assert native["Q-unit"]["status"] == "mixes_blocks"
+
+
+def test_the_native_unit_probe_matches_the_gold_on_a_clean_table(package: Path):
+    _conditions(package)
+    # drop the footer: the same export without rows after the data
+    tsv = package / "source" / "sub" / "bins.tsv"
+    lines = tsv.read_bytes().split(b"\r\n")[:12]
+    tsv.write_bytes(b"\r\n".join(lines) + b"\r\n")
+    checksums = json.loads((package / "checksums.json").read_text("utf-8"))
+    for f in checksums["files"]:
+        if f["path"] == "sub/bins.tsv":
+            f["sha256"] = xp16lib.sha256_file(tsv)
+    checksums["dataset_id"] = freeze.fold_dataset_id(
+        [(f["path"], f["sha256"]) for f in checksums["files"]]
+    )
+    (package / "checksums.json").write_text(json.dumps(checksums), encoding="utf-8")
+    assert _run(builder, ["--package", str(package)]) == 0
+    ingest_step.ingest(package, "declared")
+    out = package / "baseline.json"
+    argv = ["--package", str(package), "--ingest", str(package / "ingest_declared")]
+    assert _run(baseline, [*argv, "--out", str(out)]) == 0
+    report = json.loads(out.read_text("utf-8"))
+    native = {q["id"]: q.get("native_aggregate") for q in report["questions"]}
+    assert native["Q-unit"]["status"] == "pass", native["Q-unit"]
+
+
+def test_a_banner_cell_above_the_header_is_read_through_inspect_table(package: Path):
+    _conditions(package)
+    ingest_step.ingest(package, "declared")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from data2agent.mcp.service import DatasetService
+
+    config = yaml.safe_load((package / "config" / "tables.yaml").read_text(encoding="utf-8"))
+    svc = DatasetService(package / "ingest_declared", source_dir=package / "source")
+    src = baseline.ServiceRowSource(svc, config, xp16lib.FileRowSource(package / "source", config))
+    assert src.raw_cell("registry.xlsx", "Reg", "C1") == "Body weight"  # banner row
+    assert src.raw_cell("registry.xlsx", "Reg", "C2") == "Key"  # the header row itself
+    assert src.raw_cell("registry.xlsx", "Reg", "C3") == "C-1_I"  # a data row
+    assert "inspect_table(include_rows_above_data=True)" in src.tools_used
+
+
+def test_a_condition_may_readdress_a_table_but_only_a_declared_one(package: Path):
+    _conditions(package)
+    conditions_path = package / "config" / "conditions.json"
+    conditions = json.loads(conditions_path.read_text("utf-8"))
+    conditions["conditions"]["declared"]["service_tables"] = {"reg": "registry.xlsx#Reg"}
+    conditions["conditions"]["typo"] = {
+        "output": "ingest_typo",
+        "service_tables": {"no_such_table": "registry.xlsx#Reg"},
+    }
+    conditions_path.write_text(json.dumps(conditions), encoding="utf-8")
+    assert _run(builder, ["--package", str(package)]) == 0
+    ingest_step.ingest(package, "declared")
+    record = json.loads((package / "ingest_declared" / "condition.json").read_text("utf-8"))
+    assert record["service_tables"] == {"reg": "registry.xlsx#Reg"}
+    assert record["data2agent_src"] == "repository"
+    out = package / "b.json"
+    argv = ["--package", str(package), "--ingest", str(package / "ingest_declared")]
+    assert _run(baseline, [*argv, "--out", str(out)]) == 0
+    ingest_step.ingest(package, "typo")
+    argv = ["--package", str(package), "--ingest", str(package / "ingest_typo")]
+    with pytest.raises(SystemExit, match="unknown gold table"):
+        _run(baseline, [*argv, "--out", str(out)])
