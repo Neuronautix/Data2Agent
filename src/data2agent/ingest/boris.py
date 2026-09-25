@@ -88,6 +88,17 @@ OBSERVATION_COLUMNS = (
     "Last event (s)",
 )
 COLUMNS = {EVENTS: EVENT_COLUMNS, INTERVALS: INTERVAL_COLUMNS, OBSERVATIONS: OBSERVATION_COLUMNS}
+# Columns holding what a person typed, not a code BORIS defines: the event
+# comments and the observation's description. Their values are never listed.
+FREE_TEXT_COLUMNS = frozenset({"Comment", "Comment start", "Comment stop", "Description"})
+# Columns whose values come from a closed vocabulary by construction: the
+# ethogram's behaviour codes and categories, and the three vocabularies this
+# module itself writes. A two-word code ("hind scratch") is still a code, so the
+# structural rule is not asked. Subjects and modifiers are left to the rule:
+# BORIS does not guarantee they come from a defined list.
+CODED_COLUMNS = frozenset(
+    {"Behavior", "Behavioral category", "Behavior type", "Event type", "Pairing"}
+)
 
 # How each table's rows are located, returned with every read.
 ROW_LOCATORS = {
@@ -235,6 +246,16 @@ def profile_columns(
     mean for every other table.
     """
     columns = [new_column(name, position) for position, name in enumerate(table.columns)]
+    for column in columns:
+        if column.name in FREE_TEXT_COLUMNS:
+            # Free text by construction (D2A-110): BORIS writes whatever the
+            # scorer typed here. Declared at the source, so even a comment that
+            # happens to be one short word is never listed in the manifest.
+            column.free_text = True
+            column.free_text_source = "boris"
+        elif column.name in CODED_COLUMNS:
+            column.free_text = False
+            column.free_text_source = "boris"
     rows = table.rows or []
     for row in rows:
         values = row["values"]

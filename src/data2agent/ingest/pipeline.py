@@ -115,6 +115,8 @@ def ingest(
     # declared layout, in THIS ingest. Tracked here rather than on the
     # declarations object, which is immutable and may be reused across ingests.
     applied_layouts: set[str] = set()
+    # Declared free-text verdicts that found their column, as (table, column).
+    applied_free_text: set[tuple[str, str]] = set()
 
     _record_dataset_claims(ledger, identity, inventory, active_convention)
 
@@ -153,6 +155,7 @@ def ingest(
             if profiles is None:
                 warnings.append(f"{entry.path}: could not be read as a delimited table")
             for profile in profiles or []:
+                _declare_free_text(profile.path, profile.columns, layouts, applied_free_text)
                 tables[profile.path] = profile.as_dict()
                 if _declared_layout_applied(profile.layout):
                     applied_layouts.add(_declared_path(profile.path, profile.block))
@@ -225,6 +228,7 @@ def ingest(
                     entry.format.format_id,
                     layout_for=layouts.for_table if layouts else None,
                 ):
+                    _declare_free_text(sheet.path, sheet.columns, layouts, applied_free_text)
                     tables[sheet.path] = sheet.as_dict()
                     if sheet.profiled and _declared_layout_applied(sheet.layout):
                         applied_layouts.add(_declared_path(sheet.path, sheet.block))
@@ -298,6 +302,7 @@ def ingest(
                 # A BORIS project's events are observations, so they are tables
                 # (D2A-109): profiled here, read from the verified file on demand.
                 for derived in boris.profile_project(document, entry.path, active_convention):
+                    _declare_free_text(derived.path, derived.columns, layouts, applied_free_text)
                     tables[derived.path] = derived.as_dict()
                     warnings.extend(f"{derived.path}: {note}" for note in derived.warnings)
                     _record_boris_table_claims(ledger, entry, derived, active_convention)
@@ -339,6 +344,14 @@ def ingest(
             f"table paths are '<file>' for a delimited file and '<workbook>#<sheet>' for a "
             f"worksheet, exactly as manifest.tables keys them -- or the file could not be "
             f"profiled as a table. Profiled tables: {sorted(tables)}"
+        )
+    if layouts is not None and (unmatched := layouts.unapplied_free_text(applied_free_text)):
+        # A verdict that silently applied to nothing would leave someone
+        # believing a comment column was withheld when it was listed.
+        raise LayoutError(
+            f"layout declaration {layouts.name!r} declares free_text for "
+            f"{len(unmatched)} column(s) that no profiled table has: {unmatched}. Table "
+            f"paths and column names must match manifest.tables exactly"
         )
 
     drift = _verify_source_unchanged(source, inventory, excludes)
@@ -775,6 +788,28 @@ def _record_sheet_claims(
                 convention_evidence,
             ],
         )
+
+
+def _declare_free_text(
+    path: str,
+    columns: list[tabular.ColumnProfile],
+    layouts: LayoutDeclarations | None,
+    applied: set[tuple[str, str]],
+) -> None:
+    """Apply a layout declaration's free-text verdicts to one table's columns (D2A-110).
+
+    Applied before the profile is serialised, since the verdict decides whether
+    the value list is written at all. A declaration outranks both the structural
+    rule and a source format's own marking.
+    """
+    if layouts is None:
+        return
+    declared = layouts.free_text_for(path)
+    for column in columns:
+        if column.name in declared:
+            column.free_text = declared[column.name]
+            column.free_text_source = "declaration"
+            applied.add((path, column.name))
 
 
 def _record_boris_table_claims(

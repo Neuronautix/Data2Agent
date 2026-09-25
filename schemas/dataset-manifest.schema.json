@@ -535,6 +535,78 @@
           "type": "array",
           "items": {
             "type": "string"
+          },
+          "description": "The observed values, when there are at most 25 and the column is not free text. Absent with distinct_exact false: too many to list. Absent with values_withheld: free text, deliberately not copied (D2A-110)."
+        },
+        "values_withheld": {
+          "type": "object",
+          "description": "Why a listable value set is not in the manifest. 'rule' is 'd2a-free-text/1', the structural rule, with the 'clause' that fired: 'prose' (some value holds at least 4 words -- tokens with 2+ letters -- or more than 40 characters) or 'unrepeated-words' (some value holding 2+ words occurs only once; unrepeated_multiword_values counts them). Or 'rule' is 'declared', and 'source' says who declared it: 'declaration' (a layout declaration) or 'boris' (a BORIS comment or description). max_words and max_length are the statistics the rule reads. The values themselves stay readable through read_rows.",
+          "required": [
+            "reason",
+            "rule",
+            "max_words",
+            "max_length",
+            "unrepeated_multiword_values"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "const": "free_text"
+            },
+            "rule": {
+              "enum": [
+                "d2a-free-text/1",
+                "declared"
+              ]
+            },
+            "clause": {
+              "enum": [
+                "prose",
+                "unrepeated-words"
+              ]
+            },
+            "source": {
+              "enum": [
+                "declaration",
+                "boris"
+              ]
+            },
+            "max_words": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_length": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unrepeated_multiword_values": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "values_listed_by": {
+          "type": "object",
+          "description": "Present when a declaration -- a layout declaration, or a source format's own definition of a column as coded (a BORIS behaviour code) -- listed values that the structural rule would have withheld.",
+          "required": [
+            "rule",
+            "source",
+            "structural_rule"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "rule": {
+              "const": "declared"
+            },
+            "source": {
+              "enum": [
+                "declaration",
+                "boris"
+              ]
+            },
+            "structural_rule": {
+              "const": "d2a-free-text/1"
+            }
           }
         },
         "unique": {
@@ -849,6 +921,13 @@
             "type": "string"
           },
           "description": "Table paths the declaration names; every one matched a profiled table, or ingest refused to run."
+        },
+        "free_text_tables": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Table paths for which the declaration states free-text verdicts per column; every declared column matched, or ingest refused to run. Absent when none."
         }
       }
     },

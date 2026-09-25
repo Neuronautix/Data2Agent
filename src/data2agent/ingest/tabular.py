@@ -47,6 +47,47 @@ _MAX_ENUMERATED_DISTINCT = 25
 # of arbitrarily large files cannot promise.
 _MAX_TRACKED_KEYS = 200_000
 
+# Free text is profiled, but its values are not listed (D2A-110).
+#
+# A value list is what makes a coded column legible without reading it --
+# genotype, sex, behaviour, treatment -- and it is copied into the manifest,
+# which is the document that travels. A comment column's list is the comments
+# themselves: a scorer's notes, a sentence about an animal. So a column whose
+# values look like prose keeps every count (distinct, missing, dtype) and loses
+# only the list, which stays readable from the verified file through read_rows.
+#
+# The rule is structural and never reads a column's NAME: a column named
+# "Comment" holding one-word codes is a coded column, and a column named "A"
+# holding sentences is prose. It is evaluated over the column's distinct values,
+# which is every value that could be listed -- above the enumeration cap no list
+# is emitted at all, so no verdict is needed.
+#
+# A *word* is a whitespace-separated token holding at least two letters (in any
+# script): 'bad', 'mg/kg' and 'Shank3' are words, '12', '+/-' and a date are
+# not. The list is withheld when either clause holds:
+#
+# * ``prose``: some value holds at least ``_PROSE_WORDS`` words, or is longer
+#   than ``_PROSE_LENGTH`` characters -- a sentence, whatever else is true;
+# * ``unrepeated-words``: some value holding at least two words occurs only
+#   once in the column. A code is a small vocabulary used over and over --
+#   "Shank3 Het" on every other row, a behaviour on hundreds of events -- while
+#   a note ("bad video") is written once, often among repeated one-word values
+#   ("ok"). Repetition of each multi-word value, not of the column on average,
+#   is what tells two short words of a code from two short words of a comment;
+#   the shape alone cannot.
+#
+# Calibrated on the local screening datasets (6 datasets, ~9 200 listed
+# columns): genotype, sex, treatment and behaviour columns keep their lists,
+# comment columns lose theirs. When in doubt the rule withholds -- a small table
+# whose two-word codes each occur once is withheld -- because the costs are not
+# symmetric: a withheld list costs one read_rows call, a listed comment cannot
+# be taken back. A layout declaration can override the verdict per column,
+# either way, and the profile records which rule decided and on what.
+FREE_TEXT_RULE_ID = "d2a-free-text/1"
+_PROSE_WORDS = 4
+_PROSE_LENGTH = 40
+_LETTER = re.compile(r"[^\W\d_]")
+
 
 @dataclass
 class ColumnProfile:
@@ -73,7 +114,21 @@ class ColumnProfile:
     # a multi-row header, whose composed name would otherwise hide what the
     # file actually says (and which labels were carried across by a fill).
     header_cells: list[str] | None = None
+    # A verdict on free text stated rather than observed: by a layout
+    # declaration ("declaration"), or by a source format that defines the
+    # column as free text by construction ("boris" for a BORIS comment). None
+    # leaves the decision to the structural rule.
+    free_text: bool | None = None
+    free_text_source: str | None = None
     _seen: set[str] = field(default_factory=set, repr=False)
+    # Shape of the listed candidates: the most alphabetic words and the most
+    # characters in any one distinct value. Bounded: measured only while the
+    # value set is still enumerated.
+    _max_words: int = field(default=0, repr=False)
+    _max_length: int = field(default=0, repr=False)
+    # Occurrences of each distinct value holding two or more words; at most
+    # _MAX_ENUMERATED_DISTINCT + 1 entries, like the value set itself.
+    _multiword: dict[str, int] = field(default_factory=dict, repr=False)
     _overflowed: bool = field(default=False, repr=False)
     _keys_seen: set[str] = field(default_factory=set, repr=False)
     _keys_overflowed: bool = field(default=False, repr=False)
@@ -100,12 +155,58 @@ class ColumnProfile:
             "distinct_exact": self.distinct_exact,
         }
         if self.distinct_values is not None:
-            payload["distinct_values"] = self.distinct_values
+            withheld = self.values_withheld()
+            if withheld is None:
+                payload["distinct_values"] = self.distinct_values
+            else:
+                # No list, and a reason: "withheld as free text" must never read
+                # like "too many distinct values" (distinct_exact: false) or "no
+                # values" (distinct: 0).
+                payload["values_withheld"] = withheld
+            if self.free_text is False and self._structurally_free_text():
+                # Listed only because a declaration said so; kept auditable.
+                payload["values_listed_by"] = {
+                    "rule": "declared",
+                    "source": self.free_text_source,
+                    "structural_rule": FREE_TEXT_RULE_ID,
+                }
         if self.track_unique:
             # Emitted only where uniqueness was actually looked for, so an absent
             # field reads as "not asked" rather than as "asked and found false".
             payload["unique"] = self.unique
         return payload
+
+    def values_withheld(self) -> dict[str, object] | None:
+        """Why this column's value list is not in the manifest, or ``None`` if it is."""
+        if self.free_text is False:
+            return None
+        clause = self._free_text_clause()
+        if self.free_text is True:
+            payload: dict[str, object] = {"reason": "free_text", "rule": "declared"}
+            payload["source"] = self.free_text_source
+        elif clause is not None:
+            payload = {"reason": "free_text", "rule": FREE_TEXT_RULE_ID, "clause": clause}
+        else:
+            return None
+        # The statistics the structural rule reads, recorded whichever rule
+        # decided, so a verdict can be checked against the profile.
+        payload["max_words"] = self._max_words
+        payload["max_length"] = self._max_length
+        payload["unrepeated_multiword_values"] = self._unrepeated_multiword()
+        return payload
+
+    def _unrepeated_multiword(self) -> int:
+        return sum(1 for count in self._multiword.values() if count == 1)
+
+    def _structurally_free_text(self) -> bool:
+        return self._free_text_clause() is not None
+
+    def _free_text_clause(self) -> str | None:
+        if self._max_words >= _PROSE_WORDS or self._max_length > _PROSE_LENGTH:
+            return "prose"
+        if self._unrepeated_multiword():
+            return "unrepeated-words"
+        return None
 
 
 def new_column(name: str, position: int) -> ColumnProfile:
@@ -378,12 +479,24 @@ def _observe(column: ColumnProfile, raw: str, convention: MissingValueConvention
             column._keys_overflowed = True
             column._keys_seen.clear()
     if not column._overflowed:
+        if value not in column._seen:
+            # Measured once per distinct value, and only while a list is still
+            # possible: the free-text verdict concerns exactly the values that
+            # would be listed.
+            words = sum(1 for token in value.split() if len(_LETTER.findall(token)) >= 2)
+            column._max_words = max(column._max_words, words)
+            column._max_length = max(column._max_length, len(value))
+            if words >= 2:
+                column._multiword[value] = 0
+        if value in column._multiword:
+            column._multiword[value] += 1
         column._seen.add(value)
         if len(column._seen) > _MAX_ENUMERATED_DISTINCT:
             column._overflowed = True
             column.distinct_exact = False
             column.distinct = len(column._seen)
             column._seen.clear()
+            column._multiword.clear()
     else:
         column.distinct += 1  # Upper bound: see ``distinct_exact``.
 
