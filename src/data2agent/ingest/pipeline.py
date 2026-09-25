@@ -111,6 +111,10 @@ def ingest(
     # so it goes to provenance: the manifest names the backend per sheet but
     # never a version, which would break its byte-identity across installs.
     workbook_readers: dict[str, str | None] = {}
+    # Declared table paths whose profile was actually produced under the
+    # declared layout, in THIS ingest. Tracked here rather than on the
+    # declarations object, which is immutable and may be reused across ingests.
+    applied_layouts: set[str] = set()
 
     _record_dataset_claims(ledger, identity, inventory, active_convention)
 
@@ -148,6 +152,8 @@ def ingest(
                 warnings.append(f"{entry.path}: could not be read as a delimited table")
             else:
                 tables[entry.path] = profile.as_dict()
+                if _declared_layout_applied(profile.layout):
+                    applied_layouts.add(entry.path)
                 warnings.extend(f"{entry.path}: {note}" for note in profile.warnings)
                 _record_table_claims(ledger, entry, profile, active_convention)
                 _record_header_claim(ledger, entry, entry.path, profile.layout, layouts)
@@ -217,6 +223,8 @@ def ingest(
                     layout_for=layouts.for_table if layouts else None,
                 ):
                     tables[sheet.path] = sheet.as_dict()
+                    if sheet.profiled and _declared_layout_applied(sheet.layout):
+                        applied_layouts.add(sheet.path)
                     warnings.extend(f"{sheet.path}: {note}" for note in sheet.warnings)
                     _record_sheet_claims(ledger, entry, sheet, active_convention)
                     _record_header_claim(
@@ -308,12 +316,13 @@ def ingest(
                     ],
                 )
 
-    if layouts is not None and (unmatched := layouts.unmatched()):
+    if layouts is not None and (unapplied := layouts.unapplied(applied_layouts)):
         raise LayoutError(
-            f"layout declaration {layouts.name!r} names {len(unmatched)} table(s) that this "
-            f"ingest did not profile: {unmatched}. Table paths are '<file>' for a delimited "
-            f"file and '<workbook>#<sheet>' for a worksheet, exactly as manifest.tables "
-            f"keys them; profiled tables: {sorted(tables)}"
+            f"layout declaration {layouts.name!r} names {len(unapplied)} table(s) that this "
+            f"ingest could not apply it to: {unapplied}. Either no such table exists -- "
+            f"table paths are '<file>' for a delimited file and '<workbook>#<sheet>' for a "
+            f"worksheet, exactly as manifest.tables keys them -- or the file could not be "
+            f"profiled as a table. Profiled tables: {sorted(tables)}"
         )
 
     drift = _verify_source_unchanged(source, inventory, excludes)
@@ -580,6 +589,11 @@ def _record_file_claims(ledger: EvidenceLedger, entry: FileEntry) -> None:
             )
         ],
     )
+
+
+def _declared_layout_applied(layout: HeaderLayout | None) -> bool:
+    """Whether a table profile was produced under a declared layout."""
+    return layout is not None and layout.declared is not None
 
 
 _HOW_CHOSEN = {

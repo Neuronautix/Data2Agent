@@ -511,3 +511,89 @@ def test_the_delimited_profile_records_header_fields_even_when_empty(tmp_path: P
     assert fields["header_row"] is None
     assert fields["header_source"] is None
     assert fields["rows"] == 0
+
+
+# ------------------------------------------- duplicate names and applied layouts
+
+
+def test_repeated_names_in_a_plain_csv_header_stay_addressable(tmp_path: Path):
+    """On main the later of two same-named columns shadowed the earlier one."""
+    source = _dataset(tmp_path, {"t.csv": "id,score,score,score.1\na,1,2,3\nb,4,5,6\n"})
+    output = tmp_path / "out"
+    result = ingest(source, output)
+    table = result.manifest["tables"]["t.csv"]
+
+    names = [c["name"] for c in table["columns"]]
+    # Suffixed against emitted names: the literal 'score.1' is not duplicated.
+    assert names == ["id", "score", "score.1", "score.1.1"]
+    assert [c["position"] for c in table["columns"]] == [0, 1, 2, 3]
+    assert any("repeats 2 column name(s)" in w for w in result.warnings)
+
+    service = DatasetService(output)
+    rows = service.read_rows("t.csv")["rows"]
+    assert rows[0]["values"] == {"id": "a", "score": 1, "score.1": 2, "score.1.1": 3}
+    assert rows[1]["values"] == {"id": "b", "score": 4, "score.1": 5, "score.1.1": 6}
+
+    matched = service.filter_rows(
+        "t.csv", filters=[{"column": "score.1", "op": "eq", "value": 5}], columns=["id"]
+    )
+    assert [row["values"]["id"] for row in matched["rows"]] == ["b"]
+
+
+def test_a_detected_scoring_header_keeps_every_repeated_metric(tmp_path: Path):
+    source = _dataset(tmp_path, {"scores.tsv": SCORING_TSV})
+    output = tmp_path / "out"
+    table = ingest(source, output).manifest["tables"]["scores.tsv"]
+    names = [c["name"] for c in table["columns"]]
+    assert names[3:] == ["Duration", "Count", "Duration.1", "Count.1"]
+
+    rows = DatasetService(output).read_rows("scores.tsv", columns=names[3:])["rows"]
+    assert rows[0]["values"] == {"Duration": 12.5, "Count": 3, "Duration.1": 4.0, "Count.1": 2}
+    assert rows[2]["values"] == {"Duration": 20.1, "Count": 5, "Duration.1": 1.5, "Count.1": 1}
+
+
+def test_duplicate_composed_labels_in_a_declared_tsv_header_stay_addressable(tmp_path: Path):
+    text = "\tA\tA\tB\nid\tscore\tscore\tscore\nr1\t1\t2\t3\nr2\t4\t5\t6\n"
+    source = _dataset(tmp_path, {"t.tsv": text})
+    declarations = parse_declarations(
+        {"layouts": {"t.tsv": {"header_row": 1, "header_rows": 2}}},
+        sha256="7" * 64,
+        name="l.json",
+    )
+    output = tmp_path / "out"
+    table = ingest(source, output, layouts=declarations).manifest["tables"]["t.tsv"]
+    names = [c["name"] for c in table["columns"]]
+    assert names == ["id", "A / score", "A / score.1", "B / score"]
+    assert table["columns"][2]["header_cells"] == ["A", "score"]
+
+    rows = DatasetService(output).read_rows("t.tsv")["rows"]
+    assert rows[0]["values"] == {"id": "r1", "A / score": 1, "A / score.1": 2, "B / score": 3}
+    assert rows[1]["values"] == {"id": "r2", "A / score": 4, "A / score.1": 5, "B / score": 6}
+
+
+def test_a_declaration_for_a_file_that_cannot_be_profiled_is_an_error(tmp_path: Path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "t.csv").write_bytes(b"id,score\n\xff\xfe,1\n")  # not UTF-8
+    declarations = parse_declarations(
+        {"layouts": {"t.csv": {"header_row": 1}}}, sha256="8" * 64, name="l.json"
+    )
+    output = tmp_path / "out"
+    with pytest.raises(LayoutError, match="could not apply"):
+        ingest(source, output, layouts=declarations)
+    assert not (output / "manifest.json").exists()
+
+
+def test_declarations_carry_no_state_between_ingests(tmp_path: Path):
+    declarations = parse_declarations(
+        {"layouts": {"t.csv": {"header_row": 1}}}, sha256="9" * 64, name="l.json"
+    )
+    first = _dataset(tmp_path, {"t.csv": "id,score\na,1\n"})
+    ingest(first, tmp_path / "out-1", layouts=declarations)
+
+    # Reusing the same object on a dataset without that table must still fail.
+    second = tmp_path / "other"
+    second.mkdir()
+    (second / "u.csv").write_text("id,score\na,1\n", encoding="utf-8")
+    with pytest.raises(LayoutError, match="t.csv"):
+        ingest(second, tmp_path / "out-2", layouts=declarations)

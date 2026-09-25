@@ -231,14 +231,18 @@ def profile_table(
             layout,
         )
 
-    columns = [
-        new_column(_header_name(name, index), index) for index, name in enumerate(layout.labels)
-    ]
+    names, renamed = _unique_names(
+        [_header_name(name, index) for index, name in enumerate(layout.labels)]
+    )
+    columns = [new_column(name, index) for index, name in enumerate(names)]
     if layout.header_cells is not None:
         for column, cells in zip(columns, layout.header_cells, strict=True):
             column.header_cells = cells
-    if len({column.name for column in columns}) != len(columns):
-        warnings.append("header contains duplicate column names; positions disambiguate them")
+    if renamed:
+        warnings.append(
+            f"header repeats {renamed} column name(s); each repeat is suffixed '.1', '.2', ... "
+            f"so that every column stays addressable by name"
+        )
 
     rows = 0
     ragged = 0
@@ -373,6 +377,35 @@ def _promote(current: str, observed: str) -> str:
     if current == observed:
         return current
     return _PROMOTIONS.get((current, observed), "string")
+
+
+def _unique_names(labels: list[str]) -> tuple[list[str], int]:
+    """Suffix repeated names '.1', '.2', ... and count how many were renamed.
+
+    Every consumer -- the name-keyed ``missing`` map, the row readers' column
+    specs, filters, joins -- addresses a column by name. Two columns sharing a
+    name therefore made the earlier one unreachable: a read returned the later
+    cell under both. Behavioural-scoring exports repeat metric names across
+    behaviours on every column, so this was not an edge case.
+
+    Suffixes are checked against what has been *emitted*, exactly as the
+    worksheet profiler does: suffixing against the original labels lets
+    ``['id', 'id', 'id.1']`` collapse into two ``'id.1'`` columns.
+    """
+    emitted: set[str] = set()
+    names: list[str] = []
+    renamed = 0
+    for label in labels:
+        name = label
+        if name in emitted:
+            renamed += 1
+            suffix = 1
+            while f"{label}.{suffix}" in emitted:
+                suffix += 1
+            name = f"{label}.{suffix}"
+        emitted.add(name)
+        names.append(name)
+    return names, renamed
 
 
 def _header_name(name: str, index: int) -> str:

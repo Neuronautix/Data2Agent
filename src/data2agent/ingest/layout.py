@@ -190,23 +190,27 @@ class TableLayout:
         return payload
 
 
-@dataclass
+@dataclass(frozen=True)
 class LayoutDeclarations:
-    """A validated declaration file, and which of its tables were matched."""
+    """A validated declaration file. Immutable: it carries no state between ingests.
+
+    Which declared tables were actually *applied* is a fact about one ingest,
+    so the pipeline tracks it itself, and only once a table profile has been
+    produced under the declared layout. Marking a table on lookup would count a
+    declared file that then failed to decode as applied -- and the manifest
+    would claim a declaration governed a table it never touched.
+    """
 
     tables: dict[str, TableLayout]
     sha256: str
     name: str
-    _used: set[str] = field(default_factory=set, repr=False)
 
     def for_table(self, path: str) -> TableLayout | None:
-        layout = self.tables.get(path)
-        if layout is not None:
-            self._used.add(path)
-        return layout
+        return self.tables.get(path)
 
-    def unmatched(self) -> list[str]:
-        return sorted(set(self.tables) - self._used)
+    def unapplied(self, applied: set[str]) -> list[str]:
+        """Declared table paths not in ``applied``, sorted."""
+        return sorted(set(self.tables) - applied)
 
     def manifest_record(self) -> dict[str, Any]:
         """What the manifest carries: content identity only, never a local path.

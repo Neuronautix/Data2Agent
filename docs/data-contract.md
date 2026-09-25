@@ -228,8 +228,14 @@ to its left, which is how a label merged or centred across a group of columns
 reads; the fill stops where a row above starts a new label and where nothing
 below names the column, and the lowest row is never filled. Each column of a
 multi-row header records its cells as written in `header_cells`, so every fill
-is auditable. Duplicate composed names are disambiguated exactly as single-row
-names are.
+is auditable.
+
+Column names are unique within a table, because every reader addresses a column
+by name. A repeated name -- single-row or composed, in a worksheet or a CSV/TSV
+-- is suffixed `.1`, `.2`, ... against the names already emitted, so
+`id, id, id.1` becomes `id, id.1, id.1.1`, and a warning counts the renames.
+Before D2A-97 a delimited header kept its duplicates, and the later column
+shadowed the earlier one in every row read.
 
 Validation is strict: an unknown key, a non-positive or boolean row number, a
 `data_starts_row` inside the header, a `header_row` beyond the table, or a
