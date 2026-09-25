@@ -1286,6 +1286,8 @@ class DatasetService:
         right_key_format: str | None,
     ) -> tuple[KeyResolver, KeyResolver]:
         """Build both sides' key resolvers, refusing an undeclared crosswalk."""
+        if not left_keys or not right_keys:
+            raise ValueError("left_keys and right_keys must be non-empty")
         held: Crosswalk | None
         if crosswalk is None or isinstance(crosswalk, Crosswalk):
             held = crosswalk
@@ -1367,18 +1369,32 @@ class DatasetService:
             "right": mapping_facts(right_rows, right_resolver, other_keys=left_keys_seen),
         }
         payload["key_mapping"] = key_mapping
+        rendered = [
+            side for side in ("left", "right") if key_mapping[side].get("rendering_collisions")
+        ]
         colliding = [side for side in ("left", "right") if key_mapping[side].get("collisions")]
+        reasons = []
+        if rendered:
+            reasons.append(
+                "rendering collision on "
+                + ", ".join(rendered)
+                + ": distinct raw keys render to the same value "
+                "(see key_mapping.*.rendering_collisions)"
+            )
         if colliding:
+            reasons.append(
+                "crosswalk collision on "
+                + ", ".join(colliding)
+                + ": one table writes one canonical ID in more than one form "
+                "(see key_mapping.*.collisions)"
+            )
+        if reasons:
             payload.update(
                 {
                     "rows": [],
                     "returned": 0,
-                    "content_withheld": (
-                        "crosswalk collision on "
-                        + ", ".join(colliding)
-                        + ": one table writes one canonical ID in more than one form; "
-                        "joining would silently merge them (see key_mapping.*.collisions)"
-                    ),
+                    "content_withheld": "; ".join(reasons)
+                    + "; joining would silently merge distinct keys",
                 }
             )
             return payload

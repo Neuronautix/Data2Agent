@@ -277,7 +277,13 @@ every declared key column of its side and nothing else. Rendering is
 concatenation of values as read (non-strings via `str()`), not normalisation;
 the rendered string is then looked up in the crosswalk like any other form. A
 key_format may also be declared without a crosswalk, in which case the rendered
-string is compared by exact equality.
+string is compared by exact equality. Rendering is checked for injectivity on the
+actual values: if two distinct raw keys in one table render to the same text
+(`("1","23")` and `("12","3")` under `{a}{b}`), that is a **rendering
+collision**, reported under `rendering_collisions` with the raw tuples and
+source rows, detected before any crosswalk lookup. A declared relationship with
+one is `rejected`, and `join_tables` withholds its rows. A template with two
+placeholders side by side and no separator is warned about at assessment.
 
 **What a lookup does.**
 

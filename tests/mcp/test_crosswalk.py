@@ -392,6 +392,80 @@ def test_cli_refuses_a_conflicting_crosswalk(tmp_path: Path, capsys):
     assert not (output / "relationships.json").exists()
 
 
+AMBIGUOUS = "cage,tail,x\nc1,23,1\nc12,3,2\n"
+
+
+def _ambiguous(tmp_path: Path, crosswalk: str | None):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "a.csv").write_text(AMBIGUOUS, encoding="utf-8")
+    (source / "b.csv").write_text("animal,y\nc123,10\n", encoding="utf-8")
+    output = ingest(source, tmp_path / "out").output_dir
+    crosswalks = []
+    if crosswalk is not None:
+        path = tmp_path / "ids.csv"
+        path.write_text(crosswalk, encoding="utf-8")
+        crosswalks = [load_crosswalk_file(path, name="ids")]
+    declaration = {
+        "left": "a.csv",
+        "right": "b.csv",
+        "left_keys": ["cage", "tail"],
+        "right_keys": ["animal"],
+        "left_key_format": "{cage}{tail}",
+    }
+    if crosswalk is not None:
+        declaration["key_crosswalk"] = "ids"
+    bundle = DatasetService(output, load_relationships=False).build_relationships(
+        [declaration], crosswalks=crosswalks
+    )
+    (output / "relationships.json").write_text(json.dumps(bundle), encoding="utf-8")
+    return output, _declared(bundle)
+
+
+@pytest.mark.parametrize(
+    "crosswalk", [None, "canonical_id,form\nS-1,c123\n"], ids=["no-crosswalk", "crosswalk"]
+)
+def test_a_non_injective_key_format_is_a_rendering_collision_not_a_merge(
+    tmp_path: Path, crosswalk: str | None
+):
+    output, relation = _ambiguous(tmp_path, crosswalk)
+
+    assert relation["status"] == "rejected"
+    assert any("rendering collision on the left side" in r for r in relation["rejection_reasons"])
+    assert any("no separator" in warning for warning in relation["warnings"])
+    assert relation["key_mapping"]["left"]["rendering_collisions"] == [
+        {
+            "rendered": "c123",
+            "raw_keys": [
+                {"raw": ["c1", 23], "source_rows": [2]},
+                {"raw": ["c12", 3], "source_rows": [3]},
+            ],
+        }
+    ]
+    service = DatasetService(output)
+    with pytest.raises(ValueError, match="only declared or deterministic"):
+        service.join_relationship(relation["id"])
+    adhoc = service.join_tables(
+        "a.csv",
+        "b.csv",
+        left_keys=["cage", "tail"],
+        right_keys=["animal"],
+        left_key_format="{cage}{tail}",
+        crosswalk="ids" if crosswalk is not None else None,
+    )
+    assert adhoc["rows"] == []
+    assert "rendering collision on left" in adhoc["content_withheld"]
+
+
+def test_empty_keys_with_a_crosswalk_fail_validation_not_with_an_index_error(tmp_path: Path):
+    output, crosswalk_path = _dataset(tmp_path)
+    _build(output, crosswalk_path)
+    with pytest.raises(ValueError, match="left_keys and right_keys must be non-empty"):
+        DatasetService(output).join_tables(
+            "registry.csv", "sessions.csv", left_keys=[], right_keys=["animal"], crosswalk="ids"
+        )
+
+
 def test_a_key_format_alone_renders_a_composite_key_for_exact_comparison(tmp_path: Path):
     source = tmp_path / "source"
     source.mkdir()

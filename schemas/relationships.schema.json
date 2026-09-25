@@ -314,7 +314,8 @@
       "required": [
         "keys",
         "unmatched_distinct_keys",
-        "unmatched_examples"
+        "unmatched_examples",
+        "rendering_collisions"
       ],
       "properties": {
         "keys": {
@@ -394,6 +395,33 @@
                   "type": "object",
                   "required": [
                     "form",
+                    "source_rows"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "rendering_collisions": {
+          "type": "array",
+          "description": "rendered keys (key_format or text rendering) produced by more than one distinct raw key in this table, detected before any crosswalk lookup; any rendering collision rejects a declared relationship",
+          "items": {
+            "type": "object",
+            "required": [
+              "rendered",
+              "raw_keys"
+            ],
+            "properties": {
+              "rendered": {
+                "type": "string"
+              },
+              "raw_keys": {
+                "type": "array",
+                "minItems": 2,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "raw",
                     "source_rows"
                   ]
                 }

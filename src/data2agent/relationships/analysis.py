@@ -159,6 +159,14 @@ def assess_relationship(
             ),
         }
         for side in ("left", "right"):
+            rendered = key_mapping[side].get("rendering_collisions") or []
+            if rendered and status in {"declared", "deterministic"}:
+                final_status = "rejected"
+                rejection_reasons.append(
+                    f"rendering collision on the {side} side: {len(rendered)} rendered key(s) "
+                    "are produced by more than one distinct raw key, so the rendered key "
+                    "cannot tell those subjects apart"
+                )
             collisions = key_mapping[side].get("collisions") or []
             if collisions and status in {"declared", "deterministic"}:
                 final_status = "rejected"
@@ -170,8 +178,18 @@ def assess_relationship(
 
     warnings: list[str] = []
     if key_mapping is not None:
-        for side in ("left", "right"):
+        for side, resolver in (("left", left_resolver), ("right", right_resolver)):
             facts = key_mapping[side]
+            if resolver.key_format is not None and resolver.key_format.adjacent_placeholders:
+                warnings.append(
+                    f"{side}_key_format {resolver.key_format.template!r} places key columns "
+                    "side by side with no separator, so distinct raw keys can render alike"
+                )
+            if facts.get("rendering_collisions"):
+                warnings.append(
+                    f"{side}: {len(facts['rendering_collisions'])} rendered key(s) come from "
+                    "more than one distinct raw key (reported, not merged)"
+                )
             if facts.get("collisions"):
                 warnings.append(
                     f"{side}: {len(facts['collisions'])} canonical ID(s) collect more than one "

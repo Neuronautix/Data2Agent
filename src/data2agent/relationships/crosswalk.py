@@ -252,6 +252,21 @@ class KeyFormat:
             text if kind == "literal" else render_text(values[text]) for kind, text in self.parts
         )
 
+    @property
+    def adjacent_placeholders(self) -> list[tuple[str, str]]:
+        """Placeholder pairs with no literal between them, e.g. ``{cage}{tail}``.
+
+        Such a template is not injective: ("1", "23") and ("12", "3") both
+        render "123". It is not refused outright -- the data may never hit the
+        ambiguity, and rendering collisions are detected on the actual values --
+        but the declaration is warned that the separator is missing.
+        """
+        return [
+            (first[1], second[1])
+            for first, second in zip(self.parts, self.parts[1:], strict=False)
+            if first[0] == "column" and second[0] == "column"
+        ]
+
 
 def parse_key_format(template: str, keys: list[str], *, side: str) -> KeyFormat:
     """Parse ``{column}`` placeholders; ``{{`` and ``}}`` are literal braces.
@@ -327,6 +342,10 @@ class KeyResolver:
     as_text: bool = False
 
     def __post_init__(self) -> None:
+        # Checked first: every message below names key columns, and an empty
+        # key list must fail as the validation error it is, not an IndexError.
+        if not self.keys:
+            raise CrosswalkError(f"{self.side}_keys must be non-empty")
         if self.as_text and self.key_format is None and len(self.keys) != 1:
             raise CrosswalkError(
                 f"{self.side}_keys has {len(self.keys)} columns but the other side renders "
@@ -403,7 +422,16 @@ def mapping_facts(
     crosswalk maps to one canonical ID. It is reported, never merged: if the
     crosswalk is right, the table holds one animal under two spellings; if it
     is wrong, it would merge two animals. Only a person can say which.
+
+    A rendering collision comes earlier, before any crosswalk lookup: two
+    *different* raw keys that render to the same text -- ("1", "23") and
+    ("12", "3") under ``{a}{b}``, or the integer 7 and the string "7". The
+    written forms are then identical, so the crosswalk check above cannot see
+    it; it is detected here by tracking which raw tuples produced each text.
     """
+    raw_by_text: dict[str, dict[tuple[Any, ...], list[Any]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
     mapped_rows = 0
     unmapped_rows = 0
     forms_by_canonical: dict[str, dict[str, list[Any]]] = defaultdict(lambda: defaultdict(list))
@@ -414,10 +442,13 @@ def mapping_facts(
         if key is None:
             continue
         keys_seen.add(key)
+        text = resolver.text(row["values"])
+        raw = resolver.raw(row["values"])
+        assert raw is not None
+        raw_by_text[text][raw].append(row.get("source_row"))
         if resolver.crosswalk is None:
             continue
         tag, value = key
-        text = resolver.text(row["values"])
         if tag == MAPPED:
             mapped_rows += 1
             forms_by_canonical[value][text].append(row.get("source_row"))
@@ -430,6 +461,19 @@ def mapping_facts(
         **resolver.describe(),
         "unmatched_distinct_keys": len(unmatched),
         "unmatched_examples": [key_label(key, resolver) for key in unmatched[:_MAX_EXAMPLES]],
+        "rendering_collisions": [
+            {
+                "rendered": text,
+                "raw_keys": [
+                    {"raw": list(raw), "source_rows": source_rows[:_MAX_EXAMPLES]}
+                    for raw, source_rows in sorted(
+                        by_raw.items(), key=lambda item: _sort_key(item[0])
+                    )
+                ],
+            }
+            for text, by_raw in sorted(raw_by_text.items())
+            if len(by_raw) > 1
+        ],
     }
     if resolver.crosswalk is None:
         return facts
