@@ -643,6 +643,7 @@ class DatasetService:
         unit_metrics: list[dict[str, Any]] | None = None,
         on_inconsistent_unit: str = "refuse",
         unit_sample: int = 50,
+        forms_per_canonical: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Aggregate over the complete result of a join, optionally by unit of analysis.
 
@@ -682,7 +683,8 @@ class DatasetService:
         contract: dict[str, Any] | None = None
         if relationship_id is not None:
             if any(value is not None for value in explicit) or any(
-                value is not None for value in (crosswalk, left_key_format, right_key_format)
+                value is not None
+                for value in (crosswalk, left_key_format, right_key_format, forms_per_canonical)
             ):
                 raise ValueError(
                     "give either relationship_id or an explicit join (left/right/left_keys/"
@@ -694,6 +696,7 @@ class DatasetService:
             crosswalk = spec["crosswalk"]
             left_key_format = spec["left_key_format"]
             right_key_format = spec["right_key_format"]
+            forms_per_canonical = spec["forms_per_canonical"]
         elif any(value is None for value in explicit):
             raise ValueError(
                 "aggregate_join needs relationship_id, or all of left, right, left_keys "
@@ -712,6 +715,7 @@ class DatasetService:
             crosswalk=crosswalk,
             left_key_format=left_key_format,
             right_key_format=right_key_format,
+            forms_per_canonical=forms_per_canonical,
         )
         resolved = left_resolver.transforms or right_resolver.transforms
         mapped = left_resolver.crosswalk is not None
@@ -763,6 +767,7 @@ class DatasetService:
             **({"crosswalk": crosswalk} if crosswalk is not None else {}),
             **({"left_key_format": left_key_format} if left_key_format else {}),
             **({"right_key_format": right_key_format} if right_key_format else {}),
+            **_forms_echo(left_resolver, right_resolver),
         }
         payload: dict[str, Any] = {
             "dataset_id": self.dataset_id,
@@ -956,8 +961,14 @@ class DatasetService:
         crosswalk: str | None = None,
         left_key_format: str | None = None,
         right_key_format: str | None = None,
+        forms_per_canonical: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Join two tables on caller-declared keys; no relationship is inferred.
+
+        ``forms_per_canonical`` ({"left"|"right": "one"|"many"}) is passed only
+        from a saved relationship's declaration (join_relationship); it is not
+        exposed as an MCP parameter, because letting the asker relax the
+        collision rule at query time would undo the point of declaring it.
 
         ``crosswalk`` names a crosswalk already declared in relationships.json;
         a caller cannot supply mappings of its own, because an identity asserted
@@ -972,6 +983,7 @@ class DatasetService:
             crosswalk=crosswalk,
             left_key_format=left_key_format,
             right_key_format=right_key_format,
+            forms_per_canonical=forms_per_canonical,
         )
         left_profile = self._table_profile(left)
         right_profile = self._table_profile(right)
@@ -1005,6 +1017,7 @@ class DatasetService:
                 **({"crosswalk": crosswalk} if crosswalk is not None else {}),
                 **({"left_key_format": left_key_format} if left_key_format else {}),
                 **({"right_key_format": right_key_format} if right_key_format else {}),
+                **_forms_echo(left_resolver, right_resolver),
             },
             "inputs": {"left": left_context, "right": right_context},
         }
@@ -1262,6 +1275,7 @@ class DatasetService:
             crosswalk=spec["crosswalk"],
             left_key_format=spec["left_key_format"],
             right_key_format=spec["right_key_format"],
+            forms_per_canonical=spec["forms_per_canonical"],
         )
         result["relationship_contract"] = contract
         return result
@@ -1303,6 +1317,14 @@ class DatasetService:
             "crosswalk": cited["name"] if cited is not None else None,
             "left_key_format": (mapping.get("left") or {}).get("key_format"),
             "right_key_format": (mapping.get("right") or {}).get("key_format"),
+            "forms_per_canonical": (
+                {
+                    side: (mapping.get(side) or {}).get("forms_per_canonical", "one")
+                    for side in ("left", "right")
+                }
+                if cited is not None
+                else None
+            ),
         }
         contract = {
             "id": relationship_id,
@@ -1310,6 +1332,15 @@ class DatasetService:
             "cardinality": record["cardinality"],
             "basis": record["basis"],
             **({"crosswalk": dict(cited)} if cited is not None else {}),
+            **(
+                {
+                    "cardinality_level": mapping.get("cardinality_level"),
+                    "form_level_cardinality": mapping.get("form_level_cardinality"),
+                    "forms_per_canonical": dict(spec["forms_per_canonical"]),
+                }
+                if cited is not None
+                else {}
+            ),
         }
         return spec, contract
 
@@ -1708,8 +1739,15 @@ class DatasetService:
         crosswalk: str | Crosswalk | None,
         left_key_format: str | None,
         right_key_format: str | None,
+        forms_per_canonical: dict[str, str] | None = None,
     ) -> tuple[KeyResolver, KeyResolver]:
         """Build both sides' key resolvers, refusing an undeclared crosswalk."""
+        forms = dict(forms_per_canonical or {})
+        unknown_sides = sorted(set(forms) - {"left", "right"})
+        if unknown_sides:
+            raise ValueError(
+                f"forms_per_canonical sides must be 'left'/'right', not {unknown_sides}"
+            )
         if not left_keys or not right_keys:
             raise ValueError("left_keys and right_keys must be non-empty")
         held: Crosswalk | None
@@ -1738,6 +1776,7 @@ class DatasetService:
                 crosswalk=held,
                 side="left",
                 as_text=rendered,
+                forms_per_canonical=forms.get("left", "one"),
             )
             right = KeyResolver(
                 list(right_keys),
@@ -1749,6 +1788,7 @@ class DatasetService:
                 crosswalk=held,
                 side="right",
                 as_text=rendered,
+                forms_per_canonical=forms.get("right", "one"),
             )
         except CrosswalkError as error:
             raise ValueError(str(error)) from error
@@ -1854,6 +1894,11 @@ class DatasetService:
             crosswalk=(crosswalks or {}).get(named) if named is not None else None,
             left_key_format=spec.get("left_key_format"),
             right_key_format=spec.get("right_key_format"),
+            forms_per_canonical={
+                side: spec[f"{side}_forms_per_canonical"]
+                for side in ("left", "right")
+                if f"{side}_forms_per_canonical" in spec
+            },
         )
 
         left_context, left_rows = self._scan_table(
@@ -1992,6 +2037,28 @@ def _validate_declaration(declaration: dict[str, Any], index: int) -> dict[str, 
         if not isinstance(named, str) or not named:
             raise ValueError(f"declaration {index} key_crosswalk must be a crosswalk name")
         result["key_crosswalk"] = named
+    if "forms_per_canonical" in declaration:
+        # Deliberately per side: the table that legitimately carries several
+        # forms per animal is one side; loosening the other (usually the
+        # registry, where two forms of one animal are exactly a bad merge)
+        # would be an unrequested relaxation.
+        raise ValueError(
+            f"declaration {index}: forms_per_canonical is declared per side -- use "
+            "left_forms_per_canonical and/or right_forms_per_canonical"
+        )
+    for side in ("left", "right"):
+        field = f"{side}_forms_per_canonical"
+        if field not in declaration:
+            continue
+        value = declaration[field]
+        if value not in ("one", "many"):
+            raise ValueError(f"declaration {index} {field} must be 'one' or 'many', not {value!r}")
+        if "key_crosswalk" not in result:
+            raise ValueError(
+                f"declaration {index} {field} applies only through a key_crosswalk, "
+                "and none is declared"
+            )
+        result[field] = value
     return result
 
 
@@ -2105,6 +2172,18 @@ def _project_joined_row(
     }
 
 
+def _forms_echo(left: KeyResolver, right: KeyResolver) -> dict[str, Any]:
+    """The per-side forms_per_canonical a join ran under, for the operation echo."""
+    if left.crosswalk is None:
+        return {}
+    return {
+        "forms_per_canonical": {
+            "left": left.forms_per_canonical,
+            "right": right.forms_per_canonical,
+        }
+    }
+
+
 def _resolve_join_keys(
     left_rows: list[dict[str, Any]],
     right_rows: list[dict[str, Any]],
@@ -2140,7 +2219,16 @@ def _resolve_join_keys(
         "right": mapping_facts(right_rows, right_resolver, other_keys=left_keys_seen),
     }
     rendered = [side for side in ("left", "right") if key_mapping[side].get("rendering_collisions")]
-    colliding = [side for side in ("left", "right") if key_mapping[side].get("collisions")]
+    # A side declared forms_per_canonical "many" keeps its collisions in
+    # key_mapping (reported in full) but they do not refuse the join; rendering
+    # collisions always do -- distinct raw keys becoming one string is a
+    # different failure, and no declaration makes it safe.
+    colliding = [
+        side
+        for side in ("left", "right")
+        if key_mapping[side].get("collisions")
+        and key_mapping[side].get("forms_per_canonical") != "many"
+    ]
     reasons = []
     if rendered:
         reasons.append(

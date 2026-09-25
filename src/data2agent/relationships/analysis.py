@@ -23,7 +23,10 @@ from .crosswalk import KeyResolver, key_label, mapping_facts
 
 # 0.2.0: optional declared key mapping (crosswalk and/or key_format) per record
 # and the bundle-level ``crosswalks`` registry. Bundles without them read as 0.1.0.
-RELATIONSHIP_VERSION = "0.2.0"
+# 0.3.0: per-side ``forms_per_canonical`` in key_mapping, which changes whether
+# a same-table crosswalk collision rejects; plus form-level counts and
+# ``cardinality_level`` / ``form_level_cardinality`` beside the cardinality.
+RELATIONSHIP_VERSION = "0.3.0"
 STATUSES = frozenset({"declared", "deterministic", "candidate", "rejected"})
 CARDINALITIES = frozenset({"one_to_one", "one_to_many", "many_to_one", "many_to_many"})
 _MAX_EVIDENCE_KEYS = 10
@@ -158,6 +161,11 @@ def assess_relationship(
                 "by the declared key_format; no crosswalk was applied"
             ),
         }
+        if left_resolver.crosswalk is not None:
+            left_forms = key_mapping["left"]["form_level"]["forms_unique"]
+            right_forms = key_mapping["right"]["form_level"]["forms_unique"]
+            key_mapping["cardinality_level"] = "canonical_id"
+            key_mapping["form_level_cardinality"] = _cardinality(left_forms, right_forms)
         for side in ("left", "right"):
             rendered = key_mapping[side].get("rendering_collisions") or []
             if rendered and status in {"declared", "deterministic"}:
@@ -168,7 +176,8 @@ def assess_relationship(
                     "cannot tell those subjects apart"
                 )
             collisions = key_mapping[side].get("collisions") or []
-            if collisions and status in {"declared", "deterministic"}:
+            declared_many = key_mapping[side].get("forms_per_canonical") == "many"
+            if collisions and not declared_many and status in {"declared", "deterministic"}:
                 final_status = "rejected"
                 rejection_reasons.append(
                     f"crosswalk collision on the {side} side: {len(collisions)} canonical ID(s) "
@@ -190,7 +199,14 @@ def assess_relationship(
                     f"{side}: {len(facts['rendering_collisions'])} rendered key(s) come from "
                     "more than one distinct raw key (reported, not merged)"
                 )
-            if facts.get("collisions"):
+            if facts.get("collisions") and facts.get("forms_per_canonical") == "many":
+                warnings.append(
+                    f"{side}: {len(facts['collisions'])} canonical ID(s) are written in several "
+                    "forms in this table, as declared (forms_per_canonical 'many'); cardinality "
+                    "is per canonical ID, so each such ID's rows under all its forms join as one "
+                    "subject -- see key_mapping.*.form_level for the per-form counts"
+                )
+            elif facts.get("collisions"):
                 warnings.append(
                     f"{side}: {len(facts['collisions'])} canonical ID(s) collect more than one "
                     "distinct written form in this table (reported, not merged)"

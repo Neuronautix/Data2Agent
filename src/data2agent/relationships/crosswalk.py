@@ -52,6 +52,15 @@ _BOM = "﻿"
 MAPPED = "canonical"
 UNMAPPED = "unmapped"
 
+# How many written forms of one canonical ID a single table may carry.
+# "one" (the default) treats two forms of one canonical ID in one table as a
+# collision that rejects the relationship: it is how a wrong crosswalk would
+# merge two animals. "many" is a declared fact about a table whose rows are
+# legitimately keyed by several forms per subject -- one behaviour-scoring
+# observation id per session, each mapped to the same animal. It is never
+# inferred, only declared per side, and it relaxes nothing else.
+FORMS_PER_CANONICAL = ("one", "many")
+
 
 class CrosswalkError(ValueError):
     """A crosswalk file or declaration that cannot be used as written."""
@@ -340,12 +349,23 @@ class KeyResolver:
     crosswalk: Crosswalk | None = None
     side: str = "left"
     as_text: bool = False
+    forms_per_canonical: str = "one"
 
     def __post_init__(self) -> None:
         # Checked first: every message below names key columns, and an empty
         # key list must fail as the validation error it is, not an IndexError.
         if not self.keys:
             raise CrosswalkError(f"{self.side}_keys must be non-empty")
+        if self.forms_per_canonical not in FORMS_PER_CANONICAL:
+            raise CrosswalkError(
+                f"{self.side}_forms_per_canonical must be one of {list(FORMS_PER_CANONICAL)}, "
+                f"not {self.forms_per_canonical!r}"
+            )
+        if self.forms_per_canonical == "many" and self.crosswalk is None:
+            raise CrosswalkError(
+                f"{self.side}_forms_per_canonical 'many' needs a key_crosswalk: without one "
+                "there are no canonical IDs for several forms to share"
+            )
         if self.as_text and self.key_format is None and len(self.keys) != 1:
             raise CrosswalkError(
                 f"{self.side}_keys has {len(self.keys)} columns but the other side renders "
@@ -395,6 +415,8 @@ class KeyResolver:
         described: dict[str, Any] = {"keys": list(self.keys)}
         if self.key_format is not None:
             described["key_format"] = self.key_format.template
+        if self.crosswalk is not None:
+            described["forms_per_canonical"] = self.forms_per_canonical
         return described
 
 
@@ -478,16 +500,25 @@ def mapping_facts(
     if resolver.crosswalk is None:
         return facts
 
+    # Every colliding canonical ID and every one of its forms is listed, with
+    # the form's full row count; only the source-row locators are bounded.
     collisions = [
         {
             "canonical_id": canonical,
             "forms": [
-                {"form": form, "source_rows": source_rows[:_MAX_EXAMPLES]}
+                {
+                    "form": form,
+                    "rows": len(source_rows),
+                    "source_rows": source_rows[:_MAX_EXAMPLES],
+                }
                 for form, source_rows in sorted(by_form.items())
             ],
         }
         for canonical, by_form in sorted(forms_by_canonical.items())
         if len(by_form) > 1
+    ]
+    rows_per_form = [
+        sum(len(source_rows) for source_rows in by_raw.values()) for by_raw in raw_by_text.values()
     ]
     canonical_ids = resolver.crosswalk.canonical_ids
     shadowing = sorted(value for value in unmapped_values if value in canonical_ids)
@@ -504,6 +535,17 @@ def mapping_facts(
             ],
             "unmapped_values_equal_to_a_canonical_id": shadowing[:_MAX_EXAMPLES],
             "collisions": collisions,
+            # Raw-form level, beside the canonical-level facts on the endpoint:
+            # "one animal, three observation ids" must stay distinguishable
+            # from "one animal, one row".
+            "form_level": {
+                "distinct_forms": len(raw_by_text),
+                "forms_unique": all(count == 1 for count in rows_per_form),
+                "canonical_ids_with_several_forms": len(collisions),
+                "max_forms_per_canonical_id": max(
+                    (len(by_form) for by_form in forms_by_canonical.values()), default=0
+                ),
+            },
         }
     )
     return facts
