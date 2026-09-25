@@ -43,6 +43,25 @@ as `<workbook>#<sheet>`. This tool returns the **recorded structural profile**,
 not the source observations: rows, columns, token shapes, missingness and
 warnings. Use `read_rows` when the actual values are needed.
 
+`header_row`, `header_source` and `header_detection` say which row named the
+columns and why (D2A-97). `rows_above_data_available` counts the rows above the
+data that the column names do not show: a title, banner or `key: value`
+preamble the header rule skipped, and every row of a multi-row header. They can
+carry facts no column holds, such as a session date written above the header.
+Call `inspect_table(path, include_rows_above_data=true)` to read them:
+
+| Field | Meaning |
+| --- | --- |
+| `rows_above_data[].row` | 1-based worksheet row, or the line a CSV/TSV record starts on |
+| `rows_above_data[].role` | `skipped` (with `reason`: `sparse`, `key-value-label`, `declared`) or `header` |
+| `rows_above_data[].cells[]` | non-empty cells only: `position` (0-based), `column_letter`, `table_column` (the column at that position, if any), `value` |
+| `cells_truncated` / `rows_truncated` | the `max_cells` / `max_rows` bound cut the answer; ask again with a larger bound |
+
+Values are normalised as `read_rows` normalises a cell (dates ISO 8601, a token
+the convention resolves becomes `null` with its raw form in `missing`). The cells
+are read from the checksum-verified file; if it changed, they are withheld with
+`content_withheld`.
+
 Per column:
 
 | Field | Meaning |

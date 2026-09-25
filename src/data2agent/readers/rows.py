@@ -103,17 +103,7 @@ def read_workbook_rows(
     data_starts_row = profile.get("data_starts_row")
     first_data_row = int(data_starts_row) if data_starts_row is not None else int(header_row) + 1
 
-    sheet_name = profile.get("sheet")
-    if not sheet_name:
-        raise KeyError("worksheet profile does not record a sheet name")
-
-    # Manifests written before D2A-94 carry no reader block; they were all
-    # profiled with openpyxl, which is therefore the only faithful default.
-    backend_name = (profile.get("reader") or {}).get("backend", workbook.OPENPYXL.name)
-    backend = workbook.BACKENDS.get(backend_name)
-    if backend is None:
-        raise KeyError(f"worksheet was profiled by an unknown reader {backend_name!r}")
-
+    sheet_name, backend = _sheet_and_backend(profile)
     specs = _column_specs(profile, columns)
     rows: list[dict[str, Any]] = []
     with workbook.open_workbook(path, backend) as book:
@@ -132,6 +122,129 @@ def read_workbook_rows(
                 }
             )
     return rows
+
+
+def _sheet_and_backend(profile: dict[str, Any]) -> tuple[str, workbook.Backend]:
+    sheet_name = profile.get("sheet")
+    if not sheet_name:
+        raise KeyError("worksheet profile does not record a sheet name")
+    # Manifests written before D2A-94 carry no reader block; they were all
+    # profiled with openpyxl, which is therefore the only faithful default.
+    backend_name = (profile.get("reader") or {}).get("backend", workbook.OPENPYXL.name)
+    backend = workbook.BACKENDS.get(backend_name)
+    if backend is None:
+        raise KeyError(f"worksheet was profiled by an unknown reader {backend_name!r}")
+    return sheet_name, backend
+
+
+def rows_above_data(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """The non-blank rows above a table's data that its column names do not show.
+
+    Taken from the profile, never re-detected: the rows skipped as preamble,
+    banner or declared gap, plus -- for a multi-row header only -- the header
+    rows themselves, whose cells the composed names abbreviate. A one-row
+    header is fully visible as the column names, so a clean table lists none.
+    Counts only; the cells are read from the verified file by
+    :func:`read_rows_above_data`.
+    """
+    detection = profile.get("header_detection") or {}
+    listed: dict[int, dict[str, Any]] = {}
+    for item in detection.get("skipped_rows") or []:
+        listed[int(item["row"])] = {
+            "row": int(item["row"]),
+            "role": "skipped",
+            "reason": item.get("reason"),
+        }
+    header_row = profile.get("header_row")
+    header_rows = int(profile.get("header_rows") or 0)
+    if header_row is not None and header_rows > 1:
+        for offset in range(header_rows):
+            number = int(header_row) + offset
+            listed[number] = {"row": number, "role": "header", "reason": None}
+    return [listed[number] for number in sorted(listed)]
+
+
+def read_rows_above_data(
+    path: Path,
+    profile: dict[str, Any],
+    *,
+    max_rows: int,
+    max_cells: int,
+    convention: MissingValueConvention,
+) -> dict[str, Any]:
+    """Read the cells of :func:`rows_above_data`, bounded, from the verified file.
+
+    Cells are normalised exactly as :func:`read_delimited_rows` and
+    :func:`read_workbook_rows` normalise an untyped cell: a blank is skipped, a
+    token the convention resolves is null with its raw form kept, a date is ISO
+    8601, and a sheet number stays a number. No row carries a dtype, because
+    none was profiled for it, so a delimited cell stays the text the file holds.
+    Only non-blank cells are returned, each with its 0-based position, the
+    spreadsheet column letter, and the name of the table column at that
+    position when there is one.
+    """
+    wanted = rows_above_data(profile)
+    selected = wanted[:max_rows]
+    numbers = {item["row"] for item in selected}
+    raw: dict[int, Any] = {}
+    if numbers:
+        if profile.get("workbook"):
+            sheet_name, backend = _sheet_and_backend(profile)
+            first, last = min(numbers), max(numbers)
+            with workbook.open_workbook(path, backend) as book:
+                for number, record in enumerate(
+                    book.iter_rows(sheet_name, min_row=first), start=first
+                ):
+                    if number > last:
+                        break
+                    if number in numbers:
+                        raw[number] = record
+        else:
+            encoding = profile.get("encoding") or "utf-8"
+            last = max(numbers)
+            with path.open("r", encoding=encoding, newline="") as handle:
+                reader = csv.reader(handle, delimiter=profile["delimiter"])
+                for numbered in numbered_records(reader):
+                    if numbered.number > last:
+                        break
+                    if numbered.number in numbers:
+                        raw[numbered.number] = numbered.cells
+
+    names = {int(column["position"]): column["name"] for column in profile.get("columns", [])}
+    rows: list[dict[str, Any]] = []
+    for item in selected:
+        record = raw.get(item["row"], ())
+        cells: list[dict[str, Any]] = []
+        non_blank = 0
+        for position, value in enumerate(record):
+            normalised, reason = _normalise(value, "string", convention)
+            if reason is not None and reason["kind"] == "empty":
+                continue
+            non_blank += 1
+            if len(cells) >= max_cells:
+                continue
+            cell: dict[str, Any] = {
+                "position": position,
+                "column_letter": workbook.column_letter(position),
+                "table_column": names.get(position),
+                "value": normalised,
+            }
+            if reason is not None:
+                cell["missing"] = reason
+            cells.append(cell)
+        rows.append(
+            {
+                **item,
+                "cells": cells,
+                "non_empty_cells": non_blank,
+                "cells_truncated": non_blank > len(cells),
+            }
+        )
+    return {
+        "rows_above_data": rows,
+        "rows_available": len(wanted),
+        "rows_truncated": len(wanted) > len(selected),
+    }
 
 
 def _column_specs(profile: dict[str, Any], columns: list[str]) -> list[tuple[str, int, str]]:
