@@ -377,7 +377,7 @@
         },
         "collisions": {
           "type": "array",
-          "description": "canonical IDs written in more than one distinct form within this table; any collision rejects a declared relationship",
+          "description": "canonical IDs written in more than one distinct form within this table, every form listed with its full row count; rejects a declared relationship unless this side declares forms_per_canonical 'many'",
           "items": {
             "type": "object",
             "required": [
@@ -396,7 +396,21 @@
                   "required": [
                     "form",
                     "source_rows"
-                  ]
+                  ],
+                  "properties": {
+                    "form": {
+                      "type": "string"
+                    },
+                    "rows": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "description": "full row count of this form"
+                    },
+                    "source_rows": {
+                      "type": "array",
+                      "description": "bounded source-row locators"
+                    }
+                  }
                 }
               }
             }
@@ -426,6 +440,40 @@
                   ]
                 }
               }
+            }
+          }
+        },
+        "forms_per_canonical": {
+          "enum": [
+            "one",
+            "many"
+          ],
+          "description": "declared per side (left_forms_per_canonical / right_forms_per_canonical); 'one' (default) rejects a same-table crosswalk collision, 'many' reports it without rejecting. Present whenever a crosswalk applies. Never inferred."
+        },
+        "form_level": {
+          "type": "object",
+          "description": "raw written-form level facts beside the canonical-level endpoint facts",
+          "required": [
+            "distinct_forms",
+            "forms_unique",
+            "canonical_ids_with_several_forms",
+            "max_forms_per_canonical_id"
+          ],
+          "properties": {
+            "distinct_forms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "forms_unique": {
+              "type": "boolean"
+            },
+            "canonical_ids_with_several_forms": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_forms_per_canonical_id": {
+              "type": "integer",
+              "minimum": 0
             }
           }
         }
@@ -472,6 +520,19 @@
         },
         "note": {
           "type": "string"
+        },
+        "cardinality_level": {
+          "const": "canonical_id",
+          "description": "with a crosswalk, the record's cardinality/overlap are per canonical ID"
+        },
+        "form_level_cardinality": {
+          "enum": [
+            "one_to_one",
+            "one_to_many",
+            "many_to_one",
+            "many_to_many"
+          ],
+          "description": "cardinality from per-side uniqueness of raw written forms, for contrast with the canonical-level cardinality"
         }
       }
     }

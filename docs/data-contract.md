@@ -482,6 +482,45 @@ placeholders side by side and no separator is warned about at assessment.
 | not listed | passed through unchanged and counted; it matches only an identical unlisted value on the other side, never a canonical ID — even one it happens to equal (reported under `unmapped_values_equal_to_a_canonical_id`) |
 | two different forms in the **same table** mapping to one canonical ID | a **collision**: reported with source rows, never merged. A declared relationship with a collision is `rejected`; an ad-hoc `join_tables` withholds its rows |
 
+**Several forms per subject in one table** (`left_forms_per_canonical` /
+`right_forms_per_canonical`: `"one"` | `"many"`, default `"one"`). Some tables
+legitimately key one subject by several written forms -- a behaviour-scoring
+export with one observation id per session, each mapped by the crosswalk to the
+same animal. Under the default such a table is a collision and the relationship
+is rejected. Declaring that side `"many"` accepts it:
+
+```json
+{"left": "registry.csv", "right": "scoring.csv",
+ "left_keys": ["cage", "tail"], "right_keys": ["obs"],
+ "left_key_format": "{cage}-{tail}", "key_crosswalk": "ids",
+ "right_forms_per_canonical": "many"}
+```
+
+- It is declared **per side**, never inferred: the side that carries several
+  forms is one table, and loosening the other (typically the registry, where two
+  forms of one animal are exactly a bad merge) would be an unrequested
+  relaxation. A bare `forms_per_canonical` is refused and says so; `"many"`
+  without a `key_crosswalk` is refused; declaring it on a side without
+  collisions changes nothing.
+- The collisions are still computed and reported in full: every canonical ID,
+  every form with its full row count, bounded source rows. Only the rejection is
+  lifted.
+- **Rendering collisions still reject**, whatever the option: distinct raw keys
+  becoming one string is a different failure that no declaration makes safe.
+- The record labels its levels: `cardinality`, `matched_distinct_keys` and the
+  endpoints' `distinct_keys` are per canonical ID (`key_mapping.cardinality_level:
+  "canonical_id"`), and `key_mapping.<side>.form_level` gives the raw-form counts
+  (`distinct_forms`, `forms_unique`, `canonical_ids_with_several_forms`,
+  `max_forms_per_canonical_id`), with `key_mapping.form_level_cardinality` for
+  contrast -- so "one animal, three observation ids" is never read as one row.
+- Joins keep each row's raw form and canonical ID; `join_relationship` and
+  `aggregate_join` cite the option in `relationship_contract.forms_per_canonical`
+  and the operation echo. `aggregate_join` with `unit: ["key.canonical_id"]`
+  pools an animal's forms into one unit. The option is not an MCP parameter of
+  `join_tables`: only a saved declaration can relax the collision rule.
+- It does not change the relationship id (it is an acceptance rule, not a key
+  mapping); `relationships_version` is `0.3.0`.
+
 **Recorded facts.** Overlap, uniqueness, cardinality and completeness of a
 relationship declared through a crosswalk are computed on canonical IDs. The
 record gains `key_mapping`: the crosswalk cited by name and SHA-256, and per

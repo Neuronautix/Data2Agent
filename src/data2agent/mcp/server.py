@@ -346,6 +346,10 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         A relationship declared through an identifier crosswalk is joined through
         that exact crosswalk; each row carries both raw key values and the
         canonical ID, and the contract cites the crosswalk's name and sha256.
+        If a side was declared `forms_per_canonical: "many"` (several written
+        forms per subject in that table, e.g. one observation id per session),
+        the contract says so; cardinality is then per canonical ID, and
+        key_mapping.<side>.form_level gives the per-form counts.
         """
         return service.join_relationship(
             relationship_id,

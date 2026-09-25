@@ -199,8 +199,8 @@ def test_two_forms_of_one_canonical_id_in_one_table_are_a_collision_not_a_merge(
         {
             "canonical_id": "Z-7_L",
             "forms": [
-                {"form": "Z-7-L", "source_rows": [3]},
-                {"form": "Z7-L", "source_rows": [2]},
+                {"form": "Z-7-L", "rows": 1, "source_rows": [3]},
+                {"form": "Z7-L", "rows": 1, "source_rows": [2]},
             ],
         }
     ]
