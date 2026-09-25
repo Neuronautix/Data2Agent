@@ -164,14 +164,79 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         metrics: list[dict[str, Any]],
         group_by: list[str] | None = None,
         filters: list[dict[str, Any]] | None = None,
+        unit: list[str] | None = None,
+        unit_metrics: list[dict[str, Any]] | None = None,
+        on_inconsistent_unit: str = "refuse",
+        unit_sample: int = 50,
     ) -> dict[str, Any]:
         """Compute bounded deterministic summaries over a complete table scan.
 
-        Metrics are restricted to count, n_missing, sum, mean, min and max.
+        Metrics come from a closed registry: count, n_present, n_missing,
+        n_distinct, sum, mean, min, max, median, sd (sample, n-1) and sem.
+        Definitions are returned with every result; a null metric carries a reason.
+
+        If rows are repeated measures (time bins, trials), declare the
+        experimental unit, e.g. unit=["animal_id", "day"] with
+        unit_metrics=[{"op": "sum", "column": "duration"}]. Rows are first reduced
+        to one record per unit, then metrics summarise units: their columns name
+        unit_metrics outputs ("sum:duration") and count counts units. Each group
+        reports n_units, n_rows and the contributing unit ids. A unit whose rows
+        disagree on a group_by value refuses the result unless
+        on_inconsistent_unit="exclude". Without a unit, every row counts once.
+
         The call refuses a table above the complete-scan safety cap rather than
         returning a partial statistic that looks complete.
         """
-        return service.aggregate(path, group_by=group_by, metrics=metrics, filters=filters)
+        return service.aggregate(
+            path,
+            group_by=group_by,
+            metrics=metrics,
+            filters=filters,
+            unit=unit,
+            unit_metrics=unit_metrics,
+            on_inconsistent_unit=on_inconsistent_unit,
+            unit_sample=unit_sample,
+        )
+
+    def aggregate_join(
+        metrics: list[dict[str, Any]],
+        relationship_id: str | None = None,
+        left: str | None = None,
+        right: str | None = None,
+        left_keys: list[str] | None = None,
+        right_keys: list[str] | None = None,
+        how: str = "inner",
+        group_by: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        unit: list[str] | None = None,
+        unit_metrics: list[dict[str, Any]] | None = None,
+        on_inconsistent_unit: str = "refuse",
+        unit_sample: int = 50,
+    ) -> dict[str, Any]:
+        """Aggregate over a complete join, e.g. group measurements by a registry column.
+
+        Name the join by a declared relationship_id, or give left, right,
+        left_keys and right_keys explicitly. Every column reference (group_by,
+        unit, metrics, filters) is qualified as "left.<column>" or
+        "right.<column>". Metrics, units and missing values behave exactly as in
+        aggregate. Many-to-many joins are refused; both backing files are
+        re-checksummed and cited, with the join cardinality and diagnostics.
+        """
+        return service.aggregate_join(
+            metrics=metrics,
+            relationship_id=relationship_id,
+            left=left,
+            right=right,
+            left_keys=left_keys,
+            right_keys=right_keys,
+            how=how,
+            group_by=group_by,
+            filters=filters,
+            unit=unit,
+            unit_metrics=unit_metrics,
+            on_inconsistent_unit=on_inconsistent_unit,
+            unit_sample=unit_sample,
+        )
 
     def describe_variable(path: str, column: str) -> dict[str, Any]:
         """Describe one observed column without assigning scientific meaning to it."""
@@ -310,6 +375,7 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         "read_rows": read_rows,
         "filter_rows": filter_rows,
         "aggregate": aggregate,
+        "aggregate_join": aggregate_join,
         "describe_variable": describe_variable,
         "join_tables": join_tables,
         "list_relationships": list_relationships,

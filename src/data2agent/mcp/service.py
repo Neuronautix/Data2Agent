@@ -448,20 +448,38 @@ class DatasetService:
         group_by: list[str] | None = None,
         metrics: list[dict[str, Any]],
         filters: list[dict[str, Any]] | None = None,
+        unit: list[str] | None = None,
+        unit_metrics: list[dict[str, Any]] | None = None,
+        on_inconsistent_unit: str = "refuse",
+        unit_sample: int = 50,
     ) -> dict[str, Any]:
-        """Compute deterministic group summaries from a complete bounded table scan."""
+        """Compute deterministic group summaries from a complete bounded table scan.
+
+        Without ``unit`` every row is an observation. With ``unit`` the rows are
+        first reduced to one record per unit by ``unit_metrics`` and ``metrics``
+        then summarise units -- see :mod:`data2agent.query.units`.
+        """
         groups = list(group_by or [])
         rules = list(filters or [])
+        unit_columns = list(unit or [])
+        stage_one = list(unit_metrics or [])
+        if stage_one and not unit_columns:
+            raise ValueError("unit_metrics requires a unit declaration")
         profile = self._table_profile(path)
         available = [column["name"] for column in profile.get("columns", [])]
         dtypes = {column["name"]: column.get("dtype", "string") for column in profile["columns"]}
+        # With a unit, the group-stage metrics read unit_metrics outputs, not
+        # table columns, so only the unit stage decides which columns are read.
+        row_metrics = stage_one if unit_columns else metrics
         metric_columns = [
-            metric.get("column") for metric in metrics if isinstance(metric.get("column"), str)
+            metric.get("column")
+            for metric in row_metrics
+            if isinstance(metric, dict) and isinstance(metric.get("column"), str)
         ]
         filter_columns = [
             rule.get("column") for rule in rules if isinstance(rule.get("column"), str)
         ]
-        needed = _ordered_union(groups, metric_columns, filter_columns)
+        needed = _ordered_union(groups, unit_columns, metric_columns, filter_columns)
         _require_known_columns(path, available, needed)
 
         context, rows = self._scan_table(
@@ -478,6 +496,15 @@ class DatasetService:
                 "group_by": groups,
                 "metrics": metrics,
                 "filters": rules,
+                **(
+                    {
+                        "unit": unit_columns,
+                        "unit_metrics": stage_one,
+                        "on_inconsistent_unit": on_inconsistent_unit,
+                    }
+                    if unit_columns
+                    else {}
+                ),
             },
             "input": context,
             "scanned_rows": len(rows),
@@ -486,11 +513,242 @@ class DatasetService:
             payload.update({"groups": [], "content_withheld": context["content_withheld"]})
             return payload
 
-        selected = rows
-        if rules:
-            selected, _ = query.filter_rows(rows, rules, limit=len(rows))
-        result = query.aggregate_rows(selected, group_by=groups, metrics=metrics, dtypes=dtypes)
-        payload.update({"rows_included": len(selected), "groups": result})
+        payload.update(
+            _summarise(
+                rows,
+                dtypes=dtypes,
+                group_by=groups,
+                metrics=metrics,
+                filters=rules,
+                unit=unit_columns,
+                unit_metrics=stage_one,
+                on_inconsistent_unit=on_inconsistent_unit,
+                unit_sample=unit_sample,
+            )
+        )
+        return payload
+
+    def aggregate_join(
+        self,
+        *,
+        metrics: list[dict[str, Any]],
+        relationship_id: str | None = None,
+        left: str | None = None,
+        right: str | None = None,
+        left_keys: list[str] | None = None,
+        right_keys: list[str] | None = None,
+        how: str = "inner",
+        group_by: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        unit: list[str] | None = None,
+        unit_metrics: list[dict[str, Any]] | None = None,
+        on_inconsistent_unit: str = "refuse",
+        unit_sample: int = 50,
+    ) -> dict[str, Any]:
+        """Aggregate over the complete result of a join, optionally by unit of analysis.
+
+        The grouping variable of an experiment often lives in a different table
+        from the measurement (genotype in a registry, durations in a behaviour
+        sheet). ``join_tables`` returns at most 1,000 joined rows, so summarising
+        its output would summarise a page, not the data. This runs the same join
+        to completion inside the bounds and aggregates that.
+
+        Columns are addressed as ``left.<column>`` or ``right.<column>``: the
+        prefix is split at the first dot only, so column names may themselves
+        contain dots. An unqualified name is refused rather than resolved,
+        because a name present on both sides is exactly the case where guessing
+        is wrong.
+
+        A many-to-many join is refused: it multiplies rows within each key, and
+        a sum or mean over multiplied rows has no scientific reading.
+        """
+        groups = list(group_by or [])
+        rules = list(filters or [])
+        unit_columns = list(unit or [])
+        stage_one = list(unit_metrics or [])
+        if stage_one and not unit_columns:
+            raise ValueError("unit_metrics requires a unit declaration")
+
+        explicit = (left, right, left_keys, right_keys)
+        contract: dict[str, Any] | None = None
+        if relationship_id is not None:
+            if any(value is not None for value in explicit):
+                raise ValueError(
+                    "give either relationship_id or left/right/left_keys/right_keys, not both"
+                )
+            record = self.get_relationship(relationship_id)["relationship"]
+            if record["status"] not in {"declared", "deterministic"}:
+                raise ValueError(
+                    f"relationship {relationship_id!r} has status {record['status']!r}; "
+                    "only declared or deterministic relationships can drive a named join"
+                )
+            left, right = record["left"]["table"], record["right"]["table"]
+            left_keys = list(record["left"]["keys"])
+            right_keys = list(record["right"]["keys"])
+            contract = {
+                "id": relationship_id,
+                "status": record["status"],
+                "cardinality": record["cardinality"],
+                "basis": record["basis"],
+            }
+        elif any(value is None for value in explicit):
+            raise ValueError(
+                "aggregate_join needs relationship_id, or all of left, right, left_keys "
+                "and right_keys"
+            )
+        assert left is not None and right is not None
+        left_keys = [str(key) for key in left_keys or []]
+        right_keys = [str(key) for key in right_keys or []]
+        if how not in query.JOIN_TYPES:
+            raise ValueError(
+                f"unsupported join type {how!r}; choose from {sorted(query.JOIN_TYPES)}"
+            )
+
+        row_metrics = stage_one if unit_columns else metrics
+        referenced = _ordered_union(
+            groups,
+            unit_columns,
+            [
+                metric.get("column")
+                for metric in row_metrics
+                if isinstance(metric, dict) and isinstance(metric.get("column"), str)
+            ],
+            [rule.get("column") for rule in rules if isinstance(rule.get("column"), str)],
+        )
+        sides: dict[str, list[str]] = {"left": [], "right": []}
+        for name in referenced:
+            side, column = _split_qualified(name)
+            sides[side].append(column)
+
+        left_profile = self._table_profile(left)
+        right_profile = self._table_profile(right)
+        left_needed = _ordered_union(left_keys, sides["left"])
+        right_needed = _ordered_union(right_keys, sides["right"])
+        _require_known_columns(
+            left, [column["name"] for column in left_profile.get("columns", [])], left_needed
+        )
+        _require_known_columns(
+            right, [column["name"] for column in right_profile.get("columns", [])], right_needed
+        )
+
+        left_context, left_rows = self._scan_table(
+            left, columns=left_needed, max_rows=_MAX_JOIN_SCAN_ROWS, require_complete=True
+        )
+        right_context, right_rows = self._scan_table(
+            right, columns=right_needed, max_rows=_MAX_JOIN_SCAN_ROWS, require_complete=True
+        )
+        join_spec = {
+            "left": left,
+            "right": right,
+            "left_keys": left_keys,
+            "right_keys": right_keys,
+            "how": how,
+        }
+        payload: dict[str, Any] = {
+            "dataset_id": self.dataset_id,
+            "operation": {
+                "type": "aggregate_join",
+                "join": join_spec,
+                "group_by": groups,
+                "metrics": metrics,
+                "filters": rules,
+                **(
+                    {
+                        "unit": unit_columns,
+                        "unit_metrics": stage_one,
+                        "on_inconsistent_unit": on_inconsistent_unit,
+                    }
+                    if unit_columns
+                    else {}
+                ),
+            },
+            "inputs": {"left": left_context, "right": right_context},
+        }
+        if contract is not None:
+            payload["relationship_contract"] = contract
+        drifted = [
+            side
+            for side, context in (("left", left_context), ("right", right_context))
+            if not context["integrity"]["matches"]
+        ]
+        if drifted:
+            withheld = f"source drift detected on: {', '.join(drifted)}"
+            payload.update({"groups": [], "content_withheld": withheld})
+            return payload
+
+        joined = query.join_rows(
+            left_rows,
+            right_rows,
+            left_keys=left_keys,
+            right_keys=right_keys,
+            how=how,
+            limit=_MAX_COMPLETE_QUERY_ROWS,
+        )
+        cardinality = joined["diagnostics"]["cardinality"]
+        if cardinality == "many_to_many":
+            raise ValueError(
+                "refusing to aggregate a many-to-many join: both sides repeat join keys, so "
+                "rows are multiplied within each key and every sum, mean and count over them "
+                "is inflated. Declare keys that are unique on at least one side."
+            )
+        if joined["truncated"]:
+            raise ValueError(
+                f"the join produces {joined['total_result_rows']} rows, above the "
+                f"complete-aggregation safety cap of {_MAX_COMPLETE_QUERY_ROWS}"
+            )
+
+        rows = [_flatten_joined_row(row, left_needed, right_needed) for row in joined["rows"]]
+        dtypes = {
+            **_qualified_dtypes("left", left_profile, left_needed),
+            **_qualified_dtypes("right", right_profile, right_needed),
+        }
+        warnings = list(joined["warnings"])
+        # In a one-to-many join the unique side's row is copied onto every match.
+        # A row-level metric over one of its columns then counts that value once
+        # per match -- an animal's body weight weighted by its number of bins.
+        replicated = {"one_to_many": "left", "many_to_one": "right"}.get(cardinality)
+        if replicated:
+            touched = sorted(
+                {
+                    name
+                    for name in [
+                        metric.get("column")
+                        for metric in row_metrics
+                        if isinstance(metric, dict) and isinstance(metric.get("column"), str)
+                    ]
+                    if name.startswith(f"{replicated}.")
+                }
+            )
+            if touched:
+                warnings.append(
+                    f"{cardinality} join: each {replicated} row is repeated once per match, so "
+                    f"row-level metrics over {touched} weight each {replicated} value by its "
+                    "number of matches"
+                )
+        payload["join"] = {
+            "cardinality": cardinality,
+            "diagnostics": joined["diagnostics"],
+            "joined_rows": joined["total_result_rows"],
+            "left_rows_without_match": sum(row["source_row"]["right"] is None for row in rows),
+            "row_locator": {
+                "left": left_context.get("row_locator"),
+                "right": right_context.get("row_locator"),
+            },
+            "warnings": warnings,
+        }
+        payload.update(
+            _summarise(
+                rows,
+                dtypes=dtypes,
+                group_by=groups,
+                metrics=metrics,
+                filters=rules,
+                unit=unit_columns,
+                unit_metrics=stage_one,
+                on_inconsistent_unit=on_inconsistent_unit,
+                unit_sample=unit_sample,
+            )
+        )
         return payload
 
     def describe_variable(self, path: str, column: str) -> dict[str, Any]:
@@ -1362,6 +1620,98 @@ def _project_joined_row(
             {name: right.get(name) for name in right_columns} if isinstance(right, dict) else None
         ),
     }
+
+
+def _summarise(
+    rows: list[dict[str, Any]],
+    *,
+    dtypes: dict[str, str],
+    group_by: list[str],
+    metrics: list[dict[str, Any]],
+    filters: list[dict[str, Any]],
+    unit: list[str],
+    unit_metrics: list[dict[str, Any]],
+    on_inconsistent_unit: str,
+    unit_sample: int,
+) -> dict[str, Any]:
+    """The aggregation body shared by ``aggregate`` and ``aggregate_join``.
+
+    Filters run on rows, before any unit is formed: a filter selects
+    observations, and a unit is whatever the selected observations of it are.
+    """
+    selected = rows
+    if filters:
+        selected, _ = query.filter_rows(rows, filters, limit=len(rows))
+    used_ops = sorted(
+        {
+            str(metric.get("op"))
+            for metric in [*metrics, *unit_metrics]
+            if isinstance(metric, dict) and metric.get("op") in query.AGGREGATES
+        }
+    )
+    summary: dict[str, Any] = {
+        "rows_included": len(selected),
+        "metric_definitions": {op: query.METRIC_DEFINITIONS[op] for op in used_ops},
+        "missing_values": (
+            "missing cells (empty, or a sentinel under the manifest's missing-value "
+            "convention) are excluded from each metric separately; count includes them, "
+            "n_missing counts them, and a metric with no values left is null with a reason"
+        ),
+    }
+    if not unit:
+        summary["groups"] = query.aggregate_rows(
+            selected, group_by=group_by, metrics=metrics, dtypes=dtypes
+        )
+        return summary
+    result = query.aggregate_units(
+        selected,
+        group_by=group_by,
+        unit=unit,
+        unit_metrics=unit_metrics,
+        metrics=metrics,
+        dtypes=dtypes,
+        on_inconsistent_unit=on_inconsistent_unit,
+        unit_sample=unit_sample,
+    )
+    groups = result.pop("groups")
+    summary["analysis_unit"] = result
+    summary["groups"] = groups
+    return summary
+
+
+def _split_qualified(name: str) -> tuple[str, str]:
+    """Split ``left.<column>`` / ``right.<column>`` at the first dot only."""
+    side, dot, column = name.partition(".")
+    if not dot or side not in {"left", "right"} or not column:
+        raise ValueError(
+            f"column reference {name!r} must be qualified as 'left.<column>' or "
+            "'right.<column>' in a join aggregation"
+        )
+    return side, column
+
+
+def _qualified_dtypes(side: str, profile: dict[str, Any], columns: list[str]) -> dict[str, str]:
+    dtypes = {column["name"]: column.get("dtype", "string") for column in profile["columns"]}
+    return {f"{side}.{name}": dtypes[name] for name in columns}
+
+
+def _flatten_joined_row(
+    row: dict[str, Any], left_columns: list[str], right_columns: list[str]
+) -> dict[str, Any]:
+    """One joined row as a query row with qualified column names.
+
+    ``source_row`` keeps both locators, so every unit and every missing-key row
+    in the result points at the exact rows of both files it came from.
+    """
+    right = row.get("right")
+    values = {f"left.{name}": row["left"].get(name) for name in left_columns}
+    values.update(
+        {
+            f"right.{name}": (right.get(name) if isinstance(right, dict) else None)
+            for name in right_columns
+        }
+    )
+    return {"source_row": dict(row["source_rows"]), "values": values}
 
 
 def _missing_convention(payload: dict[str, Any]) -> MissingValueConvention:

@@ -40,6 +40,14 @@ _CORE_TOOLS = (
     "list_relationships",
     "get_relationship",
     "join_relationship",
+    # A core tool, not a rung of its own: aggregating over a join is the same
+    # deterministic data access as join_tables + aggregate, only completed inside
+    # the scan bounds instead of over a 1,000-row page. Withholding it from
+    # structured would make the control condition answer group questions from a
+    # truncated join; giving it to raw would hand the files-only control the
+    # profiled tables it exists to lack. Being in the core, every FAIR rung stays
+    # a superset of structured. It carries no FAIR concept.
+    "aggregate_join",
     "get_metadata",
     "get_evidence",
     "get_provenance",
