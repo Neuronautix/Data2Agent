@@ -500,6 +500,79 @@ An undeclared sentinel is a genuine reusability defect — a reader cannot tell
 every downstream tool will guess differently. The FAIR profile reports exactly
 that as `R1.3-MISSING-VALUES-DECLARED`.
 
+## Aggregation semantics
+
+`aggregate` and `aggregate_join` compute summaries over a **complete** bounded
+scan; a table (or join) above the cap is refused, never summarised in part.
+
+### Metrics
+
+A closed registry. Every response returns the definitions of the metrics it
+used under `metric_definitions`.
+
+| Metric | Definition | Column dtype |
+| --- | --- | --- |
+| `count` | rows in the bucket (units, at the unit stage), missing values included | none |
+| `n_present` | non-missing values of the column | any |
+| `n_missing` | missing values of the column | any |
+| `n_distinct` | distinct non-missing values (the string `"1"` and the number `1` differ) | any |
+| `sum`, `mean`, `min`, `max` | over the non-missing values | integer/number |
+| `median` | middle value; mean of the two middle values when n is even | integer/number |
+| `sd` | sample standard deviation, `sqrt(Σ(x − mean)² / (n − 1))` | integer/number |
+| `sem` | `sd / sqrt(n)` | integer/number |
+
+Arithmetic is decimal, rounded once to a JSON number on the way out. A null
+metric always has an entry in `null_reasons`: `no non-missing values`, or
+`sd`/`sem` being undefined below two values. It is never 0, because a single
+value is not a measured absence of spread.
+
+### Missing values
+
+Missing means what the manifest's missing-value convention says: an empty cell
+or a sentinel it names. The reader normalises both to null, so aggregation does
+not re-decide it. Each metric excludes missing values independently — a mean
+over one column and a count over another can rest on different n, which is why
+`n_present`/`n_missing` exist. Filters run on rows before anything else.
+
+### Unit of analysis
+
+A long table with repeated measures (bins, trials) has several rows per
+experimental unit. A row-level mean weights units by their number of rows, and
+its `count` counts rows. Declaring `unit` makes aggregation two-stage:
+
+1. rows → one record per unit, by `unit_metrics`;
+2. unit records → one summary per group, by `metrics`, whose columns name
+   `unit_metrics` outputs and whose `count` counts units.
+
+Each group reports `n_units`, `n_rows`, and a bounded list (`unit_sample`,
+default 50, max 500) of contributing units with their stage-1 values and
+source-row locators; counts are exact even when the list is truncated.
+
+| Situation | Behaviour |
+| --- | --- |
+| a unit's rows carry more than one `group_by` combination (missing counts as a value) | result refused, conflicting units listed with locators; `on_inconsistent_unit="exclude"` drops them and reports how many |
+| a row has a missing unit key | not attributed; counted and located in `rows_with_missing_unit_key` |
+| a unit has some missing values of a column | the unit metric uses the present values; the unit is counted in `units_with_some_missing_rows` |
+| a unit has only missing values of a column | the unit metric is null with a reason; the unit is counted in `units_null` and excluded from stage-2 metrics over it |
+
+A partial unit deserves attention: a sum over the bins that happen to be present
+is smaller than a sum over all bins, and nothing in the number says so.
+
+How rows reduce to a unit (sum, mean, …) is a scientific decision. It is taken
+by the caller and echoed in `operation`; it is never inferred.
+
+### Aggregating over a join
+
+`aggregate_join` joins two tables completely — by a `declared`/`deterministic`
+relationship id or explicit keys — and aggregates the result, so a grouping
+column may come from the other table. Columns are addressed `left.<column>` /
+`right.<column>` (split at the first dot; unqualified names are refused).
+The response cites both backing files with checksum and integrity under
+`inputs`, the join specification under `operation.join`, and the relationship
+contract when one was used. Many-to-many joins are refused; in a one-to-many
+join a row-level metric over the unique side is warned about, since each of its
+values is repeated once per match. Row locators are `{"left": …, "right": …}`.
+
 ## Integrity at serve time
 
 The MCP service re-checksums a file before returning any of its content. On a

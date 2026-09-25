@@ -10,8 +10,9 @@ enumerated here, so an agent cannot smuggle arbitrary code through a query.
 
 from __future__ import annotations
 
+import statistics
 from collections import Counter, defaultdict
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
 FILTER_OPERATORS = frozenset(
@@ -29,7 +30,45 @@ FILTER_OPERATORS = frozenset(
         "is_not_missing",
     }
 )
-AGGREGATES = frozenset({"count", "n_missing", "sum", "mean", "min", "max"})
+AGGREGATES = frozenset(
+    {
+        "count",
+        "n_present",
+        "n_missing",
+        "n_distinct",
+        "sum",
+        "mean",
+        "min",
+        "max",
+        "median",
+        "sd",
+        "sem",
+    }
+)
+# The metrics that do arithmetic, and therefore refuse a column whose observed
+# tokens were not all numbers. Counting metrics accept any column: how many
+# values are present, absent or distinct is defined for strings too.
+NUMERIC_AGGREGATES = frozenset({"sum", "mean", "min", "max", "median", "sd", "sem"})
+# Every metric's definition, returned with every aggregation and mirrored in the
+# docs, so that "sd" can never be read as the population deviation or "count"
+# as a count of non-missing values. A metric without a written definition is
+# not a metric.
+METRIC_DEFINITIONS: dict[str, str] = {
+    "count": "number of rows in the bucket (of units, at the unit stage), missing values included",
+    "n_present": "number of non-missing values of the column",
+    "n_missing": "number of missing values of the column (empty cell or convention sentinel)",
+    "n_distinct": "number of distinct non-missing values of the column",
+    "sum": "sum of the non-missing values",
+    "mean": "arithmetic mean of the non-missing values",
+    "min": "smallest non-missing value",
+    "max": "largest non-missing value",
+    "median": "middle non-missing value; the mean of the two middle values when n is even",
+    "sd": (
+        "sample standard deviation of the non-missing values, "
+        "sqrt(sum((x - mean)^2) / (n - 1)); null when n < 2"
+    ),
+    "sem": "standard error of the mean, sd / sqrt(n), over the non-missing values; null when n < 2",
+}
 JOIN_TYPES = frozenset({"inner", "left"})
 
 
@@ -60,7 +99,7 @@ def aggregate_rows(
     dtypes: dict[str, str],
 ) -> list[dict[str, Any]]:
     """Aggregate a complete row set by a closed metric registry."""
-    specs = _validate_metrics(metrics, dtypes)
+    specs = validate_metrics(metrics, dtypes)
     buckets: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     if group_by:
         for row in rows:
@@ -72,11 +111,28 @@ def aggregate_rows(
     for key in sorted(buckets, key=_group_sort_key):
         bucket = buckets[key]
         group = {name: key[index] for index, name in enumerate(group_by)}
-        values: dict[str, Any] = {}
-        for spec in specs:
-            values[spec["name"]] = _aggregate_metric(bucket, spec, dtypes)
-        result.append({"group": group, "metrics": values})
+        values, reasons = compute_metrics(bucket, specs)
+        result.append({"group": group, "metrics": values, "null_reasons": reasons})
     return result
+
+
+def compute_metrics(
+    rows: list[dict[str, Any]], specs: list[dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Apply validated metric specs to one bucket of rows.
+
+    A null metric always comes with a reason. "No values" and "a statistic that
+    is undefined for a single value" are different facts, and a bare null lets
+    a reader take either one for the other -- or for a zero.
+    """
+    values: dict[str, Any] = {}
+    reasons: dict[str, str] = {}
+    for spec in specs:
+        value, reason = _aggregate_metric(rows, spec)
+        values[spec["name"]] = value
+        if reason is not None:
+            reasons[spec["name"]] = reason
+    return values, reasons
 
 
 def describe_column(
@@ -267,15 +323,18 @@ def _require_comparable(actual: Any, expected: Any, column: str) -> None:
     )
 
 
-def _validate_metrics(
-    metrics: list[dict[str, Any]], dtypes: dict[str, str]
+def validate_metrics(
+    metrics: list[dict[str, Any]], dtypes: dict[str, str], *, allow_empty: bool = False
 ) -> list[dict[str, Any]]:
-    if not metrics:
+    """Check metrics against the closed registry and resolve their output names."""
+    if not isinstance(metrics, list) or (not metrics and not allow_empty):
         raise ValueError("at least one metric is required")
 
     specs: list[dict[str, Any]] = []
     names: set[str] = set()
     for index, metric in enumerate(metrics):
+        if not isinstance(metric, dict):
+            raise ValueError(f"metric {index} must be an object")
         op = metric.get("op")
         column = metric.get("column")
         if op not in AGGREGATES:
@@ -288,7 +347,7 @@ def _validate_metrics(
         elif column is not None:
             raise ValueError("'count' counts rows and does not accept a column")
 
-        if op in {"sum", "mean", "min", "max"} and dtypes[column] not in {"integer", "number"}:
+        if op in NUMERIC_AGGREGATES and dtypes[column] not in {"integer", "number"}:
             raise ValueError(
                 f"metric {op!r} requires a numeric column; {column!r} has dtype {dtypes[column]!r}"
             )
@@ -304,30 +363,51 @@ def _validate_metrics(
     return specs
 
 
-def _aggregate_metric(
-    rows: list[dict[str, Any]], spec: dict[str, Any], dtypes: dict[str, str]
-) -> Any:
+def _aggregate_metric(rows: list[dict[str, Any]], spec: dict[str, Any]) -> tuple[Any, str | None]:
     op = spec["op"]
     column = spec["column"]
     if op == "count":
-        return len(rows)
+        return len(rows), None
 
     observed = [row["values"].get(column) for row in rows]
-    if op == "n_missing":
-        return sum(value is None for value in observed)
-
     present = [value for value in observed if value is not None]
+    if op == "n_missing":
+        return len(observed) - len(present), None
+    if op == "n_present":
+        return len(present), None
+    if op == "n_distinct":
+        # Type-qualified, so the string "1" and the number 1 stay distinct.
+        return len({(type(value).__name__, value) for value in present}), None
+
     if not present:
-        return None
+        return None, "no non-missing values"
     numeric = [_decimal(value, column) for value in present]
     if op == "sum":
-        return _json_number(sum(numeric, Decimal(0)))
+        return _json_number(sum(numeric, Decimal(0))), None
     if op == "mean":
-        return float(sum(numeric, Decimal(0)) / Decimal(len(numeric)))
+        return float(sum(numeric, Decimal(0)) / Decimal(len(numeric))), None
     if op == "min":
-        return _json_number(min(numeric))
+        return _json_number(min(numeric)), None
     if op == "max":
-        return _json_number(max(numeric))
+        return _json_number(max(numeric)), None
+    if op == "median":
+        return _json_number(statistics.median(numeric)), None
+    if op in {"sd", "sem"}:
+        n = len(numeric)
+        if n < 2:
+            # The sample deviation divides by n - 1. Returning 0 for one value
+            # would claim a measured absence of spread; there is no measurement.
+            return None, f"{op} is undefined for fewer than 2 non-missing values (n={n})"
+        # Decimal throughout, with headroom over the default 28 digits, so the
+        # squared deviations do not lose the digits that distinguish them. The
+        # result is rounded exactly once, to float, on the way out.
+        with localcontext() as context:
+            context.prec = 50
+            mean = sum(numeric, Decimal(0)) / Decimal(n)
+            squares = sum(((value - mean) ** 2 for value in numeric), Decimal(0))
+            sd = (squares / Decimal(n - 1)).sqrt()
+            result = sd if op == "sd" else sd / Decimal(n).sqrt()
+        return float(result), None
     raise AssertionError(f"unreachable aggregate: {op}")
 
 

@@ -51,6 +51,7 @@ async def test_structured_mode_registers_the_deterministic_surface(server):
         "read_rows",
         "filter_rows",
         "aggregate",
+        "aggregate_join",
         "describe_variable",
         "join_tables",
         "list_relationships",
@@ -160,6 +161,31 @@ async def test_calling_aggregate_over_mcp_returns_group_statistics(server):
     groups = {item["group"]["genotype"]: item["metrics"] for item in payload["groups"]}
     assert groups["KO"]["n"] == 24
     assert groups["WT"]["n"] == 24
+
+
+@pytest.mark.anyio
+async def test_calling_aggregate_join_over_mcp_counts_units_per_registry_group(server):
+    result = await server.call_tool(
+        "aggregate_join",
+        {
+            "left": "animals.csv",
+            "right": "observations.csv",
+            "left_keys": ["animal_id"],
+            "right_keys": ["animal_id"],
+            "group_by": ["left.genotype"],
+            "unit": ["right.animal_id"],
+            "unit_metrics": [{"op": "mean", "column": "right.latency_s"}],
+            "metrics": [
+                {"op": "count", "name": "n_animals"},
+                {"op": "sem", "column": "mean:right.latency_s"},
+            ],
+        },
+    )
+    payload = json.loads(_text_of(result))
+    groups = {item["group"]["left.genotype"]: item for item in payload["groups"]}
+    assert groups["KO"]["metrics"]["n_animals"] == 24
+    assert groups["KO"]["n_units"] == 24 and groups["KO"]["n_rows"] == 72
+    assert payload["join"]["cardinality"] == "one_to_many"
 
 
 @pytest.mark.anyio

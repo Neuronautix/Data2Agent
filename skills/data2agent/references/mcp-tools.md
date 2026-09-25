@@ -111,8 +111,14 @@ must never be reported as an exhaustive negative finding.
 ## `aggregate(path, metrics, group_by=None, filters=None)`
 
 Compute deterministic summaries over a **complete** scan. Supported metrics are
-`count`, `n_missing`, `sum`, `mean`, `min`, and `max`.
-`sum/mean/min/max` require a column profiled as integer or number.
+`count`, `n_present`, `n_missing`, `n_distinct`, `sum`, `mean`, `min`, `max`,
+`median`, `sd` (sample, n − 1) and `sem` (sd / √n). The arithmetic ones require
+a column profiled as integer or number. Every response carries
+`metric_definitions` for the metrics it used, and every null metric carries a
+reason in `null_reasons` (`sd`/`sem` are null below two values, never 0).
+
+Full signature:
+`aggregate(path, metrics, group_by=None, filters=None, unit=None, unit_metrics=None, on_inconsistent_unit="refuse", unit_sample=50)`.
 
 Example:
 
@@ -129,6 +135,63 @@ Example:
 
 Numeric aggregation uses decimal arithmetic internally. A table above the
 100,000-row complete-scan cap is refused rather than summarized partially.
+
+### Repeated measures: declare the unit of analysis
+
+If a table has several rows per animal (time bins, trials, sessions), a plain
+`aggregate` averages rows: an animal with more bins weighs more, and `count` is
+the number of rows, not animals. Declare the experimental unit instead:
+
+```json
+{
+  "path": "behaviour.csv",
+  "group_by": ["genotype", "treatment"],
+  "unit": ["animal_id", "day"],
+  "unit_metrics": [{"op": "sum", "column": "dig_dur_s", "name": "dig_total"}],
+  "metrics": [
+    {"op": "mean", "column": "dig_total"},
+    {"op": "sem", "column": "dig_total"},
+    {"op": "count", "name": "n_animals"}
+  ]
+}
+```
+
+Stage 1 reduces rows to one record per unit with `unit_metrics`; stage 2
+summarises units per group with `metrics`, whose columns must name
+`unit_metrics` outputs (default name `op:column`, e.g. `sum:dig_dur_s`). Each
+group reports `n_units`, `n_rows`, `unit_metric_missing`, and up to
+`unit_sample` contributing units with their stage-1 values and source-row
+locators. The choice of reduction (sum, mean, …) is a scientific decision you
+make and should state; it is echoed back in `operation`.
+
+If one unit's rows disagree on a `group_by` value (an animal under two
+genotypes), the result is refused (`analysis_unit.status: "refused"`) and the
+conflicting units are listed with row locators. `on_inconsistent_unit="exclude"`
+computes over the consistent units only and reports how many were excluded.
+Rows with a missing unit key are counted and located, never attributed.
+
+## `aggregate_join(metrics, relationship_id=None, left=None, right=None, left_keys=None, right_keys=None, how="inner", ...)`
+
+The same aggregation (including `unit`) over the **complete** result of a join,
+for when the grouping variable lives in another table. Name the join by a
+declared `relationship_id`, or give `left`, `right`, `left_keys`, `right_keys`.
+Every column reference is qualified `left.<column>` or `right.<column>`:
+
+```json
+{
+  "relationship_id": "rel-…",
+  "group_by": ["right.genotype"],
+  "unit": ["left.animal_id", "left.day"],
+  "unit_metrics": [{"op": "sum", "column": "left.dig_dur_s", "name": "dig_total"}],
+  "metrics": [{"op": "mean", "column": "dig_total"}, {"op": "count"}]
+}
+```
+
+Both files are re-checksummed and cited under `inputs`; `join` reports the
+cardinality, diagnostics, joined row count and warnings. Many-to-many joins are
+refused (they multiply rows), as is a join above the complete-aggregation cap.
+In a one-to-many join, a row-level metric over the unique side's columns is
+warned about, because each of its values is repeated once per match.
 
 ## `describe_variable(path, column)`
 

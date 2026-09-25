@@ -204,7 +204,8 @@ generating bespoke tools per dataset and inheriting the generator's variance.
 | `list_tables()` | profiled delimited tables and workbook worksheets |
 | `read_rows(path, columns, offset, limit)` | bounded source observations with row locators and integrity proof |
 | `filter_rows(path, filters, columns, limit)` | bounded deterministic selection with a closed operator registry |
-| `aggregate(path, metrics, group_by, filters)` | complete-scan count/missing/sum/mean/min/max summaries |
+| `aggregate(path, metrics, group_by, filters, unit, unit_metrics)` | complete-scan summaries (count, n_present/n_missing/n_distinct, sum, mean, min, max, median, sd, sem); with `unit`, two-stage: rows → one record per experimental unit → groups, with n_units and the contributing unit ids |
+| `aggregate_join(metrics, relationship_id \| left/right/keys, group_by, unit, ...)` | the same aggregation over a complete join, so a grouping column can come from another table (e.g. a registry) |
 | `describe_variable(path, column)` | profile + deterministic observed summary for one column |
 | `join_tables(left, right, left_keys, right_keys, ...)` | explicit-key join with cardinality diagnostics |
 | `list_relationships(status?)` | saved declared/deterministic/candidate/rejected table relationships |
