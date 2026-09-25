@@ -100,6 +100,10 @@ def ingest(
     metadata_files: list[dict[str, Any]] = []
     metadata_candidates: list[dict[str, Any]] = []
     identifier_hits: list[dict[str, Any]] = []
+    # Workbook parsers actually used, name -> installed version. Run-specific,
+    # so it goes to provenance: the manifest names the backend per sheet but
+    # never a version, which would break its byte-identity across installs.
+    workbook_readers: dict[str, str | None] = {}
 
     _record_dataset_claims(ledger, identity, inventory, active_convention)
 
@@ -149,13 +153,14 @@ def ingest(
             # bytes, so a workbook named '.xls' arrives here too (D2A-46).
             from ..readers import workbook as workbook_reader
 
-            if not workbook_reader.available():
+            backend = workbook_reader.backend_for(entry.format.format_id)
+            if not backend.available():
                 # The core stays honest about what it cannot see. A workbook the
                 # tool could not open is reported as exactly that -- never folded
                 # into silence, which is what made this gap invisible before.
                 warnings.append(
-                    f"{entry.path}: identified as a workbook but not profiled; "
-                    f"install the 'xlsx' extra to enable it"
+                    f"{entry.path}: identified as a '{entry.format.format_id}' workbook but "
+                    f"not profiled; install the '{backend.extra}' extra to enable it"
                 )
                 # A workbook nobody opened is a question, not an answer. It is
                 # registered as a metadata candidate so that "no metadata was
@@ -169,8 +174,8 @@ def ingest(
                         reason="reader-unavailable",
                         note=(
                             "identified as a workbook and not opened, because the optional "
-                            "'xlsx' reader is not installed; whether it carries metadata is "
-                            "undetermined"
+                            f"'{backend.extra}' reader is not installed; whether it carries "
+                            "metadata is undetermined"
                         ),
                     )
                 ledger.record(
@@ -181,13 +186,18 @@ def ingest(
                             source=entry.path,
                             source_sha256=entry.sha256,
                             check="workbook.reader-unavailable",
-                            result={"format": entry.format.format_id, "extra": "xlsx"},
+                            result={
+                                "format": entry.format.format_id,
+                                "extra": backend.extra,
+                                "backend": backend.name,
+                            },
                         )
                     ],
                 )
             else:
+                workbook_readers[backend.name] = backend.version()
                 for sheet in workbook_reader.profile_workbook(
-                    absolute, entry.path, active_convention
+                    absolute, entry.path, active_convention, entry.format.format_id
                 ):
                     tables[sheet.path] = sheet.as_dict()
                     warnings.extend(f"{sheet.path}: {note}" for note in sheet.warnings)
@@ -304,6 +314,7 @@ def ingest(
             "excludes": sorted(excludes),
             "manifest_version": MANIFEST_VERSION,
             "missing_value_convention": active_convention.as_dict(),
+            "workbook_readers": dict(sorted(workbook_readers.items())),
         },
     ).as_dict()
     provenance["source_verified_unchanged"] = source_unchanged
