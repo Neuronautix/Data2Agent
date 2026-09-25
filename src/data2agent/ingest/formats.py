@@ -304,21 +304,40 @@ def _refine_ole2_container(path: Path) -> FormatInfo | None:
                 chunk = read_sector(location)
                 fat.extend(struct.unpack_from(f"<{len(chunk) // 4}I", chunk))
 
+            entries: list[bytes] = []
             sector, visited = directory_start, 0
             while sector < _CFB_MAX and visited < _OLE2_MAX_DIRECTORY_SECTORS:
                 chunk = read_sector(sector)
-                for offset in range(0, len(chunk) - 127, 128):
-                    entry = chunk[offset : offset + 128]
-                    name_length = struct.unpack_from("<H", entry, 0x40)[0]
-                    if entry[0x42] != 2 or not 2 <= name_length <= 64:
-                        continue  # only a stream can hold a workbook
-                    name = entry[: name_length - 2].decode("utf-16-le", errors="replace")
-                    if name in _BIFF_STREAMS:
-                        return FormatInfo("xls", "application/vnd.ms-excel", "container")
+                entries.extend(
+                    chunk[offset : offset + 128] for offset in range(0, len(chunk) - 127, 128)
+                )
                 visited += 1
                 sector = fat[sector] if sector < len(fat) else _CFB_MAX
     except (OSError, struct.error):
         return None
+
+    # Only a stream directly under the root storage makes the file a workbook.
+    # A Word or PowerPoint document embedding an Excel object carries a nested
+    # 'Workbook' stream inside a child storage; scanning every entry would call
+    # the whole outer document an .xls. The root's children form a tree linked
+    # by left/right sibling ids, walked here without descending into storages.
+    if not entries or entries[0][0x42] != 5:  # entry 0 must be the root storage
+        return None
+    pending = [struct.unpack_from("<I", entries[0], 0x4C)[0]]
+    seen: set[int] = set()
+    while pending:
+        index = pending.pop()
+        if index >= len(entries) or index in seen:
+            continue  # NOSTREAM, out of range, or a cycle in a hostile file
+        seen.add(index)
+        entry = entries[index]
+        pending.extend(struct.unpack_from("<2I", entry, 0x44))  # left, right siblings
+        name_length = struct.unpack_from("<H", entry, 0x40)[0]
+        if entry[0x42] != 2 or not 2 <= name_length <= 64:
+            continue  # only a stream can hold a workbook
+        name = entry[: name_length - 2].decode("utf-16-le", errors="replace")
+        if name in _BIFF_STREAMS:
+            return FormatInfo("xls", "application/vnd.ms-excel", "container")
     return None
 
 

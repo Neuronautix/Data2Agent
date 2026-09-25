@@ -57,6 +57,69 @@ def test_an_ole2_file_without_a_workbook_stream_is_not_called_xls(tmp_path: Path
     assert notes
 
 
+_NOSTREAM = 0xFFFFFFFF
+
+
+def _compound_file(entries: list[tuple[str, int, int, int, int]]) -> bytes:
+    """A minimal [MS-CFB] v3 file: header, one FAT sector, one directory sector.
+
+    ``entries`` are ``(name, type, left, right, child)``; type 5 is the root
+    storage, 1 a storage, 2 a stream. Streams are empty -- only the directory
+    is under test, and detection never reads a stream.
+    """
+    import struct
+
+    header = bytearray(512)
+    header[:8] = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+    struct.pack_into("<HHHHH", header, 0x18, 0x3E, 3, 0xFFFE, 9, 6)
+    struct.pack_into("<I", header, 0x2C, 1)  # one FAT sector
+    struct.pack_into("<I", header, 0x30, 1)  # directory starts at sector 1
+    struct.pack_into("<III", header, 0x38, 4096, 0xFFFFFFFE, 0)
+    struct.pack_into("<II", header, 0x44, 0xFFFFFFFE, 0)
+    struct.pack_into("<109I", header, 0x4C, 0, *([_NOSTREAM] * 108))
+
+    fat = struct.pack("<128I", 0xFFFFFFFD, 0xFFFFFFFE, *([_NOSTREAM] * 126))
+    directory = bytearray(512)
+    for index, (name, kind, left, right, child) in enumerate(entries):
+        encoded = name.encode("utf-16-le") + b"\x00\x00"
+        base = index * 128
+        directory[base : base + len(encoded)] = encoded
+        struct.pack_into("<HBB", directory, base + 0x40, len(encoded), kind, 1)
+        struct.pack_into("<III", directory, base + 0x44, left, right, child)
+    return bytes(header) + fat + bytes(directory)
+
+
+def test_a_workbook_stream_at_the_root_makes_an_ole2_file_xls(tmp_path: Path):
+    path = tmp_path / "minimal.xls"
+    path.write_bytes(
+        _compound_file(
+            [
+                ("Root Entry", 5, _NOSTREAM, _NOSTREAM, 1),
+                ("Workbook", 2, _NOSTREAM, _NOSTREAM, _NOSTREAM),
+            ]
+        )
+    )
+    assert formats.detect(path)[0].format_id == "xls"
+
+
+def test_an_embedded_workbook_does_not_make_the_outer_document_xls(tmp_path: Path):
+    """A Word file embedding an Excel object has a nested 'Workbook' stream."""
+    path = tmp_path / "report.doc"
+    path.write_bytes(
+        _compound_file(
+            [
+                ("Root Entry", 5, _NOSTREAM, _NOSTREAM, 1),
+                ("WordDocument", 2, _NOSTREAM, 2, _NOSTREAM),
+                ("ObjectPool", 1, _NOSTREAM, _NOSTREAM, 3),
+                ("Workbook", 2, _NOSTREAM, _NOSTREAM, _NOSTREAM),
+            ]
+        )
+    )
+    detected, _ = formats.detect(path)
+    assert detected.format_id == "ole2-container"
+    assert detected.format_id not in formats.WORKBOOK_FORMATS
+
+
 def test_a_zip_holding_another_opendocument_type_is_not_ods(tmp_path: Path):
     import zipfile
 
