@@ -151,7 +151,13 @@ def ingest(
         # baseline can hand a cross-file aggregation to aggregate_join
         "transform_crosswalks": dict(cond.get("transform_crosswalks") or {}),
         # per-table service keys for this condition, e.g. '<file>#<sheet>#<block>'
-        "service_tables": dict(cond.get("service_tables") or {}),
+        # top-level service_tables apply to every condition (a key that does not
+        # depend on declarations, e.g. a BORIS '<file>#intervals' table);
+        # a condition's own entries override them
+        "service_tables": {
+            **dict(conditions.get("service_tables") or {}),
+            **dict(cond.get("service_tables") or {}),
+        },
         "manifest_sha256": sha256_file(out / "manifest.json"),
         "relationships_sha256": (
             sha256_file(out / "relationships.json")

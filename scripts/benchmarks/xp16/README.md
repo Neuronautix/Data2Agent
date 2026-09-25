@@ -224,7 +224,12 @@ about from layout discovery, which the undeclared condition tracks separately.
 
 A condition may also re-address declared gold tables through `service_tables`
 (for instance a sheet declared as blocks, `<file>#<sheet>#<block>`); an unknown
-gold table id is refused. `--data2agent-src <tree>/src` runs (06) and evaluates
+gold table id is refused. A top-level `service_tables` in `conditions.json`
+applies to every condition (a key that does not depend on declarations, such as
+a BORIS project's `<file>#intervals` table), and a condition's own entries
+override it. BORIS tables are matched to the gold by column name (they have no
+sheet positions) and their rows are located the service's way: observation id +
+start/stop event index. `--data2agent-src <tree>/src` runs (06) and evaluates
 (05) another data2agent tree, such as an unmerged branch under review; the
 condition record and the report then name that tree and claim no commit, so
 such a number can never pass for one on the repository's own build.

@@ -18,8 +18,10 @@ For each question below:
   an abstention.
 - Cite where each answer comes from: `"sources"` is a list of
   `{"file", "sha256", "sheet", "cell" | "range"}` for workbooks, or
-  `{"file", "sha256", "line", "field"}` for delimited files. Use the `sha256`
-  the tools report for the file.
+  `{"file", "sha256", "line", "field"}` for delimited files, or
+  `{"file", "sha256", "observation_id", "start_event_index", "stop_event_index"}`
+  for a behaviour interval of a BORIS project. Use the `sha256` the tools
+  report for the file.
 
 Reply with JSON only, no prose around it:
 

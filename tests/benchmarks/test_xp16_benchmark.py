@@ -869,3 +869,108 @@ def test_boris_projects_read_as_paired_behaviour_intervals(tmp_path: Path):
         },
     )
     assert total.answer == 4 and total.sources[0]["range"].startswith("intervals ")
+
+
+@pytest.fixture
+def boris_package(tmp_path: Path) -> Path:
+    """A package holding one synthetic BORIS project, two raters' observations."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    project = {
+        "project_format_version": "7.0",
+        "project_name": "synthetic",
+        "behaviors_conf": {"0": {"code": "run", "type": "State event"}},
+        "subjects_conf": {},
+        "observations": {
+            "pos_1": {
+                "events": [
+                    [1.0, "", "run", "", ""],
+                    [4.5, "", "run", "", ""],
+                    [6.0, "", "run", "", ""],
+                    [7.0, "", "run", "", ""],
+                ]
+            },  # fmt: skip
+            "pos_1_rater2": {"events": [[1.5, "", "run", "", ""], [4.0, "", "run", "", ""]]},
+        },
+    }
+    (origin / "p.boris").write_text(json.dumps(project), encoding="utf-8")
+    pkg = tmp_path / "pkg"
+    (pkg / "config").mkdir(parents=True)
+    assert _run(freeze, ["--source", str(origin), "--package", str(pkg)]) == 0
+    (pkg / "config" / "tables.yaml").write_text(
+        yaml.safe_dump(
+            {"tables": {"ev": {"kind": "boris", "file": "p.boris", "service_table": "p.boris"}}}
+        ),
+        encoding="utf-8",
+    )
+
+    def total(obs):
+        where = [{"col": "Observation id", "value": obs}, {"col": "Behavior", "value": "run"}]
+        return {"op": "sum", "table": "ev", "column": "Duration (s)", "where": where}
+
+    spec = {
+        "questions": [
+            {
+                "id": "Q-raters",
+                "category": "consistency",
+                "question": "run time per rater?",
+                "answer_type": "object",
+                "requires": ["boris_project"],
+                "compute": {
+                    "op": "bundle",
+                    "parts": {"a": total("pos_1"), "b": total("pos_1_rater2")},
+                },
+                "score": {
+                    "type": "object",
+                    "fields": {
+                        "a": {"type": "number", "abs": 0.001},
+                        "b": {"type": "number", "abs": 0.001},
+                    },
+                },  # fmt: skip
+            }
+        ]
+    }
+    (pkg / "config" / "questions.spec.yaml").write_text(yaml.safe_dump(spec), encoding="utf-8")
+    (pkg / "config" / "conditions.json").write_text(
+        json.dumps(
+            {
+                # one shared key for every condition: the BORIS intervals table
+                "service_tables": {"ev": "p.boris#intervals"},
+                "conditions": {"plain": {"output": "ingest_plain"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _run(builder, ["--package", str(pkg)]) == 0
+    return pkg
+
+
+def test_boris_intervals_through_the_service_match_the_gold(boris_package: Path):
+    gold = yaml.safe_load((boris_package / "gold" / "questions.yaml").read_text("utf-8"))
+    assert gold["questions"][0]["expected"] == {"a": 4.5, "b": 2.5}
+    ingest_step.ingest(boris_package, "plain")
+    record = json.loads((boris_package / "ingest_plain" / "condition.json").read_text("utf-8"))
+    assert record["service_tables"] == {"ev": "p.boris#intervals"}  # the shared key
+    out = boris_package / "b.json"
+    argv = ["--package", str(boris_package), "--ingest", str(boris_package / "ingest_plain")]
+    assert _run(baseline, [*argv, "--out", str(out)]) == 0
+    report = json.loads(out.read_text("utf-8"))
+    assert report["questions"][0]["retrieval"]["outcome"] == "pass"
+    assert report["column_maps"]["ev"]["matching"] == "by name (BORIS table)"
+
+
+def test_the_scorer_checks_a_boris_citation_the_way_the_service_locates_rows(
+    boris_package: Path,
+):
+    checksums = json.loads((boris_package / "checksums.json").read_text("utf-8"))
+    sha = checksums["files"][0]["sha256"]
+    ctx = score.CitationContext(checksums, boris_package / "source")
+    q = {"id": "Q", "category": "c", "answer_type": "object", "expected": {}, "requires": []}
+
+    def cite(**loc):
+        src = {"file": "p.boris", "sha256": sha, **loc}
+        return score.citation_status({"answer": {}, "sources": [src]}, q, ctx)["status"]
+
+    assert cite(observation_id="pos_1", start_event_index=0, stop_event_index=1) == "verified"
+    assert cite(observation_id="pos_1", start_event_index=2, stop_event_index=9) == "invalid"
+    assert cite(observation_id="nope", start_event_index=0, stop_event_index=1) == "invalid"
