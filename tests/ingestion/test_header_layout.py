@@ -257,7 +257,16 @@ def test_a_declared_multi_row_header_is_composed_and_recorded(tmp_path: Path):
         ],
     )
     declarations = _layouts(
-        tmp_path, {"layouts": {"scores.xlsx#Sheet1": {"header_row": 2, "header_rows": 2}}}
+        tmp_path,
+        {
+            "layouts": {
+                "scores.xlsx#Sheet1": {
+                    "header_row": 2,
+                    "header_rows": 2,
+                    "upper_label_fill": "forward",
+                }
+            }
+        },
     )
     output = tmp_path / "out"
     result = ingest(source, output, layouts=layout.load_declarations(declarations))
@@ -283,6 +292,33 @@ def test_a_declared_multi_row_header_is_composed_and_recorded(tmp_path: Path):
     ]
     assert [row["source_row"] for row in rows] == [4, 5]
     assert rows[1]["values"] == {"id": "b", "DRUG / Score": 7}
+
+
+def test_upper_labels_are_not_carried_across_columns_unless_declared(tmp_path: Path):
+    """A banner's span is never guessed: without "forward", each column keeps what
+    is written above it, and the fill choice is recorded as declared."""
+    source = tmp_path / "source"
+    source.mkdir()
+    _xlsx(
+        source / "scores.xlsx",
+        [
+            [None, "PBS", None, "DRUG", None],
+            ["id", "Score", "Score", "Score", "Score"],
+            ["a", 1, 2, 3, 4],
+        ],
+    )
+    declarations = _layouts(
+        tmp_path, {"layouts": {"scores.xlsx#Sheet1": {"header_row": 1, "header_rows": 2}}}
+    )
+    output = tmp_path / "out"
+    table = ingest(source, output, layouts=layout.load_declarations(declarations)).manifest[
+        "tables"
+    ]["scores.xlsx#Sheet1"]
+
+    names = [c["name"] for c in table["columns"]]
+    assert names == ["id", "PBS / Score", "Score", "DRUG / Score", "Score.1"]
+    assert table["header_detection"]["declared"]["upper_label_fill"] == "none"
+    assert table["columns"][2]["header_cells"] == ["", "Score"]
 
 
 def test_a_declared_header_can_leave_upper_labels_unfilled(tmp_path: Path):
