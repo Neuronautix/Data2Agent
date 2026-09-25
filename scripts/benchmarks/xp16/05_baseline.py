@@ -67,14 +67,31 @@ from xp16lib import (
 
 sys.path.insert(0, str(REPO / "src"))
 
-# Retrieval gaps of the service as built on main after D2A-97..106 (header
-# detection and --layout, crosswalks, unit aggregation, declared sheet blocks):
-# a .boris project is recognised and summarised but exposes no table of its
-# behaviour events. Pass --missing-capabilities to model an older or newer
-# build. unit_aggregation is deliberately never listed: on the retrieval path
-# the arithmetic is the caller's, and the service-native gap is measured
-# separately by the aggregate probe.
-DEFAULT_MISSING = "boris_project"
+# Retrieval gaps of the service as built on main after D2A-97..109 (header
+# detection and --layout, crosswalks, unit aggregation, declared sheet blocks,
+# BORIS projects as '<file>#events' / '#intervals' / '#observations' tables):
+# none is declared missing. Pass --missing-capabilities to model an older build.
+# unit_aggregation is deliberately never listed: on the retrieval path the
+# arithmetic is the caller's, and the service-native gap is measured separately
+# by the aggregate probe.
+DEFAULT_MISSING = ""
+
+# BORIS vocabulary shared by the gold reader and the service (D2A-109): the gold's
+# 'Type' column is the service's 'Behavior type', written STATE / POINT there.
+_BORIS_ALIASES = {"Type": "Behavior type"}
+_BORIS_TYPES = {"STATE": "State event", "POINT": "Point event"}
+
+
+class _ServiceBorisTable(Table):
+    """Service BORIS rows are located by observation id + start/stop event index,
+    not by the gold reader's running 'interval n'; the range says so, and each
+    cell carries the service's own locator."""
+
+    def locator_range(self, column=None, rows=None) -> str:  # noqa: ANN001
+        chosen = list(rows) if rows is not None else self.rows
+        return f"{len(chosen)} interval(s) located by observation id + start/stop event index"
+
+
 _ISO_MIDNIGHT = re.compile(r"(\d{4}-\d{2}-\d{2})T00:00:00")
 
 
@@ -211,12 +228,70 @@ class ServiceRowSource:
         }
         return rename
 
+    def _boris_table(
+        self, table_id: str, spec: dict[str, Any], columns: list[str], raw: list[dict[str, Any]]
+    ) -> Table:
+        """A BORIS table from the service's '<file>#intervals' (or '#events') rows.
+
+        BORIS tables have no sheet positions, so gold columns are matched by NAME
+        (the gold reader and the service both use BORIS's export vocabulary),
+        with one declared alias: the gold's 'Type' is the service's 'Behavior
+        type', whose values BORIS writes as STATE / POINT. The declared table's
+        observation filter (``observations``) is applied to the service rows,
+        exactly as the gold reader applies it. Service rows are located by
+        observation id + start/stop event index; that form is kept in the cells.
+        """
+        gold_cols = list(self.gold.table(table_id).columns) if self.gold is not None else []
+        rename = {name: name for name in columns if name in gold_cols}
+        for gold_name, service_name in _BORIS_ALIASES.items():
+            if gold_name in gold_cols and service_name in columns:
+                rename[service_name] = gold_name
+        self.renames[table_id] = rename
+        self.column_maps[table_id] = {
+            "service_table": spec["service_table"],
+            "matched": len(rename),
+            "unmatched": [
+                {"gold": g, "service": None} for g in gold_cols if g not in rename.values()
+            ],
+            "matching": "by name (BORIS table)",
+        }
+        pattern = re.compile(spec["observations"]) if spec.get("observations") else None
+        rows = []
+        for r in raw:
+            obs = r["values"].get("Observation id")
+            if pattern and not (obs is not None and pattern.fullmatch(str(obs))):
+                continue
+            values = {rename.get(n, n): _svc_value(r["values"].get(n)) for n in columns}
+            if "Type" in values and values["Type"] in _BORIS_TYPES:
+                values["Type"] = _BORIS_TYPES[values["Type"]]
+            loc = r.get("source_row") or {}
+            where = (
+                f"observation {loc.get('observation_id')!r}, events "
+                f"{loc.get('start_event_index', loc.get('event_index'))}"
+                f"-{loc.get('stop_event_index', '')}"
+            )
+            rows.append(Row(values, len(rows) + 1, {n: where for n in values}))
+        return _ServiceBorisTable(
+            table_id,
+            spec["file"],
+            self.file_sha(spec["file"]),
+            None,
+            [rename.get(n, n) for n in columns],
+            {rename.get(n, n): rename.get(n, n) for n in columns},
+            rows,
+            [],
+        )
+
     def table(self, table_id: str) -> Table:
         if table_id in self._tables:
             return self._tables[table_id]
         spec = self.config["tables"][table_id]
         key = spec["service_table"]
         columns, positions, raw = self._fetch(key)
+        if spec.get("kind") == "boris":
+            table = self._boris_table(table_id, spec, columns, raw)
+            self._tables[table_id] = table
+            return table
         delimited = spec.get("kind") == "delimited"
         rename = self._resolve_columns(table_id, columns, positions, delimited)
         self.renames[table_id] = rename

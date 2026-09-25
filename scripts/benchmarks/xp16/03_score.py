@@ -245,6 +245,7 @@ class CitationContext:
         self.source_dir = source_dir
         self._books: dict[str, Any] = {}
         self._lines: dict[str, list[list[str]]] = {}
+        self._boris: dict[str, Any] = {}
 
     def _book(self, file: str) -> Any | None:
         if self.source_dir is None:
@@ -309,8 +310,36 @@ class CitationContext:
             out["status"] = "sha_only"
         return out
 
+    def _boris_locator(self, file: str, src: dict[str, Any]) -> bool | None:
+        """A BORIS row as the service locates it: observation id + event index(es).
+
+        The observation must exist in the project and every cited event index
+        must be one of its events (0-based, as the service reports them).
+        """
+        if self.source_dir is None:
+            return None
+        if file not in self._boris:
+            try:
+                self._boris[file] = json.loads(
+                    (self.source_dir / file).read_text(encoding="utf-8")
+                ).get("observations", {})
+            except (OSError, ValueError):
+                self._boris[file] = None
+        observations = self._boris[file]
+        if observations is None or src["observation_id"] not in observations:
+            return False
+        n = len(observations[src["observation_id"]].get("events", []))
+        indices = [
+            src[k]
+            for k in ("event_index", "start_event_index", "stop_event_index")
+            if src.get(k) is not None
+        ]
+        return all(isinstance(i, int) and 0 <= i < n for i in indices)
+
     def _locate(self, file: str, src: dict[str, Any]) -> tuple[bool | None, Any]:
         """(exists?, value of a single cited cell or _NO_VALUE). None = not checkable."""
+        if src.get("observation_id") is not None:
+            return self._boris_locator(file, src), _NO_VALUE
         book = self._book(file) if src.get("sheet") is not None else None
         if src.get("sheet") is not None:
             if book is None:
