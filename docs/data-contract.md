@@ -342,6 +342,72 @@ Validation is strict:
 A column of ISO dates is `string`. That is correct and deliberate: nothing in
 the dataset declares a date format, so parsing one out would be an inference.
 
+### Value lists and free text (D2A-110, manifest 0.9.0)
+
+A column with at most 25 distinct values lists them in `distinct_values`,
+unless it holds free text. A value list makes a coded column (genotype, sex,
+treatment, behaviour) legible without a read. For a comment column, though,
+the list *is* the comments, and the manifest is the document that travels. A
+free-text column keeps every count (`distinct`, `distinct_exact`, `missing`,
+`dtype`). Only the list is dropped, and `values_withheld` says why:
+
+```json
+"values_withheld": {"reason": "free_text", "rule": "d2a-free-text/1", "clause": "prose",
+                    "max_words": 6, "max_length": 34, "unrepeated_multiword_values": 2}
+```
+
+- **Structural rule `d2a-free-text/1`.** A *word* is a whitespace-separated
+  token with at least two letters, in any script: `bad`, `KO` and `mg/kg` are
+  words; `12`, `+/-` and a date are not. The rule never reads the column's
+  name. The list is withheld when either clause holds:
+
+  | Clause | Fires when |
+  | --- | --- |
+  | `prose` | a value holds at least 4 words, or is longer than 40 characters |
+  | `unrepeated-words` | a value holding at least 2 words occurs only once in the column |
+
+  - The second clause is what separates a two-word code from a two-word note. A
+    code is a vocabulary used over and over: `Line3 KO` on every other row, a
+    behaviour on hundreds of events. A note (`bad video`) is written once, often
+    among repeated one-word values.
+  - `max_words`, `max_length` and `unrepeated_multiword_values` are the
+    statistics the rule reads.
+  - In doubt, the rule withholds. A small table whose two-word codes each occur
+    once is withheld, because a withheld list costs one `read_rows` call and a
+    listed comment cannot be taken back.
+- **Source-declared.** A BORIS project's `Comment`, `Comment start`,
+  `Comment stop` and `Description` columns hold what a scorer typed, by the
+  format's own definition. They are always withheld: `rule: "declared"`,
+  `source: "boris"`. Its `Behavior` and `Behavioral category` come from the
+  ethogram, and its `Behavior type`, `Event type` and `Pairing` are fixed
+  vocabularies. These are always listed, even a two-word code seen once. When
+  the structural rule would have withheld one of them, `values_listed_by`
+  (`source: "boris"`) records it.
+- **Declared override.** A layout declaration can state the verdict per
+  column, either way, with a top-level `free_text` object. It may be the
+  declaration's only content:
+
+  ```json
+  {"free_text": {"sessions.csv": {"remarks": true, "group": false}}}
+  ```
+
+  `true` withholds the list (`rule: "declared"`, `source: "declaration"`).
+  `false` lists it and, when the structural rule would have withheld it, adds
+  `values_listed_by` so the override stays auditable. A declared column that
+  matches no profiled column is an error. The manifest's `layout_declaration`
+  lists the tables it covers in `free_text_tables`.
+- **How to read an absent list:**
+
+  | No `distinct_values` because | Shows as |
+  | --- | --- |
+  | too many distinct values | `distinct_exact: false` |
+  | free text | `values_withheld` |
+  | nothing observed | `distinct: 0` (and `distinct_values: []`) |
+
+- **Reads are unchanged.** Values of a withheld column are served as before by
+  `read_rows`, `filter_rows`, `aggregate` and the joins, from the
+  checksum-verified file. Only the manifest stops copying them.
+
 ## Metadata recognition
 
 A file is recognised as metadata by one of two rules, and every entry records
@@ -777,7 +843,8 @@ Each project also yields three tables, readable with every table tool
 (`list_tables`, `inspect_table`, `read_rows`, `filter_rows`, `aggregate`, joins).
 Their `manifest.tables` entries carry `boris: {file, table}` naming the backing
 project, and the same column profiles as any other table (dtype, missingness
-under the active convention, distinct counts). Rows are never stored: they are
+under the active convention, distinct counts; comments and descriptions never
+list their values, see "Value lists and free text"). Rows are never stored: they are
 derived at query time from the checksum-verified project, by the same function
 that profiled them at ingest, and withheld if the checksum no longer matches.
 Column names follow BORIS's own exports.

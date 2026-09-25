@@ -16,7 +16,7 @@ coding-agent host. Those sit on top.
 
 __version__ = "0.1.0"
 
-MANIFEST_VERSION = "0.8.0"
+MANIFEST_VERSION = "0.9.0"
 EVIDENCE_VERSION = "0.4.0"
 
 __all__ = ["__version__", "MANIFEST_VERSION", "EVIDENCE_VERSION"]

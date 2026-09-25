@@ -126,7 +126,7 @@ LAYOUT_FORMAT_VERSION = "1"
 _TABLE_KEYS = frozenset(
     {"header_row", "header_rows", "data_starts_row", "upper_label_fill", "note"}
 )
-_TOP_KEYS = frozenset({"layout_version", "layouts", "note"})
+_TOP_KEYS = frozenset({"layout_version", "layouts", "free_text", "note"})
 
 
 # --------------------------------------------------------------------------- rows
@@ -211,13 +211,28 @@ class LayoutDeclarations:
     tables: dict[str, TableLayout | TableBlocks]
     sha256: str
     name: str
+    # Table path -> column name -> whether the column is free text (D2A-110).
+    # Overrides the structural rule either way; see tabular.FREE_TEXT_RULE_ID.
+    free_text: dict[str, dict[str, bool]] = field(default_factory=dict)
 
     def for_table(self, path: str) -> TableLayout | TableBlocks | None:
         return self.tables.get(path)
 
+    def free_text_for(self, path: str) -> dict[str, bool]:
+        return self.free_text.get(path, {})
+
     def unapplied(self, applied: set[str]) -> list[str]:
         """Declared table paths not in ``applied``, sorted."""
         return sorted(set(self.tables) - applied)
+
+    def unapplied_free_text(self, applied: set[tuple[str, str]]) -> list[str]:
+        """Declared '<table> / <column>' free-text verdicts that matched no column."""
+        return sorted(
+            f"{table} / {column}"
+            for table, columns in self.free_text.items()
+            for column in columns
+            if (table, column) not in applied
+        )
 
     def manifest_record(self) -> dict[str, Any]:
         """What the manifest carries: content identity only, never a local path.
@@ -226,10 +241,20 @@ class LayoutDeclarations:
         how the dataset was *read*; a relationships sidecar computed under one
         declaration must not survive a re-ingest under another.
         """
-        return {"sha256": self.sha256, "tables": sorted(self.tables)}
+        record: dict[str, Any] = {"sha256": self.sha256, "tables": sorted(self.tables)}
+        if self.free_text:
+            record["free_text_tables"] = sorted(self.free_text)
+        return record
 
     def provenance_record(self) -> dict[str, Any]:
-        return {"name": self.name, "sha256": self.sha256, "tables": sorted(self.tables)}
+        record: dict[str, Any] = {
+            "name": self.name,
+            "sha256": self.sha256,
+            "tables": sorted(self.tables),
+        }
+        if self.free_text:
+            record["free_text_tables"] = sorted(self.free_text)
+        return record
 
 
 def load_declarations(path: Path) -> LayoutDeclarations:
@@ -259,14 +284,44 @@ def parse_declarations(payload: Any, *, sha256: str, name: str) -> LayoutDeclara
             f"layout_version {version!r} is not supported; this version reads "
             f"{LAYOUT_FORMAT_VERSION!r}"
         )
-    layouts = payload.get("layouts")
-    if not isinstance(layouts, dict) or not layouts:
+    free_text = _parse_free_text(payload.get("free_text"))
+    layouts = payload.get("layouts", {} if free_text else None)
+    if not isinstance(layouts, dict) or not (layouts or free_text):
         raise LayoutError(
             "a layout declaration needs a non-empty 'layouts' object keyed by table path "
-            "('<file>' or '<workbook>#<sheet>')"
+            "('<file>' or '<workbook>#<sheet>'), a non-empty 'free_text' object, or both"
         )
     tables = {str(key): _parse_entry(str(key), value) for key, value in layouts.items()}
-    return LayoutDeclarations(tables=tables, sha256=sha256, name=name)
+    return LayoutDeclarations(tables=tables, sha256=sha256, name=name, free_text=free_text)
+
+
+def _parse_free_text(value: Any) -> dict[str, dict[str, bool]]:
+    """``{"<table path>": {"<column name>": true|false}}``, strictly validated.
+
+    ``true`` withholds the column's value list whatever its shape; ``false``
+    lists it even when the structural rule would withhold it. Column names are
+    matched exactly as the manifest records them.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not value:
+        raise LayoutError(
+            '\'free_text\' must be a non-empty object: {"<table path>": {"<column>": true}}'
+        )
+    parsed: dict[str, dict[str, bool]] = {}
+    for table, columns in value.items():
+        if not isinstance(columns, dict) or not columns:
+            raise LayoutError(
+                f"free_text for {table!r} must be a non-empty object of column name -> true/false"
+            )
+        for column, verdict in columns.items():
+            if not isinstance(verdict, bool):
+                raise LayoutError(
+                    f"free_text for {table!r} column {column!r} must be true or false, "
+                    f"not {verdict!r}"
+                )
+        parsed[str(table)] = {str(column): verdict for column, verdict in columns.items()}
+    return parsed
 
 
 def _parse_entry(path: str, value: Any) -> TableLayout | TableBlocks:
