@@ -317,11 +317,12 @@ class _CalamineWorkbook(OpenWorkbook):
 
         # calamine has no write API at all, so the source cannot be converted or
         # touched in place; it is opened by content, never by extension.
-        self._book = CalamineWorkbook.from_path(str(path))
-        self._states = {
-            meta.name: _CALAMINE_STATES.get(str(meta.visible).rsplit(".", 1)[-1], "unknown")
-            for meta in self._book.sheets_metadata
-        }
+        with _panics_as_errors():
+            self._book = CalamineWorkbook.from_path(str(path))
+            self._states = {
+                meta.name: _CALAMINE_STATES.get(str(meta.visible).rsplit(".", 1)[-1], "unknown")
+                for meta in self._book.sheets_metadata
+            }
 
     def close(self) -> None:
         self._book.close()
@@ -332,7 +333,8 @@ class _CalamineWorkbook(OpenWorkbook):
     def _sheet(self, name: str):
         if name not in self._book.sheet_names:
             raise KeyError(f"worksheet {name!r} no longer exists in the workbook")
-        return self._book.get_sheet_by_name(name)
+        with _panics_as_errors():
+            return self._book.get_sheet_by_name(name)
 
     def sheet_state(self, name: str) -> str:
         return self._states.get(name, "unknown")
@@ -349,10 +351,32 @@ class _CalamineWorkbook(OpenWorkbook):
         # is left-padded to column A. Without that, a sheet starting at column C
         # would shift every column position relative to openpyxl.
         sheet = self._sheet(name)
-        lead = (None,) * (sheet.start[1] if sheet.start else 0)
-        for number, row in enumerate(sheet.iter_rows(), start=1):
-            if number >= min_row:
-                yield lead + tuple(_calamine_cell(value) for value in row)
+        if sheet.start is None:
+            # An empty sheet has no used range, and calamine's iter_rows panics
+            # on it (a Rust unwrap) instead of yielding nothing. Found on the
+            # blank 'Sheet1' every XP1 ECG .xlsb export carries.
+            return
+        lead = (None,) * sheet.start[1]
+        with _panics_as_errors():
+            for number, row in enumerate(sheet.iter_rows(), start=1):
+                if number >= min_row:
+                    yield lead + tuple(_calamine_cell(value) for value in row)
+
+
+@contextmanager
+def _panics_as_errors() -> Iterator[None]:
+    """Turn a Rust panic inside calamine into an ordinary, catchable error.
+
+    pyo3 raises ``PanicException``, a ``BaseException``: it escapes every
+    ``except Exception`` and would abort a whole ingest on one malformed sheet.
+    It is matched by name because pyo3 does not export it as an importable class.
+    """
+    try:
+        yield
+    except BaseException as exc:
+        if type(exc).__name__ != "PanicException":
+            raise
+        raise RuntimeError(f"calamine could not parse this content: {exc}") from exc
 
 
 _CALAMINE_STATES = {"Visible": "visible", "Hidden": "hidden", "VeryHidden": "veryHidden"}
