@@ -233,12 +233,17 @@ A declaration overrides detection for the tables it names:
 | `header_row` | required; 1-based row (or line) of the first header row |
 | `header_rows` | how many rows the header spans (default 1, at most 10) |
 | `data_starts_row` | where observations begin (default: the row after the header); rows skipped between are recorded as `declared` |
-| `upper_label_fill` | `forward` (default) or `none`; see below |
+| `upper_label_fill` | `none` (default) or `forward`; see below |
 | `note` | free text, kept in the manifest |
 
 A multi-row header is composed column by column, top row first, joining the
 non-blank labels with ` / `: a `PBS` row over a `Score` row gives `PBS / Score`.
-With `upper_label_fill: forward`, a blank cell in an *upper* row takes the label
+By default (`none`) each column keeps only the labels written above it: a
+blank upper cell stays blank, because how far a label spans is not something
+the cells state, and on real registries a guessed span carries a banner over
+unrelated columns. The whole header stays readable as raw cells, per column in
+`header_cells` and per row through `inspect_table(include_rows_above_data=True)`.
+With `upper_label_fill: forward`, declared per table, a blank cell in an *upper* row takes the label
 to its left, which is how a label merged or centred across a group of columns
 reads; the fill stops where a row above starts a new label and where nothing
 below names the column, and the lowest row is never filled. Each column of a

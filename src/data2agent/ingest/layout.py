@@ -114,6 +114,13 @@ REASON_DECLARED = "declared"
 FILL_FORWARD = "forward"
 FILL_NONE = "none"
 _FILLS = (FILL_FORWARD, FILL_NONE)
+# Forward fill guesses how far an upper label spans, and on real registries the
+# guess runs a trailing banner ("Marble Burying Test") over unrelated columns and
+# a section label ("% Scratch Score") over genotype and ID columns. A wrong label
+# reads exactly like a right one, so filling is opt-in per declaration: by
+# default each column keeps only what is written above it, and the rest of the
+# header stays readable as raw header cells.
+DEFAULT_FILL = FILL_NONE
 
 LAYOUT_FORMAT_VERSION = "1"
 _TABLE_KEYS = frozenset(
@@ -176,7 +183,7 @@ class TableLayout:
     header_row: int
     header_rows: int = 1
     data_starts_row: int | None = None  # None: the row after the header block
-    upper_label_fill: str = FILL_FORWARD
+    upper_label_fill: str = DEFAULT_FILL
     note: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -296,7 +303,7 @@ def _parse_table(path: str, value: Any) -> TableLayout:
                 f"layout for {path!r}: data_starts_row {data_starts_row} falls inside the "
                 f"header (rows {header_row}..{header_row + header_rows - 1})"
             )
-    fill = value.get("upper_label_fill", FILL_FORWARD)
+    fill = value.get("upper_label_fill", DEFAULT_FILL)
     if fill not in _FILLS:
         raise LayoutError(
             f"layout for {path!r}: upper_label_fill must be one of {list(_FILLS)}, not {fill!r}"
