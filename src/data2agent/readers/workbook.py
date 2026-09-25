@@ -573,3 +573,7 @@ def _column_letter(index: int) -> str:
         index, remainder = divmod(index - 1, 26)
         letters = chr(65 + remainder) + letters
     return letters
+
+
+# Public name: row readers cite a cell by its spreadsheet column letter too.
+column_letter = _column_letter

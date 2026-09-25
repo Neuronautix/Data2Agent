@@ -114,14 +114,31 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         """
         return service.inspect_file(path, preview_bytes=preview_bytes)
 
-    def inspect_table(path: str) -> dict[str, Any]:
-        """Return a delimited table's shape: rows, columns, observed types, missingness.
+    def inspect_table(
+        path: str,
+        include_rows_above_data: bool = False,
+        max_rows: int = 20,
+        max_cells: int = 64,
+    ) -> dict[str, Any]:
+        """Return a table's shape: rows, columns, observed types, missingness.
 
         Column types describe the *shape of the observed tokens*, not the
         scientific meaning of the column. Null-like tokens such as 'NA' are
         counted separately from empty cells and are not treated as missing.
+
+        header_row / header_source say which row named the columns and how it
+        was chosen. rows_above_data_available counts rows above the data that
+        the column names do not show (a skipped banner or preamble, or the rows
+        of a multi-row header). Pass include_rows_above_data=true to read their
+        non-empty cells from the checksum-verified file, bounded by max_rows and
+        max_cells, each with its row number and column letter.
         """
-        return service.inspect_table(path)
+        return service.inspect_table(
+            path,
+            include_rows_above_data=include_rows_above_data,
+            max_rows=max_rows,
+            max_cells=max_cells,
+        )
 
     def list_tables() -> dict[str, Any]:
         """List every profiled delimited table and workbook worksheet.

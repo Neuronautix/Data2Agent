@@ -199,6 +199,19 @@ the physical line on which the record starts. Row readers (`read_rows`,
 The decision is also a claim in the evidence ledger, under the check
 `table.header-layout`.
 
+Skipping a row does not make its content unreachable (D2A-102). A banner can
+hold a fact no column shows, such as a session date above the header.
+`inspect_table` always reports `rows_above_data_available`: the number of
+skipped rows plus, for a multi-row header only, the header rows, counted from
+the manifest. A clean table reports 0. With `include_rows_above_data=true` it
+reads their non-empty cells at query time from the checksum-verified file,
+bounded by `max_rows` (default 20, at most 100) and `max_cells` per row
+(default 64, at most 512), with `rows_truncated` / `cells_truncated` flags.
+Each cell carries its row number, 0-based position, column letter and the table
+column at that position, normalised as `read_rows` normalises a cell. The cell
+values never enter `manifest.json`, which records only row numbers, reasons and
+counts.
+
 #### Declaring a layout
 
 A declaration overrides detection for the tables it names:

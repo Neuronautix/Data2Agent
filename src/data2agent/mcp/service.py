@@ -23,7 +23,12 @@ from ..evidence import EvidenceLedger
 from ..ingest.checksum import hash_file
 from ..ingest.conventions import MissingValueConvention
 from ..ingest.pipeline import EVIDENCE_FILENAME, MANIFEST_FILENAME, PROVENANCE_FILENAME
-from ..readers.rows import read_delimited_rows, read_workbook_rows
+from ..readers.rows import (
+    read_delimited_rows,
+    read_rows_above_data,
+    read_workbook_rows,
+    rows_above_data,
+)
 from ..relationships.crosswalk import (
     MAPPED,
     Crosswalk,
@@ -41,6 +46,12 @@ _DEFAULT_PREVIEW_BYTES = 4096
 _MAX_PREVIEW_BYTES = 262_144
 _DEFAULT_READ_ROWS = 100
 _MAX_READ_ROWS = 1000
+# Rows above a table's data (preamble, banners, multi-row header cells) are
+# context, not observations: a handful of rows, each capped in cells.
+_DEFAULT_ABOVE_ROWS = 20
+_MAX_ABOVE_ROWS = 100
+_DEFAULT_ABOVE_CELLS = 64
+_MAX_ABOVE_CELLS = 512
 _MAX_FILTER_SCAN_ROWS = 100_000
 _MAX_COMPLETE_QUERY_ROWS = 100_000
 _MAX_JOIN_SCAN_ROWS = 50_000
@@ -241,7 +252,14 @@ class DatasetService:
         payload["preview_truncated"] = len(raw) < entry["size"]
         return payload
 
-    def inspect_table(self, path: str) -> dict[str, Any]:
+    def inspect_table(
+        self,
+        path: str,
+        *,
+        include_rows_above_data: bool = False,
+        max_rows: int = _DEFAULT_ABOVE_ROWS,
+        max_cells: int = _DEFAULT_ABOVE_CELLS,
+    ) -> dict[str, Any]:
         """Return the recorded profile of a table, delimited or a worksheet.
 
         A worksheet is keyed ``<workbook path>#<sheet name>`` because one file
@@ -249,6 +267,16 @@ class DatasetService:
         verified against the workbook that backs it -- checking the key itself
         would fail, and returning the profile without checking anything would
         hand back content whose provenance was never confirmed.
+
+        Rows above the data -- a banner or preamble the header rule skipped, and
+        the raw cells of a declared multi-row header -- are not observations,
+        yet they can carry facts (a session date, a group label) that no column
+        name shows (D2A-102). Their number is always reported, from the manifest
+        and without reading the file. Their cells are read only when
+        ``include_rows_above_data`` is set: from the verified file, bounded, and
+        normalised as read_rows normalises a cell. The manifest stays free of
+        cell values; opening a workbook costs more than hashing it, so the read
+        is opt-in rather than part of every inspection.
         """
         tables = self.manifest.get("tables", {})
         profile = tables.get(path)
@@ -268,7 +296,43 @@ class DatasetService:
                 f"'{path}' was not profiled as a table; "
                 "call inspect_file for its format and preview"
             )
-        return {**profile, "integrity": self.verify_file(backing or path).as_dict()}
+        integrity = self.verify_file(backing or path)
+        payload = {**profile, "integrity": integrity.as_dict()}
+        above = rows_above_data(profile) if profile.get("profiled", True) else []
+        payload["rows_above_data_available"] = len(above)
+        if not include_rows_above_data:
+            return payload
+
+        applied_rows = _bounded(max_rows, _MAX_ABOVE_ROWS, "max_rows")
+        applied_cells = _bounded(max_cells, _MAX_ABOVE_CELLS, "max_cells")
+        payload["rows_above_data_bounds"] = {"max_rows": applied_rows, "max_cells": applied_cells}
+        payload["row_locator"] = (
+            "1-based worksheet row"
+            if profile.get("workbook")
+            else "1-based line a record starts on"
+        )
+        if not integrity.matches:
+            payload.update(
+                {
+                    "rows_above_data": [],
+                    "content_withheld": (
+                        "the backing file no longer matches its manifest checksum; "
+                        "re-ingest before relying on it"
+                    ),
+                }
+            )
+            return payload
+        convention = _missing_convention(self.manifest.get("missing_value_convention", {}))
+        payload.update(
+            read_rows_above_data(
+                self._resolve(backing or path),
+                profile,
+                max_rows=applied_rows,
+                max_cells=applied_cells,
+                convention=convention,
+            )
+        )
+        return payload
 
     def list_tables(self) -> dict[str, Any]:
         """List profiled tables and worksheets without returning their observations."""
@@ -2255,6 +2319,13 @@ def _flatten_joined_row(
             else None
         )
     return {"source_row": dict(row["source_rows"]), "values": values}
+
+
+def _bounded(value: int, ceiling: int, name: str) -> int:
+    requested = int(value)
+    if requested < 1:
+        raise ValueError(f"{name} must be at least 1")
+    return min(requested, ceiling)
 
 
 def _missing_convention(payload: dict[str, Any]) -> MissingValueConvention:

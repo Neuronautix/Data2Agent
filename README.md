@@ -200,7 +200,7 @@ generating bespoke tools per dataset and inheriting the generator's variance.
 | `dataset_inventory()` | identity, file count, formats, warnings |
 | `list_files(pattern, file_format)` | inventoried files, filtered |
 | `inspect_file(path)` | size, checksum, format, bounded preview |
-| `inspect_table(path)` | rows, columns, observed shapes, missingness |
+| `inspect_table(path, include_rows_above_data)` | rows, columns, observed shapes, missingness; how the header row was chosen; optionally the cells of skipped banner/preamble rows and multi-row headers |
 | `list_tables()` | profiled delimited tables and workbook worksheets |
 | `read_rows(path, columns, offset, limit)` | bounded source observations with row locators and integrity proof |
 | `filter_rows(path, filters, columns, limit)` | bounded deterministic selection with a closed operator registry |
