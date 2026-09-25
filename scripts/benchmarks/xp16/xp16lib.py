@@ -422,7 +422,22 @@ def _match(row: Row, rule: dict[str, Any]) -> bool:
         if x is None or t is None:
             return False
         return {"gt": x > t, "ge": x >= t, "lt": x < t, "le": x <= t}[op]
+    if op in {"span_ge", "span_lt"}:
+        # an interval cell 'start-end' (e.g. a time bin '300.000-600.000'),
+        # compared by its length; a cell that is not such an interval never matches
+        span, t = _span(v), to_number(target)
+        if span is None or t is None:
+            return False
+        tol = 1e-6
+        return span >= t - tol if op == "span_ge" else span < t - tol
     raise ValueError(f"unknown filter op {op!r}")
+
+
+def _span(value: Any) -> float | None:
+    m = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]*)?)\s*-\s*([0-9]+(?:\.[0-9]*)?)\s*", str(value or ""))
+    if not m:
+        return None
+    return float(m.group(2)) - float(m.group(1))
 
 
 def select(table: Table, where: list[dict[str, Any]] | None) -> list[Row]:
@@ -507,7 +522,20 @@ def _attach(
         if k is None:
             continue
         if k in index:
-            raise GoldError(f"join key {k!r} is not unique in {other.table_id}")
+            # A repeated right key is allowed only when declared (right_rows_agree)
+            # AND every repeat carries the same joined values -- e.g. several time
+            # bins of one observation that all name the same animal and genotype.
+            # Anything else would be a choice between rows, and is refused.
+            same = all(
+                norm_value(index[k].values.get(c)) == norm_value(r.values.get(c))
+                for c in join["columns"]
+            )
+            if not (join.get("right_rows_agree") and same):
+                raise GoldError(
+                    f"join key {k!r} is not unique in {other.table_id}"
+                    + ("" if same else " and its rows disagree on the joined columns")
+                )
+            continue
         index[k] = r
     out: list[Row] = []
     unmatched: list[str] = []
@@ -682,6 +710,7 @@ def _op_group_stats(src: RowSource, config: dict[str, Any], spec: dict[str, Any]
     units = [unit_spec] if isinstance(unit_spec, str) else list(unit_spec or [])
     rows = select(t, spec.get("where"))
     sources: list[dict[str, Any]] = []
+    unmatched: list[str] = []
     if spec.get("join"):
         rows, unmatched = _attach(src, config, t, rows, spec["join"], sources)
         if unmatched and not spec["join"].get("allow_unmatched", False):
@@ -742,6 +771,12 @@ def _op_group_stats(src: RowSource, config: dict[str, Any], spec: dict[str, Any]
         )
     if skipped:
         comp += f"; {len(skipped)} non-numeric cell(s) excluded: {skipped}"
+    if unmatched:
+        # allowed by the declaration (allow_unmatched), but never silent
+        comp += (
+            f"; {len(unmatched)} row(s) matched no right-table row and are outside the "
+            f"selection ({len(set(unmatched))} distinct key(s))"
+        )
     return Result(out, sources, comp)
 
 

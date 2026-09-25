@@ -428,7 +428,13 @@ def native_aggregate_probe(
                     "status": "not_expressible",
                     "reason": f"the ingest condition declares no service crosswalk for {named!r}",
                 }
-            filters = _to_service_filters([{**w, "col": f"left.{w['col']}"} for w in where])
+            # the gold join may restrict the right table too (e.g. one genotype)
+            right_where = [
+                {**w, "col": f"right.{right(w['col'])}"} for w in join.get("where") or []
+            ]
+            filters = _to_service_filters(
+                [{**w, "col": f"left.{w['col']}"} for w in where] + right_where
+            )
             if filters is None:
                 return {"status": "not_expressible", "reason": "filter outside the registry"}
             value = f"left.{left(spec['value'])}"
