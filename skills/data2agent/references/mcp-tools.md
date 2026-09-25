@@ -193,6 +193,16 @@ refused (they multiply rows), as is a join above the complete-aggregation cap.
 In a one-to-many join, a row-level metric over the unique side's columns is
 warned about, because each of its values is repeated once per match.
 
+Identifier crosswalks: a `relationship_id` joins exactly as `join_relationship`
+does, through its saved key formats and crosswalk. An explicit spec may add
+`crosswalk` (a name already declared in `relationships.json`) and
+`left_key_format` / `right_key_format`. Collisions refuse the aggregation. Use
+`unit: ["key.canonical_id", "left.day"]` to reduce per canonical animal rather
+than per spelling; units list the raw forms seen (`key.left_form`,
+`key.right_form`). Unmapped keys have a null `key.canonical_id` and are counted,
+not attributed; `aggregation_key_mapping` gives the mapped / unmapped /
+unmatched counts for the aggregated rows.
+
 ## `describe_variable(path, column)`
 
 Returns the ingest-time column profile together with a deterministic runtime

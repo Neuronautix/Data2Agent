@@ -25,6 +25,7 @@ from ..ingest.conventions import MissingValueConvention
 from ..ingest.pipeline import EVIDENCE_FILENAME, MANIFEST_FILENAME, PROVENANCE_FILENAME
 from ..readers.rows import read_delimited_rows, read_workbook_rows
 from ..relationships.crosswalk import (
+    MAPPED,
     Crosswalk,
     CrosswalkError,
     KeyResolver,
@@ -555,6 +556,9 @@ class DatasetService:
         left_keys: list[str] | None = None,
         right_keys: list[str] | None = None,
         how: str = "inner",
+        crosswalk: str | None = None,
+        left_key_format: str | None = None,
+        right_key_format: str | None = None,
         group_by: list[str] | None = None,
         filters: list[dict[str, Any]] | None = None,
         unit: list[str] | None = None,
@@ -570,11 +574,21 @@ class DatasetService:
         its output would summarise a page, not the data. This runs the same join
         to completion inside the bounds and aggregates that.
 
+        The join is exactly the one ``join_tables`` / ``join_relationship`` would
+        run: a ``relationship_id`` brings its saved keys, key formats and
+        crosswalk; an explicit spec may name a crosswalk already declared in
+        relationships.json and key formats, never a mapping of its own. Keys go
+        through the same resolver and the same collision rules, and a rendering
+        or crosswalk collision refuses the aggregation rather than merging keys.
+
         Columns are addressed as ``left.<column>`` or ``right.<column>``: the
         prefix is split at the first dot only, so column names may themselves
         contain dots. An unqualified name is refused rather than resolved,
         because a name present on both sides is exactly the case where guessing
-        is wrong.
+        is wrong. When the join resolves its keys, the ``key.`` namespace adds
+        pseudo-columns (see ``_KEY_COLUMNS``): above all ``key.canonical_id``,
+        so the unit of analysis can be the canonical animal rather than any one
+        file's spelling of it.
 
         A many-to-many join is refused: it multiplies rows within each key, and
         a sum or mean over multiplied rows has no scientific reading.
@@ -589,25 +603,19 @@ class DatasetService:
         explicit = (left, right, left_keys, right_keys)
         contract: dict[str, Any] | None = None
         if relationship_id is not None:
-            if any(value is not None for value in explicit):
+            if any(value is not None for value in explicit) or any(
+                value is not None for value in (crosswalk, left_key_format, right_key_format)
+            ):
                 raise ValueError(
-                    "give either relationship_id or left/right/left_keys/right_keys, not both"
+                    "give either relationship_id or an explicit join (left/right/left_keys/"
+                    "right_keys, crosswalk, key formats), not both"
                 )
-            record = self.get_relationship(relationship_id)["relationship"]
-            if record["status"] not in {"declared", "deterministic"}:
-                raise ValueError(
-                    f"relationship {relationship_id!r} has status {record['status']!r}; "
-                    "only declared or deterministic relationships can drive a named join"
-                )
-            left, right = record["left"]["table"], record["right"]["table"]
-            left_keys = list(record["left"]["keys"])
-            right_keys = list(record["right"]["keys"])
-            contract = {
-                "id": relationship_id,
-                "status": record["status"],
-                "cardinality": record["cardinality"],
-                "basis": record["basis"],
-            }
+            spec, contract = self._relationship_join_spec(relationship_id)
+            left, right = spec["left"], spec["right"]
+            left_keys, right_keys = spec["left_keys"], spec["right_keys"]
+            crosswalk = spec["crosswalk"]
+            left_key_format = spec["left_key_format"]
+            right_key_format = spec["right_key_format"]
         elif any(value is None for value in explicit):
             raise ValueError(
                 "aggregate_join needs relationship_id, or all of left, right, left_keys "
@@ -620,6 +628,15 @@ class DatasetService:
             raise ValueError(
                 f"unsupported join type {how!r}; choose from {sorted(query.JOIN_TYPES)}"
             )
+        left_resolver, right_resolver = self._key_resolvers(
+            left_keys,
+            right_keys,
+            crosswalk=crosswalk,
+            left_key_format=left_key_format,
+            right_key_format=right_key_format,
+        )
+        resolved = left_resolver.transforms or right_resolver.transforms
+        mapped = left_resolver.crosswalk is not None
 
         row_metrics = stage_one if unit_columns else metrics
         referenced = _ordered_union(
@@ -632,10 +649,15 @@ class DatasetService:
             ],
             [rule.get("column") for rule in rules if isinstance(rule.get("column"), str)],
         )
-        sides: dict[str, list[str]] = {"left": [], "right": []}
+        sides: dict[str, list[str]] = {"left": [], "right": [], "key": []}
         for name in referenced:
             side, column = _split_qualified(name)
             sides[side].append(column)
+        for column in sides["key"]:
+            _require_key_column(column, resolved=resolved, mapped=mapped)
+        by_canonical = "canonical_id" in {
+            _split_qualified(name)[1] for name in unit_columns if name.startswith("key.")
+        }
 
         left_profile = self._table_profile(left)
         right_profile = self._table_profile(right)
@@ -660,6 +682,9 @@ class DatasetService:
             "left_keys": left_keys,
             "right_keys": right_keys,
             "how": how,
+            **({"crosswalk": crosswalk} if crosswalk is not None else {}),
+            **({"left_key_format": left_key_format} if left_key_format else {}),
+            **({"right_key_format": right_key_format} if right_key_format else {}),
         }
         payload: dict[str, Any] = {
             "dataset_id": self.dataset_id,
@@ -693,11 +718,28 @@ class DatasetService:
             payload.update({"groups": [], "content_withheld": withheld})
             return payload
 
+        join_keys: tuple[list[str], list[str]] = (left_keys, right_keys)
+        if resolved:
+            key_mapping, reasons = _resolve_join_keys(
+                left_rows, right_rows, left_resolver=left_resolver, right_resolver=right_resolver
+            )
+            payload["key_mapping"] = key_mapping
+            if reasons:
+                payload.update(
+                    {
+                        "groups": [],
+                        "content_withheld": "; ".join(reasons)
+                        + "; aggregating would silently merge distinct keys",
+                    }
+                )
+                return payload
+            join_keys = ([_RESOLVED_KEY], [_RESOLVED_KEY])
+
         joined = query.join_rows(
             left_rows,
             right_rows,
-            left_keys=left_keys,
-            right_keys=right_keys,
+            left_keys=join_keys[0],
+            right_keys=join_keys[1],
             how=how,
             limit=_MAX_COMPLETE_QUERY_ROWS,
         )
@@ -714,10 +756,19 @@ class DatasetService:
                 f"complete-aggregation safety cap of {_MAX_COMPLETE_QUERY_ROWS}"
             )
 
-        rows = [_flatten_joined_row(row, left_needed, right_needed) for row in joined["rows"]]
+        rows = [
+            _flatten_joined_row(
+                row,
+                left_needed,
+                right_needed,
+                resolvers=(left_resolver, right_resolver) if resolved else None,
+            )
+            for row in joined["rows"]
+        ]
         dtypes = {
             **_qualified_dtypes("left", left_profile, left_needed),
             **_qualified_dtypes("right", right_profile, right_needed),
+            **({f"key.{name}": "string" for name in _KEY_COLUMNS} if resolved else {}),
         }
         warnings = list(joined["warnings"])
         # In a one-to-many join the unique side's row is copied onto every match.
@@ -742,6 +793,13 @@ class DatasetService:
                     f"row-level metrics over {touched} weight each {replicated} value by its "
                     "number of matches"
                 )
+        if mapped and any(
+            payload["key_mapping"][side].get("unmapped_rows") for side in ("left", "right")
+        ):
+            warnings.append(
+                "key value(s) absent from the crosswalk were passed through unchanged and "
+                "matched only identical unmapped values; their key.canonical_id is null"
+            )
         payload["join"] = {
             "cardinality": cardinality,
             "diagnostics": joined["diagnostics"],
@@ -753,17 +811,25 @@ class DatasetService:
             },
             "warnings": warnings,
         }
+
+        # Filters are applied here rather than inside _summarise so that the
+        # mapping counts describe exactly the rows that entered the aggregation.
+        if rules:
+            rows, _ = query.filter_rows(rows, rules, limit=len(rows))
+        if mapped:
+            payload["aggregation_key_mapping"] = _aggregation_mapping_counts(rows)
         payload.update(
             _summarise(
                 rows,
                 dtypes=dtypes,
                 group_by=groups,
                 metrics=metrics,
-                filters=rules,
+                filters=[],
                 unit=unit_columns,
                 unit_metrics=stage_one,
                 on_inconsistent_unit=on_inconsistent_unit,
                 unit_sample=unit_sample,
+                listed_columns=["key.left_form", "key.right_form"] if by_canonical else None,
             )
         )
         return payload
@@ -1105,6 +1171,32 @@ class DatasetService:
         limit: int = _DEFAULT_READ_ROWS,
     ) -> dict[str, Any]:
         """Execute a saved declared/deterministic relationship as a join contract."""
+        spec, contract = self._relationship_join_spec(relationship_id)
+        result = self.join_tables(
+            spec["left"],
+            spec["right"],
+            left_keys=spec["left_keys"],
+            right_keys=spec["right_keys"],
+            left_columns=left_columns,
+            right_columns=right_columns,
+            how=how,
+            limit=limit,
+            crosswalk=spec["crosswalk"],
+            left_key_format=spec["left_key_format"],
+            right_key_format=spec["right_key_format"],
+        )
+        result["relationship_contract"] = contract
+        return result
+
+    def _relationship_join_spec(
+        self, relationship_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The exact join a saved relationship denotes, and the contract to cite.
+
+        Shared by join_relationship and aggregate_join, so a named join means the
+        same keys, key formats and crosswalk whether a reader pages through it
+        or aggregates over it.
+        """
         record = self.get_relationship(relationship_id)["relationship"]
         status = record["status"]
         if status not in {"declared", "deterministic"}:
@@ -1125,27 +1217,23 @@ class DatasetService:
                     f"{cited['name']!r} ({cited['sha256']}), which this bundle no longer "
                     "holds unchanged; regenerate relationships"
                 )
-        result = self.join_tables(
-            record["left"]["table"],
-            record["right"]["table"],
-            left_keys=list(record["left"]["keys"]),
-            right_keys=list(record["right"]["keys"]),
-            left_columns=left_columns,
-            right_columns=right_columns,
-            how=how,
-            limit=limit,
-            crosswalk=cited["name"] if cited is not None else None,
-            left_key_format=(mapping.get("left") or {}).get("key_format"),
-            right_key_format=(mapping.get("right") or {}).get("key_format"),
-        )
-        result["relationship_contract"] = {
+        spec = {
+            "left": record["left"]["table"],
+            "right": record["right"]["table"],
+            "left_keys": list(record["left"]["keys"]),
+            "right_keys": list(record["right"]["keys"]),
+            "crosswalk": cited["name"] if cited is not None else None,
+            "left_key_format": (mapping.get("left") or {}).get("key_format"),
+            "right_key_format": (mapping.get("right") or {}).get("key_format"),
+        }
+        contract = {
             "id": relationship_id,
             "status": status,
             "cardinality": record["cardinality"],
             "basis": record["basis"],
             **({"crosswalk": dict(cited)} if cited is not None else {}),
         }
-        return result
+        return spec, contract
 
     def get_metadata(self, path: str | None = None) -> dict[str, Any]:
         """Serve recognised metadata files verbatim.
@@ -1612,40 +1700,10 @@ class DatasetService:
         and the compared value (the canonical ID when the crosswalk listed the
         form), so a reader can always see which spellings were identified.
         """
-        for rows, resolver in ((left_rows, left_resolver), (right_rows, right_resolver)):
-            for row in rows:
-                row["values"][_RESOLVED_KEY] = resolver.resolve(row["values"])
-        left_keys_seen = {row["values"][_RESOLVED_KEY] for row in left_rows} - {None}
-        right_keys_seen = {row["values"][_RESOLVED_KEY] for row in right_rows} - {None}
-        key_mapping: dict[str, Any] = {
-            "crosswalk": (
-                {**left_resolver.crosswalk.citation(), "declared_in": "relationships.json"}
-                if left_resolver.crosswalk is not None
-                else None
-            ),
-            "left": mapping_facts(left_rows, left_resolver, other_keys=right_keys_seen),
-            "right": mapping_facts(right_rows, right_resolver, other_keys=left_keys_seen),
-        }
+        key_mapping, reasons = _resolve_join_keys(
+            left_rows, right_rows, left_resolver=left_resolver, right_resolver=right_resolver
+        )
         payload["key_mapping"] = key_mapping
-        rendered = [
-            side for side in ("left", "right") if key_mapping[side].get("rendering_collisions")
-        ]
-        colliding = [side for side in ("left", "right") if key_mapping[side].get("collisions")]
-        reasons = []
-        if rendered:
-            reasons.append(
-                "rendering collision on "
-                + ", ".join(rendered)
-                + ": distinct raw keys render to the same value "
-                "(see key_mapping.*.rendering_collisions)"
-            )
-        if colliding:
-            reasons.append(
-                "crosswalk collision on "
-                + ", ".join(colliding)
-                + ": one table writes one canonical ID in more than one form "
-                "(see key_mapping.*.collisions)"
-            )
         if reasons:
             payload.update(
                 {
@@ -1969,6 +2027,60 @@ def _project_joined_row(
     }
 
 
+def _resolve_join_keys(
+    left_rows: list[dict[str, Any]],
+    right_rows: list[dict[str, Any]],
+    *,
+    left_resolver: KeyResolver,
+    right_resolver: KeyResolver,
+) -> tuple[dict[str, Any], list[str]]:
+    """Resolve both sides' join keys in place and decide whether the join may run.
+
+    The one place that turns key columns into compared values and applies the
+    collision rules, shared by every join that goes through a key_format or a
+    crosswalk -- a row page (join_tables / join_relationship) or a complete
+    aggregation (aggregate_join). Two copies of these rules would drift, and a
+    join that aggregates under laxer rules than the one a reader can inspect
+    would merge animals exactly where nobody is looking.
+
+    Each row gets its resolved key under ``_RESOLVED_KEY``. Returns the
+    ``key_mapping`` facts and the refusal reasons; any reason means the join
+    must not run, because it would silently merge distinct keys.
+    """
+    for rows, resolver in ((left_rows, left_resolver), (right_rows, right_resolver)):
+        for row in rows:
+            row["values"][_RESOLVED_KEY] = resolver.resolve(row["values"])
+    left_keys_seen = {row["values"][_RESOLVED_KEY] for row in left_rows} - {None}
+    right_keys_seen = {row["values"][_RESOLVED_KEY] for row in right_rows} - {None}
+    key_mapping: dict[str, Any] = {
+        "crosswalk": (
+            {**left_resolver.crosswalk.citation(), "declared_in": "relationships.json"}
+            if left_resolver.crosswalk is not None
+            else None
+        ),
+        "left": mapping_facts(left_rows, left_resolver, other_keys=right_keys_seen),
+        "right": mapping_facts(right_rows, right_resolver, other_keys=left_keys_seen),
+    }
+    rendered = [side for side in ("left", "right") if key_mapping[side].get("rendering_collisions")]
+    colliding = [side for side in ("left", "right") if key_mapping[side].get("collisions")]
+    reasons = []
+    if rendered:
+        reasons.append(
+            "rendering collision on "
+            + ", ".join(rendered)
+            + ": distinct raw keys render to the same value "
+            "(see key_mapping.*.rendering_collisions)"
+        )
+    if colliding:
+        reasons.append(
+            "crosswalk collision on "
+            + ", ".join(colliding)
+            + ": one table writes one canonical ID in more than one form "
+            "(see key_mapping.*.collisions)"
+        )
+    return key_mapping, reasons
+
+
 def _summarise(
     rows: list[dict[str, Any]],
     *,
@@ -1980,6 +2092,7 @@ def _summarise(
     unit_metrics: list[dict[str, Any]],
     on_inconsistent_unit: str,
     unit_sample: int,
+    listed_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     """The aggregation body shared by ``aggregate`` and ``aggregate_join``.
 
@@ -2019,6 +2132,7 @@ def _summarise(
         dtypes=dtypes,
         on_inconsistent_unit=on_inconsistent_unit,
         unit_sample=unit_sample,
+        listed_columns=listed_columns,
     )
     groups = result.pop("groups")
     summary["analysis_unit"] = result
@@ -2026,15 +2140,74 @@ def _summarise(
     return summary
 
 
+# Pseudo-columns an aggregate_join exposes about the join key itself, under the
+# ``key.`` prefix. They exist because across files the same animal is spelled
+# differently: grouping or reducing by any one file's raw spelling would split
+# one animal into several units (or keep only one file's view of it), whereas
+# the canonical ID is the identity the declared crosswalk asserts.
+_KEY_COLUMNS: dict[str, str] = {
+    "canonical_id": (
+        "the crosswalk's canonical ID for the row's join key; null when the written "
+        "form is not in the crosswalk (unmapped) or the key is missing"
+    ),
+    "mapping": "'crosswalk' when the key was mapped, 'unmapped' when passed through, else null",
+    "left_form": "the left key as written (rendered through left_key_format if declared)",
+    "right_form": "the right key as written (rendered through right_key_format if declared)",
+}
+_CROSSWALK_KEY_COLUMNS = frozenset({"canonical_id", "mapping"})
+
+
 def _split_qualified(name: str) -> tuple[str, str]:
-    """Split ``left.<column>`` / ``right.<column>`` at the first dot only."""
+    """Split ``left.<column>`` / ``right.<column>`` / ``key.<name>`` at the first dot only."""
     side, dot, column = name.partition(".")
-    if not dot or side not in {"left", "right"} or not column:
+    if not dot or side not in {"left", "right", "key"} or not column:
         raise ValueError(
-            f"column reference {name!r} must be qualified as 'left.<column>' or "
-            "'right.<column>' in a join aggregation"
+            f"column reference {name!r} must be qualified as 'left.<column>', "
+            "'right.<column>' or 'key.<name>' in a join aggregation"
         )
     return side, column
+
+
+def _require_key_column(column: str, *, resolved: bool, mapped: bool) -> None:
+    if column not in _KEY_COLUMNS:
+        raise ValueError(
+            f"unknown key pseudo-column 'key.{column}'; available: "
+            f"{['key.' + name for name in _KEY_COLUMNS]}"
+        )
+    if not resolved:
+        raise ValueError(
+            f"'key.{column}' exists only when the join resolves its keys through a "
+            "crosswalk or a key_format; this join compares raw key columns"
+        )
+    if column in _CROSSWALK_KEY_COLUMNS and not mapped:
+        raise ValueError(f"'key.{column}' needs a join through a declared crosswalk")
+
+
+def _aggregation_mapping_counts(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """How the join keys of the rows that entered the aggregation were resolved.
+
+    ``key_mapping`` describes each whole table; this describes only the joined,
+    filtered rows the statistics were computed from, which is what a reader
+    needs to judge them.
+    """
+    counts = {"crosswalk": 0, "unmapped": 0}
+    missing = 0
+    for row in rows:
+        mapping = row["values"].get("key.mapping")
+        if mapping is None:
+            missing += 1
+        else:
+            counts[mapping] += 1
+    return {
+        "rows": len(rows),
+        "mapped_rows": counts["crosswalk"],
+        "unmapped_rows": counts["unmapped"],
+        "rows_with_missing_key": missing,
+        "unmatched_rows": sum(row["source_row"]["right"] is None for row in rows),
+        "mapped_distinct_canonical_ids": len(
+            {row["values"]["key.canonical_id"] for row in rows} - {None}
+        ),
+    }
 
 
 def _qualified_dtypes(side: str, profile: dict[str, Any], columns: list[str]) -> dict[str, str]:
@@ -2043,12 +2216,19 @@ def _qualified_dtypes(side: str, profile: dict[str, Any], columns: list[str]) ->
 
 
 def _flatten_joined_row(
-    row: dict[str, Any], left_columns: list[str], right_columns: list[str]
+    row: dict[str, Any],
+    left_columns: list[str],
+    right_columns: list[str],
+    *,
+    resolvers: tuple[KeyResolver, KeyResolver] | None = None,
 ) -> dict[str, Any]:
     """One joined row as a query row with qualified column names.
 
     ``source_row`` keeps both locators, so every unit and every missing-key row
-    in the result points at the exact rows of both files it came from.
+    in the result points at the exact rows of both files it came from. With
+    resolvers, the ``key.*`` pseudo-columns are filled from the left row's
+    resolved key (equal to the right's on every match) and each side's
+    written form.
     """
     right = row.get("right")
     values = {f"left.{name}": row["left"].get(name) for name in left_columns}
@@ -2058,6 +2238,22 @@ def _flatten_joined_row(
             for name in right_columns
         }
     )
+    if resolvers is not None:
+        left_resolver, right_resolver = resolvers
+        key = row["left"].get(_RESOLVED_KEY)
+        mapped = left_resolver.crosswalk is not None and key is not None
+        values["key.canonical_id"] = key[1] if mapped and key[0] == MAPPED else None
+        values["key.mapping"] = (
+            ("crosswalk" if key[0] == MAPPED else "unmapped") if mapped else None
+        )
+        values["key.left_form"] = (
+            left_resolver.text(row["left"]) if left_resolver.raw(row["left"]) else None
+        )
+        values["key.right_form"] = (
+            right_resolver.text(right)
+            if isinstance(right, dict) and right_resolver.raw(right)
+            else None
+        )
     return {"source_row": dict(row["source_rows"]), "values": values}
 
 
