@@ -85,7 +85,10 @@ Schemas: `schemas/dataset-manifest.schema.json`, `schemas/evidence.schema.json`,
 
 `relationships.json` is not produced by ingest. It appears only after
 `data2agent relationships <output>`, keeping relationship assessment separate
-from the byte-stable ingest contract.
+from the byte-stable ingest contract. It records the `manifest_sha256` it was
+computed against; after any re-ingest that changes `manifest.json` (for example
+switching `--strict-missing` on or off) the service refuses it until
+relationships are regenerated.
 
 ## Manifest field semantics
 

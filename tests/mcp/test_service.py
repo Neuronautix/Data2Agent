@@ -9,6 +9,7 @@ import pytest
 
 from data2agent.errors import OutputError
 from data2agent.ingest import ingest
+from data2agent.ingest.conventions import STRICT_CONVENTION
 from data2agent.mcp import DatasetService
 
 
@@ -319,6 +320,34 @@ def test_saved_relationship_assertions_are_withheld_after_source_drift(
     assert listing["relationships"] == []
     assert listing["source_integrity"]["matches"] is False
     assert "regenerate relationships" in listing["content_withheld"]
+
+
+def test_relationship_sidecar_is_refused_after_reingest_under_another_convention(
+    tmp_path: Path,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "subjects.csv").write_text("subject,group\nNA,control\nS1,test\n", encoding="utf-8")
+    (source / "sessions.csv").write_text("subject,session\nNA,1\nS1,1\n", encoding="utf-8")
+    output = tmp_path / "out"
+    ingest(source, output, convention=STRICT_CONVENTION)
+    bundle = DatasetService(output, load_relationships=False).build_relationships(
+        [
+            {
+                "left": "subjects.csv",
+                "right": "sessions.csv",
+                "left_keys": ["subject"],
+                "right_keys": ["subject"],
+            }
+        ]
+    )
+    (output / "relationships.json").write_text(json.dumps(bundle), encoding="utf-8")
+    assert DatasetService(output).list_relationships(status="declared")["total"] == 1
+
+    # Same bytes, so the same dataset_id -- but NA is now a missing value, not a key.
+    ingest(source, output)
+    with pytest.raises(OutputError, match="different manifest.json"):
+        DatasetService(output)
 
 
 def test_stale_relationship_sidecar_is_refused(ingested):

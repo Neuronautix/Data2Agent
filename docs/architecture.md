@@ -92,11 +92,14 @@ compared for equality.
 | `manifest.json` | what the dataset **is** | yes, byte-identical |
 | `provenance.json` | what this **run** was (time, host, tool version) | no, by definition |
 | `evidence.json` | every ingest claim, and what supports it | yes, byte-identical |
-| `relationships.json` | optional derived relationship assessments | yes, for equal dataset bytes + declarations |
+| `relationships.json` | optional derived relationship assessments | yes, for equal manifest + declarations |
 
 The first three are written by ingest. `relationships.json` is written only by
 the explicit relationship-resolution step, so discovering or declaring joins
-never changes `manifest.json`. All artifacts are joined by `dataset_id`.
+never changes `manifest.json`. All artifacts are joined by `dataset_id`;
+`relationships.json` is additionally bound to the SHA-256 of the `manifest.json`
+it was computed against, because a re-ingest of the same bytes under another
+missing-value convention keeps `dataset_id` but changes which keys exist.
 
 ## Why the service and the binding are separate modules
 

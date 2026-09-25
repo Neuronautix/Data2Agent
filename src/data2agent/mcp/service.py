@@ -71,13 +71,18 @@ class DatasetService:
         self.mode: Mode = resolve_mode(mode)
 
         self.manifest = _load_json(self.output_dir / MANIFEST_FILENAME)
+        # The manifest records how the bytes were read (missing-value convention,
+        # profiles); relationship assessments are only valid under that reading.
+        self.manifest_sha256 = hash_file(self.output_dir / MANIFEST_FILENAME)
         self.provenance = _load_json(self.output_dir / PROVENANCE_FILENAME)
         evidence = _load_json(self.output_dir / EVIDENCE_FILENAME)
         _require_one_dataset(self.manifest, self.provenance, evidence)
         self.ledger = EvidenceLedger.from_dict(evidence)
         self.relationship_bundle = (
             _load_relationship_bundle(
-                self.output_dir / relationships.RELATIONSHIPS_FILENAME, self.dataset_id
+                self.output_dir / relationships.RELATIONSHIPS_FILENAME,
+                self.dataset_id,
+                self.manifest_sha256,
             )
             if load_relationships
             else None
@@ -671,6 +676,7 @@ class DatasetService:
         payload: dict[str, Any] = {
             "relationships_version": relationships.RELATIONSHIP_VERSION,
             "dataset_id": self.dataset_id,
+            "manifest_sha256": self.manifest_sha256,
             "determined": True,
             "relationship_count": len(ordered),
             "status_counts": dict(sorted(status_counts.items())),
@@ -1288,7 +1294,9 @@ def _validate_declaration(declaration: dict[str, Any], index: int) -> dict[str, 
     return result
 
 
-def _load_relationship_bundle(path: Path, dataset_id: str) -> dict[str, Any] | None:
+def _load_relationship_bundle(
+    path: Path, dataset_id: str, manifest_sha256: str
+) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1296,6 +1304,15 @@ def _load_relationship_bundle(path: Path, dataset_id: str) -> dict[str, Any] | N
         raise OutputError(
             f"{path.name} belongs to dataset {payload.get('dataset_id')!r}, "
             f"but the manifest describes {dataset_id!r}; regenerate relationships"
+        )
+    # Same bytes, different reading: a re-ingest under another missing-value
+    # convention keeps dataset_id but changes which keys exist, so saved overlap,
+    # cardinality, and declared status no longer describe what a join would do.
+    if payload.get("manifest_sha256") != manifest_sha256:
+        raise OutputError(
+            f"{path.name} was computed against a different manifest.json "
+            "(the dataset was re-ingested, e.g. under another missing-value "
+            "convention); regenerate relationships"
         )
     return payload
 
