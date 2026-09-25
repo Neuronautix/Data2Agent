@@ -46,6 +46,8 @@ _BY_EXTENSION: dict[str, tuple[str, str]] = {
     # than an absence of evidence. Without this entry there is no extension
     # claim to contradict, and the conflict goes unreported.
     ".xls": ("xls", "application/vnd.ms-excel"),
+    ".xlsb": ("xlsb", "application/vnd.ms-excel.sheet.binary.macroEnabled.12"),
+    ".ods": ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
     ".nii": ("nifti", "application/x-nifti"),
     ".edf": ("edf", "application/x-edf"),
 }
@@ -57,6 +59,9 @@ _SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
     (b"\xff\xd8\xff", "jpeg", "image/jpeg"),
     (b"%PDF-", "pdf", "application/pdf"),
     (b"PK\x03\x04", "zip-container", "application/zip"),
+    # OLE2 Compound File Binary: the container of legacy BIFF .xls, .doc and
+    # .ppt. Refined by its directory, exactly as a ZIP is by its member list.
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "ole2-container", "application/x-ole-storage"),
     (b"\x1f\x8b", "gzip", "application/gzip"),
     (b"\x89HDF\r\n\x1a\n", "hdf5", "application/x-hdf5"),
     (b"PAR1", "parquet", "application/vnd.apache.parquet"),
@@ -70,6 +75,9 @@ _SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
 # when the two are actually compatible. An incompatible pair is a conflict.
 _CONTAINER_COMPATIBLE: dict[str, frozenset[str]] = {
     "zip-container": frozenset({"zip", "xlsx", "docx", "pptx"}),
+    # Deliberately empty: an OLE2 file whose directory shows no workbook stream
+    # is not an .xls, and a name saying otherwise is a conflict worth reporting.
+    "ole2-container": frozenset(),
     "xml": frozenset({"xml", "rdfxml"}),
     # NWB is HDF5, and MATLAB v7.3 is HDF5. An '.nwb' file over HDF5 bytes is
     # not a contradiction -- it is the specific name for the general container,
@@ -97,12 +105,23 @@ _OOXML_MARKERS: tuple[tuple[str, str, str], ...] = (
         "pptx",
         "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ),
+    # Binary OOXML: the same package, a binary workbook part instead of XML.
+    ("xl/workbook.bin", "xlsb", "application/vnd.ms-excel.sheet.binary.macroEnabled.12"),
 )
+
+# OpenDocument declares its type in a stored 'mimetype' member, by specification
+# the archive's first entry. Only the spreadsheet type is claimed.
+_ODS_MIMETYPE = b"application/vnd.oasis.opendocument.spreadsheet"
+
+# Root-level stream names that make an OLE2 compound file a BIFF workbook:
+# 'Workbook' for BIFF8 (Excel 97-2003), 'Book' for BIFF5 (Excel 5/95).
+_BIFF_STREAMS = frozenset({"Workbook", "Book"})
+_OLE2_MAX_DIRECTORY_SECTORS = 64
 
 # Formats whose contents this version profiles further.
 TABULAR_FORMATS = frozenset({"csv", "tsv"})
 # Tabular, but not delimited text: profiled by an optional reader (D2A-47).
-WORKBOOK_FORMATS = frozenset({"xlsx"})
+WORKBOOK_FORMATS = frozenset({"xlsx", "xls", "xlsb", "ods"})
 STRUCTURED_FORMATS = frozenset({"json", "jsonld"})
 TEXT_FORMATS = frozenset({"markdown", "text", "yaml", "xml", "turtle", "ntriples", "rdfxml"})
 
@@ -165,6 +184,10 @@ def detect(path: Path) -> tuple[FormatInfo, list[str]]:
             refined = _refine_zip_container(path)
             if refined is not None:
                 observed = refined
+        elif observed.format_id == "ole2-container":
+            refined = _refine_ole2_container(path)
+            if refined is not None:
+                observed = refined
 
         compatible = _CONTAINER_COMPATIBLE.get(observed.format_id, frozenset())
         if claimed and claimed in compatible:
@@ -204,19 +227,22 @@ def detect(path: Path) -> tuple[FormatInfo, list[str]]:
 
 
 def _refine_zip_container(path: Path) -> FormatInfo | None:
-    """Identify an OOXML document from the archive's member list.
+    """Identify an OOXML or OpenDocument spreadsheet from the archive's members.
 
-    Returns ``None`` for any ZIP that is not recognisably OOXML, so a generic
+    Returns ``None`` for any ZIP that is not recognisably either, so a generic
     archive is never promoted on the strength of its magic bytes alone. Reads
-    the central directory only -- no member is decompressed.
+    the central directory, plus the few bytes of an ODF 'mimetype' member.
     """
     import zipfile  # stdlib; the ingest core takes no third-party dependency
 
     try:
         with zipfile.ZipFile(path) as archive:
             names = set(archive.namelist())
-    except (zipfile.BadZipFile, OSError):
-        # Truncated or unreadable: the ZIP signature still stands on its own.
+            if "mimetype" in names and archive.getinfo("mimetype").file_size < 256:
+                if archive.read("mimetype").strip() == _ODS_MIMETYPE:
+                    return FormatInfo("ods", _ODS_MIMETYPE.decode("ascii"), "container")
+    except (zipfile.BadZipFile, OSError, RuntimeError):
+        # Truncated, unreadable or encrypted: the ZIP signature stands on its own.
         return None
 
     if "[Content_Types].xml" not in names:
@@ -237,3 +263,65 @@ def _match_signature(path: Path) -> FormatInfo | None:
         if head.startswith(magic):
             return FormatInfo(format_id, media_type, "signature")
     return None
+
+
+def _refine_ole2_container(path: Path) -> FormatInfo | None:
+    """Identify a BIFF workbook from an OLE2 compound file's directory.
+
+    The file is read as [MS-CFB] lays it out: a 512-byte header, a FAT chaining
+    sectors together, and a directory of 128-byte entries naming each stream.
+    Only the directory is walked -- no stream is read -- and the walk is
+    bounded, so a hostile or truncated file yields ``None`` rather than a hang.
+    ``None`` leaves the file an ``ole2-container``: a guess is never made.
+    """
+    import struct
+
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(512)
+            if len(header) < 512:
+                return None
+            sector_shift = struct.unpack_from("<H", header, 0x1E)[0]
+            if sector_shift not in (9, 12):
+                return None
+            sector_size = 1 << sector_shift
+            fat_sector_count = struct.unpack_from("<I", header, 0x2C)[0]
+            directory_start = struct.unpack_from("<I", header, 0x30)[0]
+            # The header carries the first 109 FAT sector locations: enough for
+            # ~7 MB of 512-byte sectors or ~450 MB of 4 KB ones. Past that the
+            # chain may end early, which only means "not identified".
+            header_fat = struct.unpack_from("<109I", header, 0x4C)
+            fat_locations = [
+                value for value in header_fat[: min(fat_sector_count, 109)] if value < _CFB_MAX
+            ]
+
+            def read_sector(number: int) -> bytes:
+                handle.seek((number + 1) * sector_size)
+                return handle.read(sector_size)
+
+            fat: list[int] = []
+            for location in fat_locations:
+                chunk = read_sector(location)
+                fat.extend(struct.unpack_from(f"<{len(chunk) // 4}I", chunk))
+
+            sector, visited = directory_start, 0
+            while sector < _CFB_MAX and visited < _OLE2_MAX_DIRECTORY_SECTORS:
+                chunk = read_sector(sector)
+                for offset in range(0, len(chunk) - 127, 128):
+                    entry = chunk[offset : offset + 128]
+                    name_length = struct.unpack_from("<H", entry, 0x40)[0]
+                    if entry[0x42] != 2 or not 2 <= name_length <= 64:
+                        continue  # only a stream can hold a workbook
+                    name = entry[: name_length - 2].decode("utf-16-le", errors="replace")
+                    if name in _BIFF_STREAMS:
+                        return FormatInfo("xls", "application/vnd.ms-excel", "container")
+                visited += 1
+                sector = fat[sector] if sector < len(fat) else _CFB_MAX
+    except (OSError, struct.error):
+        return None
+    return None
+
+
+# Sector numbers at or above this are [MS-CFB] markers (end of chain, free,
+# FAT, DIFAT), never real sectors.
+_CFB_MAX = 0xFFFFFFFA
