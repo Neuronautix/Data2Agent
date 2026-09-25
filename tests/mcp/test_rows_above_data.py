@@ -129,6 +129,25 @@ def test_a_declared_multi_row_header_exposes_its_raw_header_rows(tmp_path: Path)
     assert [c["value"] for c in payload["rows_above_data"][0]["cells"]] == ["A", "B"]
 
 
+def test_header_rows_after_a_multiline_record_keep_their_real_line_numbers(tmp_path: Path):
+    """The first header record spans lines 1-2, so the second one starts on line 3."""
+    source = _dataset(tmp_path, {"t.csv": ',"A\ncontinued",,B\nid,score,score,score\nr1,1,2,3\n'})
+    declarations = parse_declarations(
+        {"layouts": {"t.csv": {"header_row": 1, "header_rows": 2}}},
+        sha256="0" * 64,
+        name="l.json",
+    )
+    ingest(source, tmp_path / "out", layouts=declarations)
+    payload = DatasetService(tmp_path / "out").inspect_table("t.csv", include_rows_above_data=True)
+
+    rows = payload["rows_above_data"]
+    assert [(r["row"], r["role"]) for r in rows] == [(1, "header"), (3, "header")]
+    # The quoted newline is whatever the platform wrote; only its presence matters.
+    assert [c["value"].splitlines() for c in rows[0]["cells"]] == [["A", "continued"], ["B"]]
+    assert [c["value"] for c in rows[1]["cells"]] == ["id", "score", "score", "score"]
+    assert all("header_offset" not in r for r in rows)
+
+
 openpyxl = pytest.importorskip("openpyxl")
 
 

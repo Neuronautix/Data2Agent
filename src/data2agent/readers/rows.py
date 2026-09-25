@@ -148,9 +148,9 @@ def rows_above_data(profile: dict[str, Any]) -> list[dict[str, Any]]:
     :func:`read_rows_above_data`.
     """
     detection = profile.get("header_detection") or {}
-    listed: dict[int, dict[str, Any]] = {}
+    listed: dict[tuple[int, int], dict[str, Any]] = {}
     for item in detection.get("skipped_rows") or []:
-        listed[int(item["row"])] = {
+        listed[(int(item["row"]), 0)] = {
             "row": int(item["row"]),
             "role": "skipped",
             "reason": item.get("reason"),
@@ -158,10 +158,20 @@ def rows_above_data(profile: dict[str, Any]) -> list[dict[str, Any]]:
     header_row = profile.get("header_row")
     header_rows = int(profile.get("header_rows") or 0)
     if header_row is not None and header_rows > 1:
+        start = int(header_row)
         for offset in range(header_rows):
-            number = int(header_row) + offset
-            listed[number] = {"row": number, "role": "header", "reason": None}
-    return [listed[number] for number in sorted(listed)]
+            # A header is `header_rows` consecutive *records*. In a sheet a record
+            # is a row, so its number is start + offset. In a delimited file a
+            # quoted cell can span lines, so only the first record's line is
+            # known here; the rest are numbered by the reader, from the file.
+            known = offset == 0 or bool(profile.get("workbook"))
+            listed[(start, offset)] = {
+                "row": start + offset if known else None,
+                "role": "header",
+                "reason": None,
+                "header_offset": offset,
+            }
+    return [listed[key] for key in sorted(listed)]
 
 
 def read_rows_above_data(
@@ -184,10 +194,11 @@ def read_rows_above_data(
     position when there is one.
     """
     wanted = rows_above_data(profile)
-    selected = wanted[:max_rows]
-    numbers = {item["row"] for item in selected}
+    selected = [dict(item) for item in wanted[:max_rows]]
+    numbers = {item["row"] for item in selected if item["row"] is not None}
+    offsets = {item["header_offset"] for item in selected if item["row"] is None}
     raw: dict[int, Any] = {}
-    if numbers:
+    if numbers or offsets:
         if profile.get("workbook"):
             sheet_name, backend = _sheet_and_backend(profile)
             first, last = min(numbers), max(numbers)
@@ -202,18 +213,32 @@ def read_rows_above_data(
         else:
             encoding = profile.get("encoding") or "utf-8"
             last = max(numbers)
+            header_start = int(profile["header_row"]) if offsets else None
+            header_lines: dict[int, int] = {}  # header offset -> line the record starts on
             with path.open("r", encoding=encoding, newline="") as handle:
                 reader = csv.reader(handle, delimiter=profile["delimiter"])
+                in_header: int | None = None
                 for numbered in numbered_records(reader):
-                    if numbered.number > last:
-                        break
+                    if numbered.number == header_start:
+                        in_header = 0
+                    if in_header is not None:
+                        if in_header in offsets:
+                            header_lines[in_header] = numbered.number
+                            raw[numbered.number] = numbered.cells
+                        in_header += 1
                     if numbered.number in numbers:
                         raw[numbered.number] = numbered.cells
+                    if numbered.number >= last and len(header_lines) == len(offsets):
+                        break
+            for item in selected:
+                if item["row"] is None:
+                    item["row"] = header_lines.get(item["header_offset"])
 
     names = {int(column["position"]): column["name"] for column in profile.get("columns", [])}
     rows: list[dict[str, Any]] = []
     for item in selected:
-        record = raw.get(item["row"], ())
+        item.pop("header_offset", None)
+        record = raw.get(item["row"], ()) if item["row"] is not None else ()
         cells: list[dict[str, Any]] = []
         non_blank = 0
         for position, value in enumerate(record):
