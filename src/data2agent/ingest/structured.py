@@ -25,6 +25,7 @@ class StructuredProfile:
     item_count: int | None
     max_depth: int
     parse_error: str | None = None
+    boris: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -37,6 +38,10 @@ class StructuredProfile:
             payload["item_count"] = self.item_count
         if self.parse_error is not None:
             payload["parse_error"] = self.parse_error
+        # Only for files detected as BORIS projects, so every other structured
+        # entry -- and every manifest without one -- is byte-for-byte unchanged.
+        if self.boris is not None:
+            payload["boris"] = dict(self.boris)
         return payload
 
 
@@ -46,7 +51,7 @@ def profile_json(path: Path, relative_path: str) -> StructuredProfile:
 
 
 def profile_document(
-    document: Any | None, error: str | None, *, relative_path: str
+    document: Any | None, error: str | None, *, relative_path: str, boris: bool = False
 ) -> StructuredProfile:
     """Profile an already-loaded document.
 
@@ -60,10 +65,51 @@ def profile_document(
 
     if isinstance(document, dict):
         keys = sorted(document.keys())[:_MAX_LISTED_KEYS]
-        return StructuredProfile(relative_path, "object", keys, len(document), _depth(document))
+        return StructuredProfile(
+            relative_path,
+            "object",
+            keys,
+            len(document),
+            _depth(document),
+            boris=boris_summary(document) if boris else None,
+        )
     if isinstance(document, list):
         return StructuredProfile(relative_path, "array", [], len(document), _depth(document))
     return StructuredProfile(relative_path, type(document).__name__, [], None, 1)
+
+
+def boris_summary(document: dict[str, Any]) -> dict[str, object]:
+    """Count what a BORIS project holds, without repeating any of it.
+
+    A BORIS project names its subjects, describes its behaviours and records
+    each observation's media paths and free-text notes. None of that is
+    recorded here: only how many observations, subjects and ethogram behaviours
+    there are, plus the project format version, which says which BORIS layout
+    to expect when the file is read. A section that is absent or not a
+    collection is reported as ``None`` -- not zero, because "not there" and
+    "there and empty" are different findings.
+    """
+
+    def count(key: str) -> int | None:
+        section = document.get(key)
+        return len(section) if isinstance(section, (dict, list)) else None
+
+    version = document.get("project_format_version")
+    # A version is a short token ("7.0"). Anything else -- a nested structure,
+    # a long string -- is not recorded, rather than copied into the manifest.
+    if isinstance(version, bool) or not isinstance(version, (str, int, float)):
+        version = None
+    elif isinstance(version, str) and len(version) > _MAX_VERSION_LENGTH:
+        version = None
+    return {
+        "project_format_version": version,
+        "observations": count("observations"),
+        "subjects": count("subjects_conf"),
+        "behaviors": count("behaviors_conf"),
+    }
+
+
+_MAX_VERSION_LENGTH = 32
 
 
 def load_json(path: Path) -> tuple[Any | None, str | None]:

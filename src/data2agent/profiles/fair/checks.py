@@ -68,6 +68,15 @@ _OPEN_FORMATS = frozenset(
         "sqlite",
         # OpenDocument Spreadsheet, ISO/IEC 26300.
         "ods",
+        # BORIS project files. Open on the same footing as the rest of this
+        # list, not because the software is liked: the file is plain UTF-8 JSON
+        # that any JSON parser reads without BORIS, the layout is written and
+        # read by GPL-licensed source code anyone can inspect, and it is only
+        # ever claimed after the content was confirmed to be JSON with BORIS's
+        # project keys. There is no standards body behind it -- nor is there
+        # for EDF or NIfTI -- so "documented" here means an open implementation
+        # and a self-describing syntax, not a formal specification.
+        "boris",
     }
 )
 # The binary Excel formats sit with xlsx: a workbook format is judged by what it

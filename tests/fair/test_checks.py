@@ -135,6 +135,30 @@ def test_every_detected_workbook_format_has_an_openness_verdict(
     assert _by_rule(service.run_fair_check())["I1-DATA-FORMATS-OPEN"]["result"] == expected
 
 
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        # A confirmed BORIS project: open JSON from open-source software.
+        (
+            b'{"project_format_version": "7.0", "behaviors_conf": {}, "observations": {}}',
+            "pass",
+        ),
+        # JSON under a '.boris' name that is not a project is reported as json.
+        (b'{"something": "else"}', "pass"),
+        # Not JSON at all: the format stays unknown, and so does the verdict.
+        (b"\x00\x01\x02", "unknown"),
+    ],
+)
+def test_a_boris_project_has_an_openness_verdict(tmp_path: Path, content: bytes, expected: str):
+    """Detecting BORIS must not leave I1 'unknown' for every dataset holding one."""
+    source = tmp_path / "ds"
+    source.mkdir()
+    (source / "project.boris").write_bytes(content)
+    result = ingest(source, tmp_path / "out")
+    service = DatasetService(result.output_dir, mode="fair-deterministic")
+    assert _by_rule(service.run_fair_check())["I1-DATA-FORMATS-OPEN"]["result"] == expected
+
+
 def test_an_unreferenced_data_file_is_named_in_the_rationale(dataset_copy: Path, tmp_path: Path):
     (dataset_copy / "orphan.csv").write_text("a,b\n1,2\n", encoding="utf-8")
     result = ingest(dataset_copy, tmp_path / "out")
