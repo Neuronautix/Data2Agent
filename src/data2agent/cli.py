@@ -1,6 +1,7 @@
 """Command-line entry point.
 
 data2agent ingest  <dataset> -o <output>   deterministic scan -> manifest/evidence
+                   [--layout layouts.json]  declared table headers (D2A-97)
 data2agent verify  <output>                re-checksum the source against the manifest
 data2agent serve   <output> --mode <mode>  run the Data2MCP server over stdio
 data2agent relationships <output>          resolve cross-table relationships
@@ -19,6 +20,7 @@ from .errors import Data2AgentError
 from .ingest import ingest
 from .ingest.checksum import hash_file
 from .ingest.conventions import STRICT_CONVENTION, custom
+from .ingest.layout import load_declarations
 from .ingest.pipeline import write_json
 from .mcp.modes import DEFAULT_MODE, MODES
 from .mcp.service import DatasetService
@@ -68,6 +70,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--strict-missing",
         action="store_true",
         help="treat only empty cells as missing; resolve no tokens at all",
+    )
+    ingest_parser.add_argument(
+        "--layout",
+        type=Path,
+        default=None,
+        metavar="LAYOUTS.json",
+        help=(
+            "JSON layout declaration stating where named tables' headers are, overriding "
+            'detection: {"layouts": {"<file>" or "<workbook>#<sheet>": {"header_row": N, '
+            '"header_rows": K, "data_starts_row": M}}}. Row numbers are 1-based '
+            "spreadsheet rows, or the line a record starts on in a CSV/TSV. A table path "
+            "that matches no profiled table is an error. Its sha256 is recorded in the "
+            "manifest and in provenance"
+        ),
     )
     ingest_parser.set_defaults(handler=_cmd_ingest)
 
@@ -129,7 +145,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     elif args.missing_tokens:
         convention = custom(args.missing_tokens.split(","))
 
-    result = ingest(args.source, args.output, convention=convention)
+    layouts = load_declarations(args.layout) if args.layout is not None else None
+    result = ingest(args.source, args.output, convention=convention, layouts=layouts)
     if not args.no_report:
         write_report(result.output_dir, result.manifest, result.evidence, result.provenance)
         write_mcp_config(
@@ -145,6 +162,13 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
     print(f"claims     : {len(result.evidence)}")
     applied = result.manifest["missing_value_convention"]
     print(f"missing    : resolved under '{applied['id']}' ({applied['source']})")
+    sources: dict[str, int] = {}
+    for table in result.manifest["tables"].values():
+        source = table.get("header_source")
+        if source is not None:
+            sources[source] = sources.get(source, 0) + 1
+    if sources:
+        print("headers    : " + ", ".join(f"{n} {s}" for s, n in sorted(sources.items())))
     print(f"output     : {result.output_dir}")
     if not result.provenance.get("source_verified_unchanged", True):
         print("WARNING: the source changed during ingest; this manifest is not trustworthy")

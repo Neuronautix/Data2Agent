@@ -48,6 +48,17 @@
       "$ref": "#/$defs/missingValueConvention",
       "description": "How token-valued absences were resolved. Governs how every missing count below should be read."
     },
+    "layout_declaration": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/layoutDeclaration"
+        }
+      ],
+      "description": "The layout declaration supplied at ingest (--layout), identified by the SHA-256 of its bytes, or null when none was. Part of the manifest because it governs how the tables were read: a re-ingest under another declaration is another manifest, so a relationships sidecar bound to the old one is refused. The file's name is run-specific and lives in provenance.configuration.layout_declaration."
+    },
     "file_count": {
       "type": "integer",
       "minimum": 0
@@ -199,6 +210,46 @@
         "has_header": {
           "type": "boolean"
         },
+        "header_row": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "First header row: the 1-based spreadsheet row, or for a delimited file the physical line on which the header record starts. Null when the table has no non-blank row."
+        },
+        "header_rows": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many rows the header spans; above 1 only when declared."
+        },
+        "data_starts_row": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Row (or line) where observations begin; row readers start here, and source_row stays the file's own row or line number."
+        },
+        "header_source": {
+          "enum": [
+            "first-non-empty",
+            "detected",
+            "declared",
+            null
+          ],
+          "description": "'first-non-empty': the first non-blank row, the pre-D2A-97 behaviour; 'detected': a later row chosen by the rule after skipping preamble; 'declared': stated by the layout declaration."
+        },
+        "header_detection": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/headerDetection"
+            }
+          ]
+        },
         "rows": {
           "type": "integer",
           "minimum": 0
@@ -256,6 +307,13 @@
         "position": {
           "type": "integer",
           "minimum": 0
+        },
+        "header_cells": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Only for a multi-row header: this column's cells in the header block, top row first, as written -- before any forward fill of an upper label. The column's name is the non-blank (filled) parts joined by ' / '."
         },
         "dtype": {
           "enum": [
@@ -510,7 +568,40 @@
             "integer",
             "null"
           ],
-          "minimum": 1
+          "minimum": 1,
+          "description": "First header row: the 1-based spreadsheet row, or for a delimited file the physical line on which the header record starts. Null when the table has no non-blank row."
+        },
+        "header_rows": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "How many rows the header spans; above 1 only when declared."
+        },
+        "data_starts_row": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Row (or line) where observations begin; row readers start here, and source_row stays the file's own row or line number."
+        },
+        "header_source": {
+          "enum": [
+            "first-non-empty",
+            "detected",
+            "declared",
+            null
+          ],
+          "description": "'first-non-empty': the first non-blank row, the pre-D2A-97 behaviour; 'detected': a later row chosen by the rule after skipping preamble; 'declared': stated by the layout declaration."
+        },
+        "header_detection": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/headerDetection"
+            }
+          ]
         },
         "has_header": {
           "type": "boolean"
@@ -572,6 +663,116 @@
           "items": {
             "type": "string"
           }
+        }
+      }
+    },
+    "layoutDeclaration": {
+      "type": "object",
+      "required": [
+        "sha256",
+        "tables"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "tables": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Table paths the declaration names; every one matched a profiled table, or ingest refused to run."
+        }
+      }
+    },
+    "declaredLayout": {
+      "type": "object",
+      "required": [
+        "header_row",
+        "header_rows"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "header_row": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "header_rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "data_starts_row": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "upper_label_fill": {
+          "enum": [
+            "forward",
+            "none"
+          ]
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "headerDetection": {
+      "type": "object",
+      "description": "How the header was chosen. 'rule' names the versioned deterministic rule; 'detected_header_row' is what that rule chose, recorded even when a declaration overrode it; 'confident: false' means the rule could not establish a header and the first non-empty row was used, as before D2A-97. 'skipped_rows' lists every non-blank row before the data that is not a header row, with its row number (the spreadsheet row, or the line a delimited record starts on) and why it was skipped: 'sparse' (fewer than half the header's non-empty cells), 'key-value-label' (first cell is text ending in ':'), or 'declared'.",
+      "required": [
+        "rule",
+        "confident",
+        "detected_header_row",
+        "skipped_rows"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "rule": {
+          "type": "string"
+        },
+        "confident": {
+          "type": "boolean"
+        },
+        "detected_header_row": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "skipped_rows": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "row",
+              "reason",
+              "non_empty_cells"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "row": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "reason": {
+                "enum": [
+                  "sparse",
+                  "key-value-label",
+                  "declared"
+                ]
+              },
+              "non_empty_cells": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "declared": {
+          "$ref": "#/$defs/declaredLayout"
         }
       }
     }

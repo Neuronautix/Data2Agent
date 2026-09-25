@@ -22,6 +22,9 @@ metadata:                    # discovered, never required
 missing_values:              # optional; see "Missingness, precisely" below
   convention: default-sentinels | strict-empty-only | <explicit token list>
 
+layout:                      # optional; see "Table headers" below
+  declaration: ./layouts.json  # data2agent ingest SRC -o OUT --layout layouts.json
+
 output:
   directory: ./dataset-agent # must sit OUTSIDE the dataset source
 ```
@@ -111,6 +114,10 @@ The subtle part is what an *empty* or *absent* value means. It is never "none".
 | `reader.cell_values: "cached"` | a formula cell was read as its last computed value | the value was typed, or recomputed |
 | `warnings: []` | nothing flagged | the dataset is clean |
 | `skipped: [...]` | present in the directory, absent from the manifest | ignorable |
+| `header_source: "first-non-empty"` | the first non-blank row was used, as before D2A-97 | the header was verified |
+| `header_detection.confident: false` | the rule could not establish a header and fell back | the header is wrong |
+| `header_detection.skipped_rows: []` | nothing before the data was skipped | there was no title |
+| `layout_declaration: null` | no layout was declared | every header is right |
 
 ### Workbook formats
 
@@ -132,6 +139,112 @@ the manifest. Without the extra, the workbook is reported as unprofiled with a
 `workbook.reader-unavailable` claim naming the extra, never as a dataset with
 no tables. Merged ranges are not reported by openpyxl's streaming mode or for
 XLSB/ODS, so `merged_ranges: 0` is not evidence of none.
+
+### Table headers
+
+Every column name rests on one choice: which row is the header. Lab files rarely
+put it on the first line. A registry sheet carries a banner ("Weights" over
+the columns it groups) above the real header; a scoring export writes
+`Subjects:` and `Behaviors:` rows before its column names; a summary sheet
+stacks a treatment row over a repeated metric row. Taking the first non-empty
+row as the header in such files names every column after the banner, and every
+join on `ID` or `Genotype` then fails with "unknown column".
+
+The header is therefore chosen by an explicit rule, `d2a-header/1`
+(`src/data2agent/ingest/layout.py`), identical for worksheets and delimited
+files. Among the first 16 non-blank rows, a row is **header-like** when it has
+at least two non-blank cells, is not a `key:` label row, is text (a row that is
+at least three-quarters text also qualifies if it is strictly more textual than
+the row below it, so a header may name dose columns `0.02`, `0.07`), and has
+more than half as many non-blank cells as the widest of it and the five rows
+after it. A row is **preamble** to a header when it has at most half the
+header's non-blank cells (`sparse`) or its first cell is text ending in `:`
+(`key-value-label`). The header is the first header-like row, provided every
+non-blank row above it is preamble; the search stops at the first header-like
+row either way.
+
+| Outcome | `header_source` | `confident` | Warning |
+| --- | --- | --- | --- |
+| the first non-blank row is header-like | `first-non-empty` | `true` | none |
+| a later row is, and everything above it is preamble | `detected` | `true` | names the rows skipped |
+| nothing qualifies, or a non-preamble row sits above the first header-like row | `first-non-empty` | `false` | only when the first row itself looks like preamble |
+| a layout declaration names the table | `declared` | `true` | none |
+
+Detection never composes a multi-row header: a sparse row directly above the
+header may be a group label or a title, and nothing structural separates the
+two. When a skipped row sits directly above the header, the warning names the
+declaration that would keep its labels.
+
+Each table profile, delimited or worksheet, carries:
+
+```json
+"header_row": 3,
+"header_rows": 1,
+"data_starts_row": 4,
+"header_source": "detected",
+"header_detection": {
+  "rule": "d2a-header/1",
+  "confident": true,
+  "detected_header_row": 3,
+  "skipped_rows": [{"row": 2, "reason": "sparse", "non_empty_cells": 10}]
+}
+```
+
+Row numbers are what a person would cite: the spreadsheet row, or for a CSV/TSV
+the physical line on which the record starts. Row readers (`read_rows`,
+`filter_rows`, `aggregate`, joins, relationship assessment) start at
+`data_starts_row`, and `source_row` stays the file's own row or line number.
+The decision is also a claim in the evidence ledger, under the check
+`table.header-layout`.
+
+#### Declaring a layout
+
+A declaration overrides detection for the tables it names:
+
+```json
+{
+  "layout_version": "1",
+  "layouts": {
+    "registry.xlsx#Sheet1": {"header_row": 2, "header_rows": 2},
+    "exports/scoring.tsv": {"header_row": 2, "header_rows": 2, "upper_label_fill": "none"},
+    "trace.csv": {"header_row": 2, "data_starts_row": 4, "note": "line 3 holds units"}
+  }
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| table path | exactly as `manifest.tables` keys it: `<file>` or `<workbook>#<sheet>` |
+| `header_row` | required; 1-based row (or line) of the first header row |
+| `header_rows` | how many rows the header spans (default 1, at most 10) |
+| `data_starts_row` | where observations begin (default: the row after the header); rows skipped between are recorded as `declared` |
+| `upper_label_fill` | `forward` (default) or `none`; see below |
+| `note` | free text, kept in the manifest |
+
+A multi-row header is composed column by column, top row first, joining the
+non-blank labels with ` / `: a `PBS` row over a `Score` row gives `PBS / Score`.
+With `upper_label_fill: forward`, a blank cell in an *upper* row takes the label
+to its left, which is how a label merged or centred across a group of columns
+reads; the fill stops where a row above starts a new label and where nothing
+below names the column, and the lowest row is never filled. Each column of a
+multi-row header records its cells as written in `header_cells`, so every fill
+is auditable. Duplicate composed names are disambiguated exactly as single-row
+names are.
+
+Validation is strict: an unknown key, a non-positive or boolean row number, a
+`data_starts_row` inside the header, a `header_row` beyond the table, or a
+table path that matches no profiled table stops the ingest with an error before
+anything is written. A declaration that silently applied to nothing would leave
+someone believing a header was fixed when it was not.
+
+The declaration's SHA-256 is recorded twice. `manifest.layout_declaration`
+(`{"sha256", "tables"}`) makes it part of how the dataset was read: re-ingesting
+the same bytes under another declaration yields another `manifest.json`, so a
+`relationships.json` bound to the old one is refused until regenerated.
+`provenance.configuration.layout_declaration` adds the file name, which is
+run-specific. Tables the declaration names show `header_source: "declared"`,
+with the declaration under `header_detection.declared` and what detection would
+have chosen still in `detected_header_row`.
 
 ### Column shape vocabulary
 

@@ -14,10 +14,14 @@ acquires units, a controlled term or a scientific type from this module.
 from __future__ import annotations
 
 import csv
+import io
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+from . import layout as layouts
 from . import metadata
 from .conventions import AMBIGUOUS, DEFAULT_CONVENTION, SENTINEL, MissingValueConvention
 from .textio import read_text
@@ -65,6 +69,10 @@ class ColumnProfile:
     # tracking cap. Tracked only where ``track_unique`` was asked for.
     unique: bool | None = None
     track_unique: bool = False
+    # The header block's own cells for this column, top row first. Set only for
+    # a multi-row header, whose composed name would otherwise hide what the
+    # file actually says (and which labels were carried across by a fill).
+    header_cells: list[str] | None = None
     _seen: set[str] = field(default_factory=set, repr=False)
     _overflowed: bool = field(default=False, repr=False)
     _keys_seen: set[str] = field(default_factory=set, repr=False)
@@ -74,6 +82,7 @@ class ColumnProfile:
         payload: dict[str, object] = {
             "name": self.name,
             "position": self.position,
+            **({"header_cells": list(self.header_cells)} if self.header_cells is not None else {}),
             "dtype": self.dtype,
             "values": self.values,
             # missing == missing_empty + missing_sentinel, always.
@@ -124,6 +133,7 @@ class TableProfile:
     ragged_rows: int
     convention: MissingValueConvention
     warnings: list[str]
+    layout: layouts.HeaderLayout | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -131,6 +141,7 @@ class TableProfile:
             "encoding": self.encoding,
             "delimiter": self.delimiter,
             "has_header": self.has_header,
+            **header_fields(self.layout),
             "rows": self.rows,
             "column_count": len(self.columns),
             "missing_convention": self.convention.as_dict(),
@@ -141,15 +152,51 @@ class TableProfile:
         }
 
 
+def header_fields(layout: layouts.HeaderLayout | None) -> dict[str, Any]:
+    """The header fields of a table profile; all present, null where unknown.
+
+    Shared by the delimited and the worksheet profile so both carry the same
+    keys in the same order, and a reader never has to ask which kind it holds.
+    """
+    if layout is None:
+        return {
+            "header_row": None,
+            "header_rows": 0,
+            "data_starts_row": None,
+            "header_source": None,
+            "header_detection": None,
+        }
+    return layout.as_dict()
+
+
+def numbered_records(reader: Any) -> Iterator[layouts.Row]:
+    """csv records numbered by the physical line on which each one *starts*.
+
+    ``csv.reader.line_num`` is the line a record ends on; a quoted cell can span
+    lines, so the start is one past the previous record's end. The row reader
+    numbers records the same way, which is what makes a recorded
+    ``data_starts_row`` mean the same line at ingest and at query time.
+    """
+    previous_end = 0
+    for record in reader:
+        yield layouts.Row(previous_end + 1, record)
+        previous_end = reader.line_num
+
+
 def profile_table(
     path: Path,
     relative_path: str,
     convention: MissingValueConvention = DEFAULT_CONVENTION,
+    declared: layouts.TableLayout | None = None,
 ) -> TableProfile | None:
     """Profile a delimited file, or return ``None`` when it cannot be read as one.
 
     Returning ``None`` is a legitimate outcome: a file whose delimiter cannot be
     established is not silently forced into a table shape.
+
+    The header is decided by :mod:`~data2agent.ingest.layout` -- by ``declared``
+    when given, by its rule otherwise -- and the decision is recorded in the
+    profile. Leading blank lines are layout, as they are in a worksheet.
     """
     text, encoding, decode_warning = _read_text(path)
     if text is None:
@@ -165,10 +212,12 @@ def profile_table(
     if delimiter_warning:
         warnings.append(delimiter_warning)
 
-    reader = csv.reader(text.splitlines(), delimiter=delimiter)
-    try:
-        header = next(reader)
-    except StopIteration:
+    # Split with the same newline handling the row reader's file handle uses
+    # (newline=""), so a line number means the same line in both places.
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
+    layout, body = layouts.split_header(numbered_records(reader), declared)
+    warnings.extend(layout.warnings)
+    if layout.header_row is None:
         return TableProfile(
             relative_path,
             encoding,
@@ -179,15 +228,22 @@ def profile_table(
             0,
             convention,
             [*warnings, "file is empty"],
+            layout,
         )
 
-    columns = [new_column(_header_name(name, index), index) for index, name in enumerate(header)]
+    columns = [
+        new_column(_header_name(name, index), index) for index, name in enumerate(layout.labels)
+    ]
+    if layout.header_cells is not None:
+        for column, cells in zip(columns, layout.header_cells, strict=True):
+            column.header_cells = cells
     if len({column.name for column in columns}) != len(columns):
         warnings.append("header contains duplicate column names; positions disambiguate them")
 
     rows = 0
     ragged = 0
-    for record in reader:
+    for numbered in body:
+        record = numbered.cells
         if not record:
             continue  # A blank line carries no observation.
         rows += 1
@@ -207,7 +263,16 @@ def profile_table(
         warnings.append(f"{ragged} row(s) do not have {len(columns)} fields")
 
     return TableProfile(
-        relative_path, encoding, delimiter, True, rows, columns, ragged, convention, warnings
+        relative_path,
+        encoding,
+        delimiter,
+        True,
+        rows,
+        columns,
+        ragged,
+        convention,
+        warnings,
+        layout,
     )
 
 
