@@ -50,7 +50,27 @@ _BY_EXTENSION: dict[str, tuple[str, str]] = {
     ".ods": ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
     ".nii": ("nifti", "application/x-nifti"),
     ".edf": ("edf", "application/x-edf"),
+    # A BORIS (Behavioral Observation Research Interactive Software) project.
+    # Unlike every other entry here this claim is never accepted on the name
+    # alone: it is confirmed against the parsed content, see _confirm_boris.
+    ".boris": ("boris", "application/x-boris+json"),
 }
+
+# BORIS project files carry no magic bytes -- they are plain JSON -- so the
+# evidence is structural: a top-level object holding the keys BORIS's own
+# project loader requires. Three keys, not the dozen a current project has,
+# because the set must hold across BORIS versions: the format version, the
+# ethogram ('behaviors_conf') and the observations have been present in every
+# project format version we could check, while optional sections (independent
+# variables, converters, coding maps, behavioural categories) were added over
+# time and a project from an older release legitimately lacks them.
+#
+# The media type is not IANA-registered; BORIS itself declares none. It follows
+# the RFC 6839 '+json' structured-syntax suffix convention with an 'x-' subtype,
+# so a consumer that knows nothing about BORIS can still see the payload is
+# JSON -- which it is, and which is what matters for reading it.
+BORIS_MEDIA_TYPE = "application/x-boris+json"
+BORIS_REQUIRED_KEYS = frozenset({"project_format_version", "behaviors_conf", "observations"})
 
 # Magic-byte signatures, checked against the file's first bytes. These outrank
 # the extension when they disagree, because bytes are evidence and names are not.
@@ -122,7 +142,9 @@ _OLE2_MAX_DIRECTORY_SECTORS = 64
 TABULAR_FORMATS = frozenset({"csv", "tsv"})
 # Tabular, but not delimited text: profiled by an optional reader (D2A-47).
 WORKBOOK_FORMATS = frozenset({"xlsx", "xls", "xlsb", "ods"})
-STRUCTURED_FORMATS = frozenset({"json", "jsonld"})
+# A BORIS project is JSON, so it is profiled as JSON (shape, keys, depth) plus a
+# few counts of its own; see structured.boris_summary.
+STRUCTURED_FORMATS = frozenset({"json", "jsonld", "boris"})
 TEXT_FORMATS = frozenset({"markdown", "text", "yaml", "xml", "turtle", "ntriples", "rdfxml"})
 
 _SIGNATURE_PEEK_BYTES = 16
@@ -140,7 +162,7 @@ class FormatInfo:
 
     format_id: str
     media_type: str
-    detected_by: str  # "signature" | "extension" | "container" | "none"
+    detected_by: str  # "signature" | "extension" | "container" | "content" | "none"
     extension_format: str | None = None
     extension_conflict: bool = False
 
@@ -215,6 +237,9 @@ def detect(path: Path) -> tuple[FormatInfo, list[str]]:
             notes,
         )
 
+    if claimed == "boris":
+        return _confirm_boris(path, extension, notes)
+
     if by_extension:
         format_id, media_type = by_extension
         return FormatInfo(format_id, media_type, "extension", claimed, False), notes
@@ -224,6 +249,59 @@ def detect(path: Path) -> tuple[FormatInfo, list[str]]:
         + (f" (extension '{extension}')" if extension else " (no extension)")
     )
     return UNKNOWN, notes
+
+
+def is_boris_project(document: object) -> bool:
+    """Whether a parsed JSON document has the structure of a BORIS project."""
+    return isinstance(document, dict) and BORIS_REQUIRED_KEYS <= document.keys()
+
+
+def _confirm_boris(path: Path, extension: str, notes: list[str]) -> tuple[FormatInfo, list[str]]:
+    """Accept a ``.boris`` name only if the content is a BORIS project.
+
+    Every other extension claim is taken at its word when no signature speaks,
+    and the manifest flags it as ``detected_by: "extension"``. That is tolerable
+    for '.csv' because a CSV has no structure to check; a BORIS project does,
+    and checking it is cheap, so the name is confirmed rather than trusted.
+    A '.boris' file that is JSON of another shape is reported as JSON, and one
+    that is not JSON at all stays unknown -- both with the name's claim kept
+    and flagged as a conflict, never silently dropped.
+
+    Only the '.boris' name triggers the parse. A '.json' file holding a BORIS
+    project stays 'json': that statement is true, BORIS itself opens projects
+    by their '.boris' name, and promoting it would mean parsing every JSON file
+    in a dataset at inventory time to look for one application's layout.
+    """
+    import json  # stdlib; the ingest core takes no third-party dependency
+
+    from .textio import read_text
+
+    text, _ = read_text(path)
+    document: object = None
+    parsed = False
+    if text is not None:
+        try:
+            document = json.loads(text)
+            parsed = True
+        except (json.JSONDecodeError, RecursionError):
+            parsed = False
+
+    if parsed and is_boris_project(document):
+        return FormatInfo("boris", BORIS_MEDIA_TYPE, "content", "boris", False), notes
+    if parsed:
+        notes.append(
+            f"extension '{extension}' claims 'boris' but the file is JSON without the "
+            f"BORIS project keys {sorted(BORIS_REQUIRED_KEYS)}; reporting it as 'json'"
+        )
+        return FormatInfo("json", "application/json", "content", "boris", True), notes
+    notes.append(
+        f"extension '{extension}' claims 'boris' but the file is not UTF-8 JSON, "
+        f"so it cannot be a BORIS project; its format is not recognised"
+    )
+    return (
+        FormatInfo(UNKNOWN.format_id, UNKNOWN.media_type, UNKNOWN.detected_by, "boris", True),
+        notes,
+    )
 
 
 def _refine_zip_container(path: Path) -> FormatInfo | None:

@@ -108,6 +108,8 @@ The subtle part is what an *empty* or *absent* value means. It is never "none".
 | `format: "unknown"` | no signature or extension matched | the file is corrupt |
 | `detected_by: "extension"` | the *name* said so, the bytes did not | verified format |
 | `format: "ole2-container"` | OLE2 bytes whose directory holds no BIFF workbook stream | a legacy `.xls` |
+| `detected_by: "content"` | the parsed content confirmed (or overruled) the name's claim | the name was trusted |
+| `structured.<path>.boris: {...: null}` | that section of the BORIS project is absent or not a collection | the project has none |
 | `reader.cell_values: "cached"` | a formula cell was read as its last computed value | the value was typed, or recomputed |
 | `warnings: []` | nothing flagged | the dataset is clean |
 | `skipped: [...]` | present in the directory, absent from the manifest | ignorable |
@@ -317,6 +319,27 @@ can reach is as good as absent, so the ingest timestamp is surfaced by:
 - `get_provenance()` — the full run record;
 - `dataset://provenance` — the same, as a resource;
 - `report/dataset-report.md` — under "This ingest run".
+
+### BORIS projects
+
+A `.boris` file (a BORIS behavioural-observation project) has no magic bytes, so
+its name is **confirmed, not trusted**: it is reported as `format: "boris"`,
+`detected_by: "content"`, only when it parses as UTF-8 JSON whose top-level
+object holds `project_format_version`, `behaviors_conf` and `observations` --
+the keys stable across BORIS project format versions. Otherwise the name's
+claim is kept as `extension_format: "boris"` with `extension_conflict: true`,
+and the file is reported as `json` (JSON of another shape) or `unknown` (not
+JSON). A `.json` file holding a BORIS project stays `json`: that is true, and
+detection does not parse every JSON file to look for one application's layout.
+A gzip-compressed project is reported as `gzip`; its contents are not opened.
+
+The media type `application/x-boris+json` is not IANA-registered and BORIS
+declares none; the `+json` suffix (RFC 6839) says what the payload is.
+
+A BORIS project is profiled like any JSON document, plus a `boris` summary in
+its `structured` entry: `project_format_version` and the number of
+`observations`, `subjects` and `behaviors` (ethogram entries). Only counts are
+recorded -- no subject, behaviour or observation name, and no free text.
 
 ## Versioning
 

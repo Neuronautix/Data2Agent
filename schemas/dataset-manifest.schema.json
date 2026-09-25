@@ -85,7 +85,12 @@
     "structured": {
       "type": "object",
       "additionalProperties": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "boris": {
+            "$ref": "#/$defs/borisProjectSummary"
+          }
+        }
       }
     },
     "metadata_files": {
@@ -128,6 +133,48 @@
     }
   },
   "$defs": {
+    "borisProjectSummary": {
+      "type": "object",
+      "description": "Present only on a file detected as a BORIS project. Counts, never contents: no subject, behaviour or observation name is copied. null means the section is absent or not a collection, which is not the same as zero.",
+      "required": [
+        "project_format_version",
+        "observations",
+        "subjects",
+        "behaviors"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "project_format_version": {
+          "type": [
+            "string",
+            "number",
+            "null"
+          ]
+        },
+        "observations": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "subjects": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "behaviors": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Ethogram entries ('behaviors_conf')."
+        }
+      }
+    },
     "fileEntry": {
       "type": "object",
       "required": [
@@ -162,9 +209,10 @@
             "signature",
             "container",
             "extension",
+            "content",
             "none"
           ],
-          "description": "How the format was established. 'container' means the archive's own member list identified it, e.g. OOXML part paths inside a ZIP."
+          "description": "How the format was established. 'container' means the archive's own member list identified it, e.g. OOXML part paths inside a ZIP. 'content' means the parsed content confirmed or overruled the extension's claim, e.g. a '.boris' name over JSON with BORIS's project keys."
         },
         "extension_format": {
           "type": "string",

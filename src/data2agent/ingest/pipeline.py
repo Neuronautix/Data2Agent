@@ -229,7 +229,12 @@ def ingest(
 
         elif entry.format.format_id in formats.STRUCTURED_FORMATS:
             document, parse_error = structured.load_json(absolute)
-            profile = structured.profile_document(document, parse_error, relative_path=entry.path)
+            profile = structured.profile_document(
+                document,
+                parse_error,
+                relative_path=entry.path,
+                boris=entry.format.format_id == "boris",
+            )
             structured_docs[entry.path] = profile.as_dict()
             if profile.parse_error:
                 warnings.append(f"{entry.path}: JSON parse error: {profile.parse_error}")
