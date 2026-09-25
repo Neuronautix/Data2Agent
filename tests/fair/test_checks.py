@@ -117,6 +117,24 @@ def test_an_unidentifiable_format_makes_openness_unknown_not_pass(
     assert _by_rule(service.run_fair_check())["I1-DATA-FORMATS-OPEN"]["result"] == "unknown"
 
 
+@pytest.mark.parametrize(
+    ("extension", "expected"), [("ods", "pass"), ("xls", "fail"), ("xlsb", "fail")]
+)
+def test_every_detected_workbook_format_has_an_openness_verdict(
+    tmp_path: Path, extension: str, expected: str
+):
+    """A newly detected format must not silently turn I1 into 'unknown' (D2A-94)."""
+    import shutil
+
+    source = tmp_path / "ds"
+    source.mkdir()
+    fixture = Path(__file__).resolve().parents[1] / "fixtures" / "workbooks"
+    shutil.copyfile(fixture / f"animals.{extension}", source / f"animals.{extension}")
+    result = ingest(source, tmp_path / "out")
+    service = DatasetService(result.output_dir, mode="fair-deterministic")
+    assert _by_rule(service.run_fair_check())["I1-DATA-FORMATS-OPEN"]["result"] == expected
+
+
 def test_an_unreferenced_data_file_is_named_in_the_rationale(dataset_copy: Path, tmp_path: Path):
     (dataset_copy / "orphan.csv").write_text("a,b\n1,2\n", encoding="utf-8")
     result = ingest(dataset_copy, tmp_path / "out")

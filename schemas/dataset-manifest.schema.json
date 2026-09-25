@@ -533,6 +533,28 @@
           "type": "integer",
           "minimum": 0
         },
+        "reader": {
+          "type": "object",
+          "description": "Which optional parser read the sheet, chosen from the format the bytes established. The parser's version is run-specific and is recorded in provenance.configuration.workbook_readers, never here. 'cell_values: cached' means a formula's last computed value was read, not its expression. Absent from manifests written before D2A-94, all of which were read by openpyxl.",
+          "required": [
+            "backend",
+            "cell_values"
+          ],
+          "properties": {
+            "backend": {
+              "enum": [
+                "openpyxl",
+                "calamine"
+              ]
+            },
+            "cell_values": {
+              "enum": [
+                "cached"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
         "missing_convention": {
           "$ref": "#/$defs/missingValueConvention"
         },

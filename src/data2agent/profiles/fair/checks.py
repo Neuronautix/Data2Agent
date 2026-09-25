@@ -66,9 +66,13 @@ _OPEN_FORMATS = frozenset(
         "nifti",
         "edf",
         "sqlite",
+        # OpenDocument Spreadsheet, ISO/IEC 26300.
+        "ods",
     }
 )
-_CLOSED_FORMATS = frozenset({"matlab", "xlsx"})
+# The binary Excel formats sit with xlsx: a workbook format is judged by what it
+# is, not by which parser Data2Agent happens to read it with (D2A-94).
+_CLOSED_FORMATS = frozenset({"matlab", "xlsx", "xls", "xlsb"})
 
 # Namespaces whose appearance in metadata evidences a controlled vocabulary.
 _VOCABULARY_MARKERS = (

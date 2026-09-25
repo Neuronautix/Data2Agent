@@ -232,7 +232,7 @@ def test_a_workbook_nobody_could_open_is_registered_as_a_candidate(tmp_path: Pat
     book.active.append(["A001", "control"])
     book.save(root / "registry.xlsx")
 
-    monkeypatch.setattr(workbook_reader, "available", lambda: False)
+    monkeypatch.setattr(workbook_reader.Backend, "available", lambda self: False)
     result = ingest(root, tmp_path / "out")
 
     assert result.manifest["metadata_files"] == []

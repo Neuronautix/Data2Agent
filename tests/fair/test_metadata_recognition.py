@@ -172,7 +172,7 @@ def test_a_dataset_whose_only_candidate_was_never_opened_reads_as_unknown(
     book.active.append(["A001", "control"])
     book.save(root / "registry.xlsx")
 
-    monkeypatch.setattr(workbook_reader, "available", lambda: False)
+    monkeypatch.setattr(workbook_reader.Backend, "available", lambda self: False)
     result = ingest(root, tmp_path / "cand" / "out")
 
     service = DatasetService(result.output_dir, mode="fair-deterministic")
@@ -224,7 +224,7 @@ def test_one_readable_file_does_not_resolve_another_that_was_never_opened(
     book.active.append(["A001", "control"])
     book.save(root / "registry.xlsx")
 
-    monkeypatch.setattr(workbook_reader, "available", lambda: False)
+    monkeypatch.setattr(workbook_reader.Backend, "available", lambda self: False)
     result = ingest(root, tmp_path / "mixed" / "out")
 
     assert [item["path"] for item in result.manifest["metadata_files"]] == ["README.md"]
@@ -274,7 +274,7 @@ def test_a_candidate_only_rationale_reads_as_a_sentence(tmp_path: Path, monkeypa
     book.active.append(["animal_id", "group"])
     book.save(root / "registry.xlsx")
 
-    monkeypatch.setattr(workbook_reader, "available", lambda: False)
+    monkeypatch.setattr(workbook_reader.Backend, "available", lambda self: False)
     result = ingest(root, tmp_path / "prose" / "out")
     service = DatasetService(result.output_dir, mode="fair-deterministic")
     results = {item["rule_id"]: item for item in service.run_fair_check()["results"]}

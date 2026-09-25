@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..ingest.conventions import SENTINEL, MissingValueConvention
+from . import workbook
 
 
 def read_delimited_rows(
@@ -75,14 +76,7 @@ def read_workbook_rows(
     limit: int,
     convention: MissingValueConvention,
 ) -> list[dict[str, Any]]:
-    """Read a bounded slice from one profiled OOXML worksheet."""
-    try:
-        import openpyxl
-    except ImportError as exc:  # pragma: no cover - guarded by ingest/profile availability
-        raise RuntimeError(
-            "reading OOXML rows requires the 'xlsx' extra: pip install 'data2agent[xlsx]'"
-        ) from exc
-
+    """Read a bounded slice from one profiled worksheet, with the backend that profiled it."""
     header_row = profile.get("header_row")
     if header_row is None:
         return []
@@ -91,23 +85,19 @@ def read_workbook_rows(
     if not sheet_name:
         raise KeyError("worksheet profile does not record a sheet name")
 
+    # Manifests written before D2A-94 carry no reader block; they were all
+    # profiled with openpyxl, which is therefore the only faithful default.
+    backend_name = (profile.get("reader") or {}).get("backend", workbook.OPENPYXL.name)
+    backend = workbook.BACKENDS.get(backend_name)
+    if backend is None:
+        raise KeyError(f"worksheet was profiled by an unknown reader {backend_name!r}")
+
     specs = _column_specs(profile, columns)
-    handle = path.open("rb")
-    try:
-        book = openpyxl.load_workbook(handle, read_only=True, data_only=True)
-    except Exception:
-        handle.close()
-        raise
-
     rows: list[dict[str, Any]] = []
-    try:
-        if sheet_name not in book.sheetnames:
-            raise KeyError(f"worksheet {sheet_name!r} no longer exists in the workbook")
-        sheet = book[sheet_name]
-
+    with workbook.open_workbook(path, backend) as book:
         start_row = int(header_row) + 1 + offset
         for source_row, record in enumerate(
-            sheet.iter_rows(min_row=start_row, values_only=True), start=start_row
+            book.iter_rows(sheet_name, min_row=start_row), start=start_row
         ):
             if len(rows) >= limit:
                 break
@@ -119,9 +109,6 @@ def read_workbook_rows(
                     "missing": missing,
                 }
             )
-    finally:
-        book.close()
-        handle.close()
     return rows
 
 
@@ -186,7 +173,7 @@ def _normalise(
     if isinstance(raw, (bool, int, float)):
         return raw, None
 
-    # openpyxl can surface a small number of scalar-like Python objects that are
+    # A parser can surface a small number of scalar-like Python objects that are
     # not JSON serialisable. Preserve their textual value rather than failing or
     # inventing a richer interpretation.
     return str(raw), None

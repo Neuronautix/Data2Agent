@@ -35,6 +35,7 @@ and [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 ```bash
 pip install -e '.[mcp,fair,dev]'
+# outside dev: add the 'xlsx' extra for XLSX, 'workbooks' for legacy XLS, XLSB and ODS
 
 # 1. Ingest — deterministic, read-only over the dataset
 data2agent ingest examples/preclinical-minimal -o ./preclinical-agent

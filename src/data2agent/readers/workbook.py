@@ -1,4 +1,4 @@
-"""OOXML workbook profiling.
+"""Workbook profiling, behind a neutral backend interface.
 
 The deterministic core profiles delimited text only. A real preclinical dataset
 keeps its numbers in spreadsheets, so a core that cannot open a workbook reports
@@ -6,10 +6,10 @@ keeps its numbers in spreadsheets, so a core that cannot open a workbook reports
 depends on cell-level facts abstains for the wrong reason. That is D2A-47, found
 by the XP14 run (#16).
 
-Three commitments shape this module.
+Four commitments shape this module.
 
 **The shape is observed, not interpreted.** A sheet's used range is a rectangle
-openpyxl reports; this module records it and profiles what is inside. It does
+the parser reports; this module records it and profiles what is inside. It does
 not decide which sheet is "the data", does not merge multi-row headers, and does
 not infer meaning from a column name.
 
@@ -25,12 +25,27 @@ delimited profiler is reused deliberately, so a token means the same thing in a
 sheet as in a CSV and ``manifest.missing_value_convention`` governs both. Two
 implementations would let the convention drift, and the convention is the thing
 that makes a missingness count reproducible.
+
+**The backend is chosen by the bytes, and recorded.** OOXML (``xlsx``) is read
+with openpyxl, as it always has been; genuine legacy BIFF ``xls``, ``xlsb`` and
+``ods`` are read with python-calamine (D2A-94). Which format a file is was
+decided by :mod:`data2agent.ingest.formats` from its content, never its name.
+Every backend yields cells as the same Python types -- blank as ``None``, a
+whole number as ``int``, a date as a midnight ``datetime`` -- so a sheet Excel
+saved in four formats profiles identically in all four. Both backends read a
+formula's *cached* value, not its expression; ``reader.cell_values`` records
+that, so it is a stated limitation rather than a silent one.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import date, datetime, time
+from importlib import metadata as _metadata
 from pathlib import Path
+from typing import Any
 
 from ..ingest.conventions import DEFAULT_CONVENTION, MissingValueConvention
 from ..ingest.tabular import ColumnProfile, _convention_warnings, _observe, finalise, new_column
@@ -42,6 +57,59 @@ _MAX_SHEETS = 64
 
 class WorkbookReaderUnavailable(RuntimeError):
     """Raised when the optional parser is not installed."""
+
+
+@dataclass(frozen=True)
+class Backend:
+    """One optional workbook parser and the formats it is trusted with."""
+
+    name: str
+    module: str  # import name
+    distribution: str  # installed distribution, for the recorded version
+    extra: str  # the data2agent extra that installs it
+    formats: frozenset[str]
+
+    def available(self) -> bool:
+        try:
+            __import__(self.module)
+        except ImportError:
+            return False
+        return True
+
+    def version(self) -> str | None:
+        try:
+            return _metadata.version(self.distribution)
+        except _metadata.PackageNotFoundError:
+            return None
+
+    def describe(self) -> dict[str, str]:
+        # Both backends open workbooks on cached values; neither exposes a
+        # formula's expression. Recorded per sheet so a reader of the manifest
+        # knows "43" typed and "43" computed are not distinguished here.
+        return {"backend": self.name, "cell_values": "cached"}
+
+
+OPENPYXL = Backend("openpyxl", "openpyxl", "openpyxl", "xlsx", frozenset({"xlsx"}))
+CALAMINE = Backend(
+    "calamine",
+    "python_calamine",
+    "python-calamine",
+    "workbooks",
+    frozenset({"xls", "xlsb", "ods"}),
+)
+BACKENDS: dict[str, Backend] = {OPENPYXL.name: OPENPYXL, CALAMINE.name: CALAMINE}
+
+
+def backend_for(format_id: str) -> Backend:
+    """The backend that reads ``format_id``; ``KeyError`` for any other format.
+
+    OOXML stays on openpyxl even when calamine is installed, so an existing
+    XLSX manifest does not change because an unrelated extra was added.
+    """
+    for backend in BACKENDS.values():
+        if format_id in backend.formats:
+            return backend
+    raise KeyError(f"no workbook backend reads format {format_id!r}")
 
 
 @dataclass
@@ -64,6 +132,7 @@ class SheetProfile:
     merged_ranges: int
     convention: MissingValueConvention
     warnings: list[str] = field(default_factory=list)
+    reader: Backend = OPENPYXL
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -78,6 +147,7 @@ class SheetProfile:
             "rows": self.rows,
             "column_count": len(self.columns),
             "merged_ranges": self.merged_ranges,
+            "reader": self.reader.describe(),
             "missing_convention": self.convention.as_dict(),
             "columns": [column.as_dict() for column in self.columns],
             "missing": {column.name: column.missing for column in self.columns},
@@ -85,52 +155,34 @@ class SheetProfile:
         }
 
 
-def available() -> bool:
-    """Whether the optional parser is importable."""
-    try:
-        import openpyxl  # noqa: F401
-    except ImportError:
-        return False
-    return True
+def available(format_id: str = "xlsx") -> bool:
+    """Whether the optional parser for ``format_id`` is importable."""
+    return backend_for(format_id).available()
 
 
 def profile_workbook(
     path: Path,
     relative_path: str,
     convention: MissingValueConvention = DEFAULT_CONVENTION,
+    format_id: str = "xlsx",
 ) -> list[SheetProfile]:
-    """Profile every worksheet in an OOXML workbook.
+    """Profile every worksheet in a workbook whose format the bytes established.
 
     Raises :class:`WorkbookReaderUnavailable` when the optional parser is
     missing, so the caller can report a workbook it could not read instead of
     reporting a dataset with no tables.
     """
+    backend = backend_for(format_id)
+    if not backend.available():
+        raise WorkbookReaderUnavailable(_unavailable_message(backend))
     try:
-        import openpyxl
-    except ImportError as exc:  # pragma: no cover - exercised via available()
-        raise WorkbookReaderUnavailable(
-            "reading OOXML workbooks requires the 'xlsx' extra: pip install 'data2agent[xlsx]'"
-        ) from exc
-
-    # Opened from a file handle, not a path: openpyxl dispatches on the
-    # extension and refuses an OOXML workbook named '.xls', which is the case
-    # D2A-46 identified in XP14. A handle is both extension-independent and
-    # seekable, so read_only streaming still applies -- reading the archive into
-    # memory first would defeat it on exactly the large files it protects.
-    handle = path.open("rb")
-    try:
-        book = openpyxl.load_workbook(
-            handle,
-            read_only=True,  # streaming: a large workbook must not be held whole
-            data_only=True,  # cached values, not formula text; see module note
-        )
-    except Exception as exc:  # openpyxl raises a wide range on malformed input
-        handle.close()
-        return [_unreadable(relative_path, convention, f"{type(exc).__name__}: {exc}")]
+        book = _open(path, backend)
+    except Exception as exc:  # parsers raise a wide range on malformed input
+        return [_unreadable(relative_path, convention, f"{type(exc).__name__}: {exc}", backend)]
 
     profiles: list[SheetProfile] = []
     try:
-        sheet_names = list(book.sheetnames)
+        sheet_names = book.sheet_names()
         for index, name in enumerate(sheet_names):
             if index >= _MAX_SHEETS:
                 profiles.append(
@@ -139,11 +191,12 @@ def profile_workbook(
                         convention,
                         f"workbook has {len(sheet_names)} sheets; "
                         f"only the first {_MAX_SHEETS} were profiled",
+                        backend,
                     )
                 )
                 break
             try:
-                profiles.append(_profile_sheet(book[name], relative_path, index, convention))
+                profiles.append(_profile_sheet(book, name, relative_path, index, convention))
             except Exception as exc:
                 # read_only defers XML parsing until the rows are iterated, so a
                 # sheet can fail long after the workbook opened cleanly. One bad
@@ -153,21 +206,179 @@ def profile_workbook(
                         f"{relative_path}#{name}",
                         convention,
                         f"sheet '{name}' could not be read: {type(exc).__name__}: {exc}",
+                        backend,
                         workbook=relative_path,
                         sheet=name,
                     )
                 )
     finally:
         book.close()
-        handle.close()
 
     return profiles
+
+
+class OpenWorkbook:
+    """The neutral surface profiling and row access use, whatever the backend."""
+
+    backend: Backend
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+    def sheet_names(self) -> list[str]:
+        raise NotImplementedError
+
+    def sheet_state(self, name: str) -> str:
+        raise NotImplementedError
+
+    def merged_ranges(self, name: str) -> int:
+        raise NotImplementedError
+
+    def iter_rows(self, name: str, min_row: int = 1) -> Iterator[tuple[Any, ...]]:
+        """Rows from ``min_row``, numbered as the spreadsheet numbers them (1-based)."""
+        raise NotImplementedError
+
+
+@contextmanager
+def open_workbook(path: Path, backend: Backend) -> Iterator[OpenWorkbook]:
+    """Open ``path`` read-only with ``backend``. The file is never converted or written."""
+    if not backend.available():
+        raise WorkbookReaderUnavailable(_unavailable_message(backend))
+    book = _open(path, backend)
+    try:
+        yield book
+    finally:
+        book.close()
+
+
+def _open(path: Path, backend: Backend) -> OpenWorkbook:
+    return _OpenpyxlWorkbook(path) if backend is OPENPYXL else _CalamineWorkbook(path)
+
+
+def _unavailable_message(backend: Backend) -> str:
+    return (
+        f"reading this workbook requires the '{backend.extra}' extra: "
+        f"pip install 'data2agent[{backend.extra}]'"
+    )
+
+
+class _OpenpyxlWorkbook(OpenWorkbook):
+    backend = OPENPYXL
+
+    def __init__(self, path: Path) -> None:
+        import openpyxl
+
+        # Opened from a file handle, not a path: openpyxl dispatches on the
+        # extension and refuses an OOXML workbook named '.xls', which is the case
+        # D2A-46 identified in XP14. A handle is both extension-independent and
+        # seekable, so read_only streaming still applies -- reading the archive
+        # into memory first would defeat it on exactly the large files it protects.
+        self._handle = path.open("rb")
+        try:
+            self._book = openpyxl.load_workbook(
+                self._handle,
+                read_only=True,  # streaming: a large workbook must not be held whole
+                data_only=True,  # cached values, not formula text; see module note
+            )
+        except Exception:
+            self._handle.close()
+            raise
+
+    def close(self) -> None:
+        self._book.close()
+        self._handle.close()
+
+    def sheet_names(self) -> list[str]:
+        return list(self._book.sheetnames)
+
+    def _sheet(self, name: str):
+        if name not in self._book.sheetnames:
+            raise KeyError(f"worksheet {name!r} no longer exists in the workbook")
+        return self._book[name]
+
+    def sheet_state(self, name: str) -> str:
+        return getattr(self._sheet(name), "sheet_state", "visible") or "visible"
+
+    def merged_ranges(self, name: str) -> int:
+        # read_only worksheets expose merged ranges inconsistently; absence is
+        # not evidence of none, so it is reported as 0 without claiming certainty.
+        merged = getattr(self._sheet(name), "merged_cells", None)
+        return len(merged.ranges) if merged is not None and hasattr(merged, "ranges") else 0
+
+    def iter_rows(self, name: str, min_row: int = 1) -> Iterator[tuple[Any, ...]]:
+        return self._sheet(name).iter_rows(min_row=min_row, values_only=True)
+
+
+class _CalamineWorkbook(OpenWorkbook):
+    backend = CALAMINE
+
+    def __init__(self, path: Path) -> None:
+        from python_calamine import CalamineWorkbook
+
+        # calamine has no write API at all, so the source cannot be converted or
+        # touched in place; it is opened by content, never by extension.
+        self._book = CalamineWorkbook.from_path(str(path))
+        self._states = {
+            meta.name: _CALAMINE_STATES.get(str(meta.visible).rsplit(".", 1)[-1], "unknown")
+            for meta in self._book.sheets_metadata
+        }
+
+    def close(self) -> None:
+        self._book.close()
+
+    def sheet_names(self) -> list[str]:
+        return list(self._book.sheet_names)
+
+    def _sheet(self, name: str):
+        if name not in self._book.sheet_names:
+            raise KeyError(f"worksheet {name!r} no longer exists in the workbook")
+        return self._book.get_sheet_by_name(name)
+
+    def sheet_state(self, name: str) -> str:
+        return self._states.get(name, "unknown")
+
+    def merged_ranges(self, name: str) -> int:
+        # None where the format reader does not track merges (xlsb, ods):
+        # unknown, and reported as 0 exactly as openpyxl's read_only mode is.
+        merged = self._sheet(name).merged_cell_ranges
+        return len(merged) if merged else 0
+
+    def iter_rows(self, name: str, min_row: int = 1) -> Iterator[tuple[Any, ...]]:
+        # calamine pads leading empty *rows*, so the row number here is the
+        # spreadsheet's own; it does not pad leading empty *columns*, so each row
+        # is left-padded to column A. Without that, a sheet starting at column C
+        # would shift every column position relative to openpyxl.
+        sheet = self._sheet(name)
+        lead = (None,) * (sheet.start[1] if sheet.start else 0)
+        for number, row in enumerate(sheet.iter_rows(), start=1):
+            if number >= min_row:
+                yield lead + tuple(_calamine_cell(value) for value in row)
+
+
+_CALAMINE_STATES = {"Visible": "visible", "Hidden": "hidden", "VeryHidden": "veryHidden"}
+
+
+def _calamine_cell(value: Any) -> Any:
+    """Bring a calamine cell to the type openpyxl yields for the same cell.
+
+    A workbook stores every number as a double and every date as a serial day,
+    so these are not reinterpretations: an integral double is the integer the
+    sheet displays, and a date is that day's midnight.
+    """
+    if isinstance(value, str) and value == "":
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return datetime.combine(value, time())
+    return value
 
 
 def _unreadable(
     relative_path: str,
     convention: MissingValueConvention,
     note: str,
+    backend: Backend = OPENPYXL,
     *,
     workbook: str | None = None,
     sheet: str = "",
@@ -192,30 +403,33 @@ def _unreadable(
         merged_ranges=0,
         convention=convention,
         warnings=[note],
+        reader=backend,
     )
 
 
-def _profile_sheet(sheet, workbook_path: str, index: int, convention: MissingValueConvention):
+def _profile_sheet(
+    book: OpenWorkbook,
+    name: str,
+    workbook_path: str,
+    index: int,
+    convention: MissingValueConvention,
+) -> SheetProfile:
     warnings: list[str] = []
-    name = sheet.title
-    state = getattr(sheet, "sheet_state", "visible") or "visible"
+    state = book.sheet_state(name)
     if state != "visible":
         warnings.append(
             f"sheet is '{state}'; profiled anyway, because a hidden sheet is "
             f"still data the file carries"
         )
 
-    # read_only worksheets expose merged ranges inconsistently; absence is not
-    # evidence of none, so it is reported as 0 without claiming certainty.
-    merged = len(getattr(sheet, "merged_cells", None).ranges) if _has_merged(sheet) else 0
+    merged = book.merged_ranges(name)
 
-    rows_iter = sheet.iter_rows(values_only=True)
     header_row_index: int | None = None
     header: list[str] = []
     columns: list[ColumnProfile] = []
     data_rows = 0
 
-    for row_number, raw_row in enumerate(rows_iter, start=1):
+    for row_number, raw_row in enumerate(book.iter_rows(name), start=1):
         cells = ["" if v is None else str(v) for v in raw_row]
         if header_row_index is None:
             if not any(cell.strip() for cell in cells):
@@ -260,12 +474,8 @@ def _profile_sheet(sheet, workbook_path: str, index: int, convention: MissingVal
         merged_ranges=merged,
         convention=convention,
         warnings=warnings,
+        reader=book.backend,
     )
-
-
-def _has_merged(sheet) -> bool:
-    merged = getattr(sheet, "merged_cells", None)
-    return merged is not None and hasattr(merged, "ranges")
 
 
 def _header_names(cells: list[str], warnings: list[str], sheet: str, row: int) -> list[str]:
