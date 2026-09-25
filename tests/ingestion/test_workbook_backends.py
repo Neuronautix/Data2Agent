@@ -169,6 +169,40 @@ def _contract(sheet) -> dict:
 
 
 @readers
+def test_an_empty_sheet_is_profiled_as_empty_by_calamine(tmp_path: Path):
+    """calamine panics iterating a sheet with no used range; XP1's .xlsb exports have one."""
+    import openpyxl
+
+    path = tmp_path / "with-empty.xlsx"
+    book = openpyxl.Workbook()
+    book.active.append(["id"])
+    book.active.append([1])
+    book.create_sheet("empty")
+    book.save(path)
+
+    with workbook.open_workbook(path, workbook.CALAMINE) as opened:
+        assert list(opened.iter_rows("empty")) == []
+        sheet = workbook._profile_sheet(
+            opened, "empty", "with-empty.xlsx", 1, workbook.DEFAULT_CONVENTION
+        )
+    assert sheet.profiled is True
+    assert sheet.rows == 0
+    assert any("empty" in warning for warning in sheet.warnings)
+
+
+def test_a_parser_panic_becomes_an_unreadable_sheet_not_an_aborted_ingest():
+    class PanicException(BaseException):  # the shape pyo3 raises
+        pass
+
+    with pytest.raises(RuntimeError, match="could not parse"):
+        with workbook._panics_as_errors():
+            raise PanicException("called `Option::unwrap()` on a `None` value")
+    with pytest.raises(KeyboardInterrupt):
+        with workbook._panics_as_errors():
+            raise KeyboardInterrupt
+
+
+@readers
 def test_one_workbook_profiles_identically_in_every_format():
     """Same high-level table contract regardless of backend."""
     profiles = {
