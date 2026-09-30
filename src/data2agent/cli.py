@@ -213,6 +213,9 @@ def _cmd_assess(args: argparse.Namespace) -> int:
     # from code, so the mode label on the assessment must say so.
     service = DatasetService(args.output, source_dir=args.source, mode="fair-deterministic")
 
+    if args.profile != "fair":
+        return _assess_other_profile(service, args)
+
     if args.list:
         listing = service.list_fair_rules()
         print(f"{listing['profile']['id']} {listing['profile']['version']}")
@@ -242,6 +245,36 @@ def _cmd_assess(args: argparse.Namespace) -> int:
         if result.get("rationale"):
             print(f"  {'':<32} {' '.join(result['rationale'].split())}")
     # A failed indicator is a finding about the dataset, not a tool error.
+    return 0
+
+
+def _assess_other_profile(service: DatasetService, args: argparse.Namespace) -> int:
+    """Run a non-FAIR profile. FAIR keeps its own path: it alone writes remediation guidance."""
+    profile_id = args.profile
+    if args.list:
+        listing = service.list_profile_rules(profile_id)
+        print(f"{listing['profile']['id']} {listing['profile']['version']}")
+        for rule in listing["rules"]:
+            status = "" if rule["implemented"] else "  [NOT IMPLEMENTED -> always unknown]"
+            print(f"  {rule['id']:<32} {rule['principle']:<10} {rule['check']}{status}")
+            print(f"  {'':<32} {rule['question'].strip()}")
+        return 0
+
+    assessment = service.run_profile_check(profile_id, args.rule, orchestrator="deterministic")
+    destination = Path(args.output) / f"assessment.{profile_id}.json"
+    write_json(destination, assessment)
+    summary = assessment["summary"]
+    print(f"dataset_id : {assessment['dataset_id']}")
+    print(f"profile    : {assessment['profile']['id']} {assessment['profile']['version']}")
+    print(
+        "results    : " + ", ".join(f"{count} {name}" for name, count in summary.items() if count)
+    )
+    print(f"written    : {destination}")
+    print()
+    for result in assessment["results"]:
+        print(f"  {result['rule_id']:<32} {result['result']}")
+        if result.get("rationale"):
+            print(f"  {'':<32} {' '.join(result['rationale'].split())}")
     return 0
 
 
