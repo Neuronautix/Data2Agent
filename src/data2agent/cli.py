@@ -7,6 +7,8 @@ data2agent recommend <output>              generate evidence-linked FAIR actions
 data2agent serve   <output> --mode <mode>  run the Data2MCP server over stdio
 data2agent relationships <output>          resolve cross-table relationships
     [--declarations rel.json] [--crosswalk [NAME=]ids.csv ...]
+data2agent export-annotations <output> --dataspace <root> --dataset-path <dir> ...
+                                           assessments as FAIR-VCG proposed annotations
 data2agent modes                           list benchmark modes and their status
 """
 
@@ -156,6 +158,36 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     relationships_parser.set_defaults(handler=_cmd_relationships)
+
+    export_parser = subparsers.add_parser(
+        "export-annotations",
+        help="write assessments as FAIR-VCG proposed annotations (drafts, never curated)",
+    )
+    export_parser.add_argument("output", type=Path, help="an ingest output directory")
+    export_parser.add_argument(
+        "--dataspace", type=Path, required=True, help="root of the FAIR-VCG dataspace"
+    )
+    export_parser.add_argument(
+        "--dataset-path",
+        required=True,
+        help="ingested dataset directory, relative to --dataspace (e.g. data/original/name)",
+    )
+    export_parser.add_argument("--family", required=True, help="dataset_family_id")
+    export_parser.add_argument("--variant", required=True, choices=["original", "curated"])
+    export_parser.add_argument(
+        "--agent-model", required=True, help="model/tool id recorded on every proposal"
+    )
+    export_parser.add_argument("--created-by", default=None, help="default: data2agent <version>")
+    export_parser.add_argument(
+        "--created-at", default=None, help="ISO-8601 UTC ending in Z (default: now)"
+    )
+    export_parser.add_argument(
+        "--curation-log", type=Path, default=None, help="curation log from 'apply' (curated only)"
+    )
+    export_parser.add_argument(
+        "--overwrite", action="store_true", help="replace existing untouched draft proposals"
+    )
+    export_parser.set_defaults(handler=_cmd_export_annotations)
 
     modes_parser = subparsers.add_parser("modes", help="list benchmark modes")
     modes_parser.set_defaults(handler=_cmd_modes)
@@ -355,6 +387,27 @@ def _load_crosswalk_argument(value: str):
     if separator and name and not any(char in name for char in "/\\:"):
         return load_crosswalk_file(Path(rest), name=name)
     return load_crosswalk_file(Path(value))
+
+
+def _cmd_export_annotations(args: argparse.Namespace) -> int:
+    from .export import export_annotations
+
+    summary = export_annotations(
+        args.output,
+        dataspace=args.dataspace,
+        dataset_path=args.dataset_path,
+        family=args.family,
+        variant=args.variant,
+        agent_model=args.agent_model,
+        created_by=args.created_by,
+        created_at=args.created_at,
+        curation_log=args.curation_log,
+        overwrite=args.overwrite,
+    )
+    for warning in summary["warnings"]:
+        print(f"warning: {warning}", file=sys.stderr)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 0
 
 
 def _cmd_modes(_: argparse.Namespace) -> int:
