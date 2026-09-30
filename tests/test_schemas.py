@@ -154,3 +154,27 @@ def test_assessment_schema_accepts_unknown_as_a_first_class_result():
         "unsupported_claims": [],
     }
     jsonschema.validate(valid, schema)
+
+
+def test_assessment_schema_takes_a_non_fair_category_but_keeps_fair_closed():
+    schema = _schema("assessment.schema.json")
+
+    def document(profile_id: str, principle: str) -> dict:
+        return {
+            "assessment_version": "0.1.0",
+            "dataset_id": "sha256:" + "0" * 64,
+            "profile": {"id": profile_id, "version": "0.0.1"},
+            "generator": {"mode": "fair-deterministic"},
+            "results": [
+                {
+                    "rule_id": "Q-EXAMPLE-RULE",
+                    "principle": principle,
+                    "result": "pass",
+                    "evidence": ["clm_0"],
+                }
+            ],
+        }
+
+    jsonschema.validate(document("quality", "Q.encoding"), schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(document("fair", "Q.encoding"), schema)
