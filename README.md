@@ -353,6 +353,9 @@ Output directory: <OUTPUT_DIR>
 
 ## Development
 
+The [query input contract](docs/query-input-contract.md) describes closed nested
+filters, exact operator names and candidate-visible validation errors.
+
 ```bash
 pip install -e '.[mcp,fair,dev]'
 pytest          # 139 tests

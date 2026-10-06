@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from data2agent.errors import OutputError
+from data2agent.errors import OutputError, QueryError
 from data2agent.ingest import ingest
 from data2agent.ingest.conventions import STRICT_CONVENTION
 from data2agent.mcp import DatasetService
@@ -137,6 +137,16 @@ def test_filter_rows_selects_a_group_and_reports_total_matches(service):
     assert all(row["values"]["genotype"] == "KO" for row in payload["rows"])
     assert payload["operation"]["filters"][0]["column"] == "genotype"
     assert payload["input"]["backing_sha256"]
+
+
+def test_filter_rows_unknown_columns_are_query_errors(service):
+    with pytest.raises(QueryError, match="unknown column.*session.*available columns"):
+        service.filter_rows(
+            "animals.csv",
+            filters=[{"column": "session", "op": "eq", "value": 2}],
+            columns=["animal_id", "session"],
+            limit=2,
+        )
 
 
 def test_aggregate_computes_group_counts_and_numeric_means(service):

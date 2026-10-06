@@ -31,6 +31,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from ..errors import QueryValidationError
 from .operations import _group_sort_key, compute_metrics, validate_metrics
 
 INCONSISTENT_UNIT_POLICIES = frozenset({"refuse", "exclude"})
@@ -64,20 +65,20 @@ def aggregate_units(
     """
     listed = list(listed_columns or [])
     if not isinstance(unit, list) or not unit:
-        raise ValueError("unit must be a non-empty list of column names")
+        raise QueryValidationError("unit must be a non-empty list of column names")
     unknown = [name for name in unit if name not in dtypes]
     if unknown:
-        raise ValueError(f"unknown unit column(s): {unknown}")
+        raise QueryValidationError(f"unknown unit column(s): {unknown}")
     if len(set(unit)) != len(unit):
-        raise ValueError("unit columns must not repeat")
+        raise QueryValidationError("unit columns must not repeat")
     if on_inconsistent_unit not in INCONSISTENT_UNIT_POLICIES:
-        raise ValueError(
+        raise QueryValidationError(
             f"unsupported on_inconsistent_unit {on_inconsistent_unit!r}; "
             f"choose from {sorted(INCONSISTENT_UNIT_POLICIES)}"
         )
     sample = int(unit_sample)
     if sample < 0:
-        raise ValueError("unit_sample must be zero or greater")
+        raise QueryValidationError("unit_sample must be zero or greater")
     sample = min(sample, MAX_UNIT_SAMPLE)
 
     unit_specs = validate_metrics(unit_metrics, dtypes, allow_empty=True)
@@ -88,7 +89,7 @@ def aggregate_units(
     try:
         group_specs = validate_metrics(metrics, stage_two_dtypes)
     except ValueError as error:
-        raise ValueError(
+        raise QueryValidationError(
             f"{error}. With a unit declared, metrics summarise units and their columns "
             f"must name unit_metrics outputs: {sorted(stage_two_dtypes)}"
         ) from error

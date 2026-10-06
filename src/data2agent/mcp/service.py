@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import Any
 
 from .. import query, relationships
-from ..errors import ModeError, OutputError
+from ..errors import (
+    ModeError,
+    OutputError,
+    QueryLookupError,
+    QueryValidationError,
+)
 from ..evidence import EvidenceLedger
 from ..ingest.checksum import hash_file
 from ..ingest.conventions import MissingValueConvention
@@ -386,10 +391,10 @@ class DatasetService:
             container = _container_error(path, tables, "read") if "#" not in path else None
             if container is not None:
                 raise container
-            raise KeyError(f"'{path}' was not profiled as a table")
+            raise QueryLookupError(f"'{path}' was not profiled as a table")
 
         if profile.get("profiled") is False:
-            raise KeyError(f"'{path}' exists but was not successfully profiled")
+            raise QueryLookupError(f"'{path}' exists but was not successfully profiled")
 
         backing = _backing_file(profile, path)
         entry = self._require_entry(backing)
@@ -397,19 +402,15 @@ class DatasetService:
 
         available = [column["name"] for column in profile.get("columns", [])]
         selected = available if columns is None else list(columns)
-        unknown = [name for name in selected if name not in available]
-        if unknown:
-            raise KeyError(
-                f"unknown column(s) for '{path}': {unknown}; available columns: {available}"
-            )
+        _require_known_columns(path, available, selected)
 
         requested_limit = int(limit)
         if requested_limit < 1:
-            raise ValueError("limit must be at least 1")
+            raise QueryValidationError("limit must be at least 1")
         applied_limit = min(requested_limit, _MAX_READ_ROWS)
         applied_offset = int(offset)
         if applied_offset < 0:
-            raise ValueError("offset must be zero or greater")
+            raise QueryValidationError("offset must be zero or greater")
 
         payload: dict[str, Any] = {
             "dataset_id": self.dataset_id,
@@ -544,7 +545,7 @@ class DatasetService:
         unit_columns = list(unit or [])
         stage_one = list(unit_metrics or [])
         if stage_one and not unit_columns:
-            raise ValueError("unit_metrics requires a unit declaration")
+            raise QueryValidationError("unit_metrics requires a unit declaration")
         profile = self._table_profile(path)
         available = [column["name"] for column in profile.get("columns", [])]
         dtypes = {column["name"]: column.get("dtype", "string") for column in profile["columns"]}
@@ -672,7 +673,7 @@ class DatasetService:
         unit_columns = list(unit or [])
         stage_one = list(unit_metrics or [])
         if stage_one and not unit_columns:
-            raise ValueError("unit_metrics requires a unit declaration")
+            raise QueryValidationError("unit_metrics requires a unit declaration")
 
         explicit = (left, right, left_keys, right_keys)
         contract: dict[str, Any] | None = None
@@ -681,7 +682,7 @@ class DatasetService:
                 value is not None
                 for value in (crosswalk, left_key_format, right_key_format, forms_per_canonical)
             ):
-                raise ValueError(
+                raise QueryValidationError(
                     "give either relationship_id or an explicit join (left/right/left_keys/"
                     "right_keys, crosswalk, key formats), not both"
                 )
@@ -693,7 +694,7 @@ class DatasetService:
             right_key_format = spec["right_key_format"]
             forms_per_canonical = spec["forms_per_canonical"]
         elif any(value is None for value in explicit):
-            raise ValueError(
+            raise QueryValidationError(
                 "aggregate_join needs relationship_id, or all of left, right, left_keys "
                 "and right_keys"
             )
@@ -701,7 +702,7 @@ class DatasetService:
         left_keys = [str(key) for key in left_keys or []]
         right_keys = [str(key) for key in right_keys or []]
         if how not in query.JOIN_TYPES:
-            raise ValueError(
+            raise QueryValidationError(
                 f"unsupported join type {how!r}; choose from {sorted(query.JOIN_TYPES)}"
             )
         left_resolver, right_resolver = self._key_resolvers(
@@ -823,13 +824,13 @@ class DatasetService:
         )
         cardinality = joined["diagnostics"]["cardinality"]
         if cardinality == "many_to_many":
-            raise ValueError(
+            raise QueryValidationError(
                 "refusing to aggregate a many-to-many join: both sides repeat join keys, so "
                 "rows are multiplied within each key and every sum, mean and count over them "
                 "is inflated. Declare keys that are unique on at least one side."
             )
         if joined["truncated"]:
-            raise ValueError(
+            raise QueryValidationError(
                 f"the join produces {joined['total_result_rows']} rows, above the "
                 f"complete-aggregation safety cap of {_MAX_COMPLETE_QUERY_ROWS}"
             )
@@ -936,7 +937,7 @@ class DatasetService:
         profile = self._table_profile(path)
         columns = {item["name"]: item for item in profile.get("columns", [])}
         if column not in columns:
-            raise KeyError(
+            raise QueryLookupError(
                 f"unknown column {column!r} for '{path}'; available columns: {list(columns)}"
             )
 
@@ -1258,13 +1259,13 @@ class DatasetService:
         """Return one saved relationship record by stable id."""
         listing = self.list_relationships()
         if not listing["determined"]:
-            raise KeyError("relationships have not been determined for this dataset")
+            raise QueryLookupError("relationships have not been determined for this dataset")
         if listing.get("content_withheld"):
             raise OutputError(listing["content_withheld"])
         for record in listing["relationships"]:
             if record.get("id") == relationship_id:
                 return {"dataset_id": self.dataset_id, "relationship": record}
-        raise KeyError(f"no relationship with id {relationship_id!r}")
+        raise QueryLookupError(f"no relationship with id {relationship_id!r}")
 
     def join_relationship(
         self,
@@ -1306,7 +1307,7 @@ class DatasetService:
         record = self.get_relationship(relationship_id)["relationship"]
         status = record["status"]
         if status not in {"declared", "deterministic"}:
-            raise ValueError(
+            raise QueryValidationError(
                 f"relationship {relationship_id!r} has status {status!r}; "
                 "only declared or deterministic relationships can drive a named join"
             )
@@ -1798,9 +1799,9 @@ class DatasetService:
             container = _container_error(path, tables, "use") if "#" not in path else None
             if container is not None:
                 raise container
-            raise KeyError(f"'{path}' was not profiled as a table")
+            raise QueryLookupError(f"'{path}' was not profiled as a table")
         if profile.get("profiled") is False:
-            raise KeyError(f"'{path}' exists but was not successfully profiled")
+            raise QueryLookupError(f"'{path}' exists but was not successfully profiled")
         return profile
 
     def _scan_table(
@@ -1821,7 +1822,7 @@ class DatasetService:
         integrity = self.verify_file(backing)
         total_rows = profile.get("rows")
         if require_complete and isinstance(total_rows, int) and total_rows > max_rows:
-            raise ValueError(
+            raise QueryValidationError(
                 f"query requires a complete scan of '{path}', but it has {total_rows} rows "
                 f"and the safety cap is {max_rows}"
             )
@@ -1870,11 +1871,11 @@ class DatasetService:
         forms = dict(forms_per_canonical or {})
         unknown_sides = sorted(set(forms) - {"left", "right"})
         if unknown_sides:
-            raise ValueError(
+            raise QueryValidationError(
                 f"forms_per_canonical sides must be 'left'/'right', not {unknown_sides}"
             )
         if not left_keys or not right_keys:
-            raise ValueError("left_keys and right_keys must be non-empty")
+            raise QueryValidationError("left_keys and right_keys must be non-empty")
         held: Crosswalk | None
         if crosswalk is None or isinstance(crosswalk, Crosswalk):
             held = crosswalk
@@ -1882,7 +1883,7 @@ class DatasetService:
             held = self.crosswalks.get(crosswalk)
             if held is None:
                 known = sorted(self.crosswalks) or "none"
-                raise KeyError(
+                raise QueryLookupError(
                     f"no crosswalk named {crosswalk!r} is declared in relationships.json "
                     f"(declared: {known}); crosswalks are supplied with "
                     "'data2agent relationships --crosswalk', never at query time"
@@ -1916,9 +1917,9 @@ class DatasetService:
                 forms_per_canonical=forms.get("right", "one"),
             )
         except CrosswalkError as error:
-            raise ValueError(str(error)) from error
+            raise QueryValidationError(str(error)) from error
         if not left_keys or not right_keys or left.width != right.width:
-            raise ValueError(
+            raise QueryValidationError(
                 "left_keys and right_keys must be non-empty and have equal length "
                 "(a key_format renders its side's key columns as one value)"
             )
@@ -2253,7 +2254,7 @@ def _bundle_crosswalks(
 def _bounded_result_limit(limit: int) -> int:
     requested = int(limit)
     if requested < 1:
-        raise ValueError("limit must be at least 1")
+        raise QueryValidationError("limit must be at least 1")
     return min(requested, _MAX_READ_ROWS)
 
 
@@ -2271,7 +2272,9 @@ def _ordered_union(*groups: list[str]) -> list[str]:
 def _require_known_columns(path: str, available: list[str], selected: list[str]) -> None:
     unknown = [name for name in selected if name not in available]
     if unknown:
-        raise KeyError(f"unknown column(s) for '{path}': {unknown}; available columns: {available}")
+        raise QueryLookupError(
+            f"unknown column(s) for '{path}': {unknown}; available columns: {available}"
+        )
 
 
 def _project_row(row: dict[str, Any], columns: list[str]) -> dict[str, Any]:
@@ -2564,7 +2567,9 @@ def _summarise(
         {
             str(metric.get("op"))
             for metric in [*metrics, *unit_metrics]
-            if isinstance(metric, dict) and metric.get("op") in query.AGGREGATES
+            if isinstance(metric, dict)
+            and isinstance(metric.get("op"), str)
+            and metric.get("op") in query.AGGREGATES
         }
     )
     summary: dict[str, Any] = {
@@ -2619,7 +2624,7 @@ def _split_qualified(name: str) -> tuple[str, str]:
     """Split ``left.<column>`` / ``right.<column>`` / ``key.<name>`` at the first dot only."""
     side, dot, column = name.partition(".")
     if not dot or side not in {"left", "right", "key"} or not column:
-        raise ValueError(
+        raise QueryValidationError(
             f"column reference {name!r} must be qualified as 'left.<column>', "
             "'right.<column>' or 'key.<name>' in a join aggregation"
         )
@@ -2628,17 +2633,17 @@ def _split_qualified(name: str) -> tuple[str, str]:
 
 def _require_key_column(column: str, *, resolved: bool, mapped: bool) -> None:
     if column not in _KEY_COLUMNS:
-        raise ValueError(
+        raise QueryValidationError(
             f"unknown key pseudo-column 'key.{column}'; available: "
             f"{['key.' + name for name in _KEY_COLUMNS]}"
         )
     if not resolved:
-        raise ValueError(
+        raise QueryValidationError(
             f"'key.{column}' exists only when the join resolves its keys through a "
             "crosswalk or a key_format; this join compares raw key columns"
         )
     if column in _CROSSWALK_KEY_COLUMNS and not mapped:
-        raise ValueError(f"'key.{column}' needs a join through a declared crosswalk")
+        raise QueryValidationError(f"'key.{column}' needs a join through a declared crosswalk")
 
 
 def _aggregation_mapping_counts(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2790,7 +2795,7 @@ def _backing_file(profile: dict[str, Any], path: str) -> str:
 def _bounded(value: int, ceiling: int, name: str) -> int:
     requested = int(value)
     if requested < 1:
-        raise ValueError(f"{name} must be at least 1")
+        raise QueryValidationError(f"{name} must be at least 1")
     return min(requested, ceiling)
 
 

@@ -15,6 +15,8 @@ from collections import Counter, defaultdict
 from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
+from ..errors import QueryValidationError
+
 FILTER_OPERATORS = frozenset(
     {
         "eq",
@@ -177,9 +179,13 @@ def join_rows(
     than manufacturing a relationship between two absences.
     """
     if how not in JOIN_TYPES:
-        raise ValueError(f"unsupported join type {how!r}; choose from {sorted(JOIN_TYPES)}")
+        raise QueryValidationError(
+            f"unsupported join type {how!r}; choose from {sorted(JOIN_TYPES)}"
+        )
     if not left_keys or len(left_keys) != len(right_keys):
-        raise ValueError("left_keys and right_keys must be non-empty and have equal length")
+        raise QueryValidationError(
+            "left_keys and right_keys must be non-empty and have equal length"
+        )
 
     left_keyed, left_missing = _key_rows(left_rows, left_keys)
     right_keyed, right_missing = _key_rows(right_rows, right_keys)
@@ -251,21 +257,31 @@ def join_rows(
 
 
 def _validate_filters(filters: list[dict[str, Any]]) -> None:
+    if not isinstance(filters, list):
+        raise QueryValidationError("filters must be a list of objects")
     for index, rule in enumerate(filters):
+        if not isinstance(rule, dict):
+            raise QueryValidationError(f"filter {index} must be an object")
+        unknown = sorted(set(rule) - {"column", "op", "value"})
+        if unknown:
+            raise QueryValidationError(
+                f"filter {index} has unknown keys {unknown}; use column, op, value; "
+                f"op must be one of {sorted(FILTER_OPERATORS)}"
+            )
         column = rule.get("column")
         op = rule.get("op")
         if not isinstance(column, str) or not column:
-            raise ValueError(f"filter {index} needs a non-empty 'column'")
-        if op not in FILTER_OPERATORS:
-            raise ValueError(
+            raise QueryValidationError(f"filter {index} needs a non-empty 'column'")
+        if not isinstance(op, str) or op not in FILTER_OPERATORS:
+            raise QueryValidationError(
                 f"filter {index} has unsupported op {op!r}; choose from {sorted(FILTER_OPERATORS)}"
             )
         if op in {"in", "not_in"} and not isinstance(rule.get("value"), list):
-            raise ValueError(f"filter {index} op {op!r} requires a list value")
+            raise QueryValidationError(f"filter {index} op {op!r} requires a list value")
         if op in {"is_missing", "is_not_missing"}:
             continue
         if "value" not in rule:
-            raise ValueError(f"filter {index} op {op!r} requires 'value'")
+            raise QueryValidationError(f"filter {index} op {op!r} requires 'value'")
 
 
 def _matches(values: dict[str, Any], rule: dict[str, Any]) -> bool:
@@ -293,7 +309,7 @@ def _matches(values: dict[str, Any], rule: dict[str, Any]) -> bool:
         if actual is None:
             return False
         if not isinstance(actual, str) or not isinstance(expected, str):
-            raise ValueError("'contains' requires string actual and expected values")
+            raise QueryValidationError("'contains' requires string actual and expected values")
         return expected in actual
 
     if actual is None:
@@ -317,7 +333,7 @@ def _require_comparable(actual: Any, expected: Any, column: str) -> None:
         return
     if isinstance(actual, str) and isinstance(expected, str):
         return
-    raise ValueError(
+    raise QueryValidationError(
         f"cannot order values for column {column!r}: "
         f"{type(actual).__name__} vs {type(expected).__name__}"
     )
@@ -328,36 +344,41 @@ def validate_metrics(
 ) -> list[dict[str, Any]]:
     """Check metrics against the closed registry and resolve their output names."""
     if not isinstance(metrics, list) or (not metrics and not allow_empty):
-        raise ValueError("at least one metric is required")
+        raise QueryValidationError("at least one metric is required")
 
     specs: list[dict[str, Any]] = []
     names: set[str] = set()
     for index, metric in enumerate(metrics):
         if not isinstance(metric, dict):
-            raise ValueError(f"metric {index} must be an object")
+            raise QueryValidationError(f"metric {index} must be an object")
+        unknown = sorted(set(metric) - {"op", "column", "name"})
+        if unknown:
+            raise QueryValidationError(
+                f"metric {index} has unknown keys {unknown}; use op, column, name"
+            )
         op = metric.get("op")
         column = metric.get("column")
-        if op not in AGGREGATES:
-            raise ValueError(
+        if not isinstance(op, str) or op not in AGGREGATES:
+            raise QueryValidationError(
                 f"metric {index} has unsupported op {op!r}; choose from {sorted(AGGREGATES)}"
             )
         if op != "count":
             if not isinstance(column, str) or column not in dtypes:
-                raise ValueError(f"metric {index} op {op!r} requires a known column")
+                raise QueryValidationError(f"metric {index} op {op!r} requires a known column")
         elif column is not None:
-            raise ValueError("'count' counts rows and does not accept a column")
+            raise QueryValidationError("'count' counts rows and does not accept a column")
 
         if op in NUMERIC_AGGREGATES and dtypes[column] not in {"integer", "number"}:
-            raise ValueError(
+            raise QueryValidationError(
                 f"metric {op!r} requires a numeric column; {column!r} has dtype {dtypes[column]!r}"
             )
 
         default_name = op if column is None else f"{op}:{column}"
         name = metric.get("name") or default_name
         if not isinstance(name, str) or not name:
-            raise ValueError(f"metric {index} has an invalid output name")
+            raise QueryValidationError(f"metric {index} has an invalid output name")
         if name in names:
-            raise ValueError(f"duplicate metric output name {name!r}")
+            raise QueryValidationError(f"duplicate metric output name {name!r}")
         names.add(name)
         specs.append({"op": op, "column": column, "name": name})
     return specs
@@ -413,11 +434,15 @@ def _aggregate_metric(rows: list[dict[str, Any]], spec: dict[str, Any]) -> tuple
 
 def _decimal(value: Any, column: str) -> Decimal:
     if not _is_numeric(value):
-        raise ValueError(f"non-numeric value {value!r} encountered in numeric column {column!r}")
+        raise QueryValidationError(
+            f"non-numeric value {value!r} encountered in numeric column {column!r}"
+        )
     try:
         return Decimal(str(value))
     except InvalidOperation as exc:
-        raise ValueError(f"cannot aggregate value {value!r} in column {column!r}") from exc
+        raise QueryValidationError(
+            f"cannot aggregate value {value!r} in column {column!r}"
+        ) from exc
 
 
 def _json_number(value: Decimal) -> int | float:
