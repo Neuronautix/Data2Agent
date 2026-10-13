@@ -7,6 +7,7 @@ block per session, each under a dated banner and its own header row.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -243,7 +244,13 @@ def test_blocks_in_a_delimited_file(tmp_path: Path):
 def test_manifests_with_blocks_are_byte_identical_and_match_the_schema(tmp_path: Path):
     jsonschema = pytest.importorskip("jsonschema")
     first, out1 = _ingest(tmp_path / "a", {PARENT: BLOCKS})
-    _, out2 = _ingest(tmp_path / "b", {PARENT: BLOCKS})
+    # Ingest the same workbook bytes twice. openpyxl stamps the save time into
+    # the file, so two workbooks saved either side of a second boundary differ.
+    source = tmp_path / "b" / "source"
+    source.mkdir(parents=True)
+    shutil.copyfile(tmp_path / "a" / "source" / "sessions.xlsx", source / "sessions.xlsx")
+    out2 = tmp_path / "b" / "out"
+    ingest(source, out2, layouts=_declare({PARENT: BLOCKS}))
     assert (out1 / "manifest.json").read_bytes() == (out2 / "manifest.json").read_bytes()
     schema_path = Path(__file__).resolve().parents[2] / "schemas" / "dataset-manifest.schema.json"
     jsonschema.validate(first.manifest, json.loads(schema_path.read_text(encoding="utf-8")))
