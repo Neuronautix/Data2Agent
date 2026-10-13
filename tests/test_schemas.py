@@ -81,6 +81,44 @@ def test_a_real_assessment_validates_against_the_assessment_schema(ingested):
     jsonschema.validate(service.run_fair_check(), _schema("assessment.schema.json"))
 
 
+def _minimal_assessment(version: str, generator: dict) -> dict:
+    return {
+        "assessment_version": version,
+        "dataset_id": "sha256:" + "0" * 64,
+        "profile": {"id": "fair", "version": "0.1.0"},
+        "generator": generator,
+        "results": [],
+    }
+
+
+def test_assessment_schema_keeps_0_1_0_records_without_a_build_valid():
+    """Assessments written before #33 carry no build and must stay readable."""
+    record = _minimal_assessment("0.1.0", {"mode": "structured"})
+    jsonschema.validate(record, _schema("assessment.schema.json"))
+
+
+def test_assessment_schema_requires_the_build_from_0_2_0():
+    schema = _schema("assessment.schema.json")
+    with pytest.raises(jsonschema.ValidationError, match="data2agent"):
+        jsonschema.validate(_minimal_assessment("0.2.0", {"mode": "structured"}), schema)
+    unknown_commit = {
+        "version": "0.1.0",
+        "commit": None,
+        "dirty": None,
+        "commit_unavailable": "not running from a git checkout",
+    }
+    jsonschema.validate(
+        _minimal_assessment("0.2.0", {"mode": "structured", "data2agent": unknown_commit}),
+        schema,
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        bad_commit = dict(unknown_commit, commit="HEAD")
+        jsonschema.validate(
+            _minimal_assessment("0.2.0", {"mode": "structured", "data2agent": bad_commit}),
+            schema,
+        )
+
+
 def test_assessment_schema_rejects_an_unsourced_result():
     """The v0.2 contract must not allow a FAIR verdict with no evidence."""
     schema = _schema("assessment.schema.json")

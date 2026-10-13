@@ -803,10 +803,21 @@ run-specific lives in `provenance.json`:
   "started_at": "2026-09-21T08:09:18Z",
   "finished_at": "2026-09-21T08:09:18Z",
   "duration_seconds": 0.003,
-  "tool": { "name": "data2agent", "version": "0.1.0" },
+  "tool": {
+    "name": "data2agent",
+    "version": "0.1.0",
+    "commit": "d9754b727781f951db96333333bc5bba36eb6d3d",
+    "dirty": false
+  },
   "source_verified_unchanged": true
 }
 ```
+
+`tool` is the ingesting build, from `data2agent.build.build_identity()`. The
+package version alone cannot tell unreleased builds apart, so when the code runs
+from a git checkout it also records the commit and whether the package source
+(`src/`) differed from it. Otherwise `commit` and `dirty` are `null` and
+`commit_unavailable` says why. The build is never written into the manifest.
 
 Keeping them out of the manifest is not the same as hiding them. A fact nobody
 can reach is as good as absent, so the ingest timestamp is surfaced by:

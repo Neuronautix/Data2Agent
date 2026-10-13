@@ -13,6 +13,7 @@ import pytest
 
 pytest.importorskip("mcp", reason="the MCP binding needs the 'mcp' extra")
 
+from data2agent.build import build_version  # noqa: E402
 from data2agent.mcp import DatasetService  # noqa: E402
 from data2agent.mcp.server import build_server  # noqa: E402
 
@@ -38,6 +39,23 @@ def _text_of(result) -> str:
     if content is None:  # mcp 1.x returns (content, structured)
         content = result[0]
     return content[0].text
+
+
+async def _handshake_version(server) -> str:
+    """The serverInfo.version a client receives when it connects (#33)."""
+    try:
+        from mcp.client import Client
+    except ImportError:  # mcp 1.x: the version its handshake would send
+        return server._mcp_server.create_initialization_options().server_version
+    async with Client(server) as client:
+        return client.server_info.version
+
+
+@pytest.mark.anyio
+async def test_the_handshake_reports_the_data2agent_build(server):
+    version = await _handshake_version(server)
+    assert version == build_version()
+    assert version.startswith("0.") and version != ""
 
 
 @pytest.mark.anyio

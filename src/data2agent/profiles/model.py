@@ -22,6 +22,10 @@ UNKNOWN = "unknown"
 NOT_APPLICABLE = "not_applicable"
 RESULTS = (PASS, FAIL, UNKNOWN, NOT_APPLICABLE)
 
+# 0.2.0 (#33): ``generator.data2agent`` records the build that computed the
+# verdicts. 0.1.0 records, which lack it, remain valid under the schema.
+ASSESSMENT_VERSION = "0.2.0"
+
 
 @dataclass(frozen=True)
 class Rule:
@@ -134,7 +138,7 @@ class Assessment:
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "assessment_version": "0.1.0",
+            "assessment_version": ASSESSMENT_VERSION,
             "dataset_id": self.dataset_id,
             "profile": {"id": self.profile.id, "version": self.profile.version},
             "generator": self.generator,

@@ -82,9 +82,40 @@ def mode_tools(mode: str) -> list[str]:
     return sorted(tools)
 
 
+def _server_python() -> str:
+    return os.environ.get("D2A_PYTHON") or sys.executable
+
+
+def serving_build() -> dict[str, Any]:
+    """The Data2Agent build the server will run, asked of the interpreter that runs it.
+
+    Not this script's own import: ``D2A_PYTHON`` can name another environment,
+    and the record must name the build that answered the agent (#33).
+    """
+    code = (
+        "import json; from data2agent.build import build_identity; "
+        "print(json.dumps(build_identity()))"
+    )
+    try:
+        completed = subprocess.run(  # noqa: S603
+            [_server_python(), "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+            stdin=subprocess.DEVNULL,
+        )
+        identity = json.loads(completed.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        sys.exit(f"cannot identify the Data2Agent build the server would run: {error}")
+    if not isinstance(identity, dict) or not isinstance(identity.get("version"), str):
+        sys.exit(f"the server interpreter reported no Data2Agent build: {identity!r}")
+    return identity
+
+
 def write_mcp_config(path: Path, ingest: Path, mode: str) -> Path:
     """An ephemeral host config naming exactly one server."""
-    python = os.environ.get("D2A_PYTHON") or sys.executable
+    python = _server_python()
     path.write_text(
         json.dumps(
             {
@@ -195,6 +226,7 @@ def run_cell(args: argparse.Namespace) -> int:
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     config = write_mcp_config(out / "mcp-config.json", ingest, args.mode)
+    build = serving_build()
     tools = mode_tools(args.mode)
     allowed = ",".join(f"{_TOOL_PREFIX}{name}" for name in tools)
 
@@ -249,11 +281,10 @@ def run_cell(args: argparse.Namespace) -> int:
     rows, problems = normalise(payload)
 
     # The generator block is the run record. It carries every axis of the
-    # benchmark contract that this script knows, so two assessments can be
-    # compared or refused. It does not yet carry the data2agent build -- see
-    # issue #33; when that lands, it belongs here too.
+    # benchmark contract that this script knows, including the Data2Agent build
+    # that served the agent (#33), so two assessments can be compared or refused.
     assessment = {
-        "assessment_version": "0.1.0",
+        "assessment_version": "0.2.0",
         "dataset_id": json.loads((ingest / "manifest.json").read_text(encoding="utf-8")).get(
             "dataset_id"
         ),
@@ -263,6 +294,7 @@ def run_cell(args: argparse.Namespace) -> int:
             "orchestrator": f"{args.host}-agent-loop",
             "host": f"{args.host}/{_host_version(host)}",
             "model": args.model or _reported_model(envelope) or "host-default",
+            "data2agent": build,
             "prompt_sha256": _sha256(PROMPT.read_bytes()),
             "ran_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         },

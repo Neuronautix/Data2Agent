@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .. import __version__
+from ..build import build_identity
 
 
 def utc_now() -> str:
@@ -38,7 +38,7 @@ class ProvenanceRecord:
     started_at: str
     finished_at: str
     duration_seconds: float = 0.0
-    tool: dict[str, str] = field(default_factory=dict)
+    tool: dict[str, Any] = field(default_factory=dict)
     runtime: dict[str, str] = field(default_factory=dict)
     configuration: dict[str, Any] = field(default_factory=dict)
     source_mutated: bool = False
@@ -72,5 +72,6 @@ def runtime_fingerprint() -> dict[str, str]:
     }
 
 
-def tool_fingerprint() -> dict[str, str]:
-    return {"name": "data2agent", "version": __version__}
+def tool_fingerprint() -> dict[str, Any]:
+    """The ingesting build: version, plus commit and dirty flag when known (#33)."""
+    return {"name": "data2agent", **build_identity()}

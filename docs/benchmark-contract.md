@@ -103,7 +103,15 @@ A set of runs is comparable only if:
 1. **Identical `dataset_id`.** Not "the same dataset" — the same bytes. Every
    assessment records it (`schemas/assessment.schema.json`).
 2. **Identical mode**, and that mode was actually available.
-3. **The generator block is complete**: `mode`, `host`, `orchestrator`, `model`.
+3. **The generator block is complete**: `mode`, `host`, `orchestrator`, `model`,
+   and, from `assessment_version` 0.2.0, `data2agent`: the build that computed
+   the verdicts (version, commit, dirty flag). Comparable runs need an equal
+   build. A change to check logic can move verdicts without changing any rule,
+   profile or schema version, and the serving build can differ from the one
+   that ingested the dataset (#33). The MCP handshake reports the same build as
+   `serverInfo.version`, e.g. `0.1.0+gd9754b727781`. A `.dirty` suffix, or
+   `dirty: true`, marks a build with uncommitted changes. Two such runs cannot
+   be shown to share a build, so treat them as exploratory.
 4. **Every reported result cites evidence**, including `unknown` results.
 5. **The same ingest conventions.** `manifest.missing_value_convention` governs
    every missingness number, so two runs under different conventions are reading
