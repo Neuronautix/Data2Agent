@@ -347,6 +347,7 @@ Output directory: <OUTPUT_DIR>
 | [`docs/data-contract.md`](docs/data-contract.md) | input/output contract; what every field is allowed to mean |
 | [`docs/evidence-contract.md`](docs/evidence-contract.md) | the claim → evidence invariant and its enforcement |
 | [`docs/benchmark-contract.md`](docs/benchmark-contract.md) | modes, comparability rules, metrics |
+| [`docs/offline.md`](docs/offline.md) | every network path (one, opt-in) and how the suite enforces offline operation |
 | [`docs/fair-profile-contract.md`](docs/fair-profile-contract.md) | the canonical FAIR rule format, the 12 rules, the projections |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | v0.1 → v0.6 |
 | [`docs/BACKLOG.md`](docs/BACKLOG.md) | numbered work items with acceptance criteria |

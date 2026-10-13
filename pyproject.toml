@@ -50,6 +50,9 @@ packages = ["src/data2agent"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+  "allow_network: lift the suite-wide block on non-loopback connections (#87); no test needs it today",
+]
 
 [tool.ruff]
 line-length = 100
