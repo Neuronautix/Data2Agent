@@ -27,7 +27,10 @@ handling in production code cannot absorb it). Each attempt is also recorded,
 and the test fails at teardown if any attempt was swallowed.
 
 Loopback stays open: on Windows, asyncio's event loop uses a loopback socket pair
-internally.
+internally. Because a proxy on loopback could otherwise forward a request off
+the machine, the guard also clears the `*_PROXY` variables and sets
+`NO_PROXY=*`, so urllib (including its Windows registry lookup) and requests
+connect directly and are blocked at the real destination.
 
 A test that genuinely needs the network must say so with
 `@pytest.mark.allow_network`. No test uses it today: the live-probe tests replace

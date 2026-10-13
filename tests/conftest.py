@@ -81,6 +81,16 @@ class NetworkGuard:
         monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
         monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
 
+        # A configured proxy would change what the guard sees (the proxy's host,
+        # not the destination), and a proxy on loopback would pass the guard and
+        # forward the request off the machine. NO_PROXY=* makes urllib and
+        # requests go direct, and stops urllib consulting the Windows registry.
+        for scheme in ("http", "https", "ftp", "all"):
+            for name in (f"{scheme}_proxy", f"{scheme.upper()}_PROXY"):
+                monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("NO_PROXY", "*")
+        monkeypatch.setenv("no_proxy", "*")
+
 
 @pytest.fixture(autouse=True)
 def network_guard(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):

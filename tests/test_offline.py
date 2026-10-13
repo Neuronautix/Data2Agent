@@ -51,6 +51,20 @@ def test_a_swallowed_attempt_is_still_recorded(network_guard):
     network_guard.attempts.clear()
 
 
+def test_a_loopback_proxy_cannot_carry_a_request_past_the_guard(network_guard, monkeypatch):
+    # Through a proxy, urllib would resolve and connect to the proxy instead;
+    # one on loopback passes the guard. The guard's NO_PROXY=* keeps the
+    # request direct, so it is blocked at the real destination.
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+    try:
+        urllib.request.urlopen("https://example.org/schema.json", timeout=1)
+    except Exception:
+        pass
+    assert network_guard.attempts == ["getaddrinfo 'example.org'"]
+    network_guard.attempts.clear()
+
+
 def test_loopback_stays_available():
     # asyncio's self-pipe on Windows is a loopback socket pair.
     left, right = socket.socketpair()
