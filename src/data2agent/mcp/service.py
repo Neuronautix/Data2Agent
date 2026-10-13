@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import query, relationships
+from ..build import build_identity
 from ..errors import (
     ModeError,
     OutputError,
@@ -1698,9 +1699,12 @@ class DatasetService:
             )
 
         profile = self.load_profile("fair")
+        # The build that computes the verdicts is this serving process, which
+        # can differ from the build recorded in provenance.json at ingest (#33).
         generator: dict[str, Any] = {
             "mode": self.mode.name,
             "orchestrator": orchestrator or "deterministic",
+            "data2agent": build_identity(),
         }
         if host:
             generator["host"] = host

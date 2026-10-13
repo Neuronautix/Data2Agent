@@ -76,6 +76,40 @@
         },
         "model": {
           "type": "string"
+        },
+        "data2agent": {
+          "type": "object",
+          "description": "The Data2Agent build that computed this assessment: the serving process, which can differ from the build recorded in provenance.json at ingest. Required from assessment_version 0.2.0 (#33). Runs are comparable only at an equal build.",
+          "required": [
+            "version",
+            "commit",
+            "dirty"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "description": "The package version."
+            },
+            "commit": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9a-f]{40}$",
+              "description": "The git commit the build ran from; null when it could not be established."
+            },
+            "dirty": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Whether the package source differed from that commit; null when unknown."
+            },
+            "commit_unavailable": {
+              "type": "string",
+              "description": "Why commit is null."
+            }
+          }
         }
       }
     },
@@ -101,6 +135,28 @@
       }
     }
   },
+  "allOf": [
+    {
+      "description": "0.1.0 assessments predate generator.data2agent; every later version must carry it.",
+      "if": {
+        "properties": {
+          "assessment_version": {
+            "const": "0.1.0"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "generator": {
+            "required": [
+              "mode",
+              "data2agent"
+            ]
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "result": {
       "type": "object",

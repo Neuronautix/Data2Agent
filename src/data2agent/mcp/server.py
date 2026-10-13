@@ -9,11 +9,13 @@ allowed to accumulate below the MCP boundary.
 
 from __future__ import annotations
 
+import inspect
 from copy import deepcopy
 from functools import wraps
 from pathlib import Path
 from typing import Any
 
+from ..build import build_version
 from ..errors import QueryError
 from ..query.operations import AGGREGATES, FILTER_OPERATORS, _validate_filters
 from .modes import DEFAULT_MODE
@@ -203,9 +205,25 @@ def _server_class() -> Any:
     return Data2AgentServer
 
 
+def _construct_server(server_class: Any, name: str, version: str) -> Any:
+    """Instantiate the server so its handshake reports ``version`` (#33).
+
+    mcp 2.x takes ``version=``. mcp 1.x ``FastMCP`` does not, and its low-level
+    server would otherwise report the *SDK's* package version, so the version is
+    set on the low-level server instead.
+    """
+    if "version" in inspect.signature(server_class.__init__).parameters:
+        return server_class(name, version=version)
+    server = server_class(name)
+    lowlevel = getattr(server, "_mcp_server", None)
+    if lowlevel is not None and hasattr(lowlevel, "version"):
+        lowlevel.version = version
+    return server
+
+
 def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
     """Build an MCP server exposing the tools this service's mode allows."""
-    server = _server_class()(name)
+    server = _construct_server(_server_class(), name, build_version())
 
     # -- resources ----------------------------------------------------------
     #

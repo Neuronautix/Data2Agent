@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from data2agent.build import build_identity
 from data2agent.cli import main
 
 
@@ -84,6 +85,7 @@ def test_assess_writes_an_assessment_and_lists_findings(
     assessment = json.loads((output / "assessment.json").read_text())
     assert assessment["profile"]["id"] == "fair"
     assert assessment["generator"]["mode"] == "fair-deterministic"
+    assert assessment["generator"]["data2agent"] == build_identity()
     assert len(assessment["results"]) == 12
 
     assert "R1.3-MISSING-VALUES-DECLARED" in printed

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from data2agent.build import build_identity
 from data2agent.errors import OutputError, QueryError
 from data2agent.ingest import ingest
 from data2agent.ingest.conventions import STRICT_CONVENTION
@@ -497,7 +498,23 @@ def test_get_provenance_returns_the_run_not_the_dataset(service, ingested):
     assert provenance["started_at"] and provenance["finished_at"]
     assert provenance["duration_seconds"] >= 0
     assert provenance["source_verified_unchanged"] is True
-    assert provenance["tool"]["name"] == "data2agent"
+    assert provenance["tool"] == {"name": "data2agent", **build_identity()}
+
+
+def test_an_assessment_names_the_serving_build_not_the_ingesting_one(ingested):
+    # The verdicts are computed at serve time, so a dataset ingested by another
+    # build must still be attributed to the build that assessed it (#33).
+    pytest.importorskip("yaml", reason="profiles need the 'fair' extra")
+    path = ingested.output_dir / "provenance.json"
+    provenance = json.loads(path.read_text(encoding="utf-8"))
+    provenance["tool"] = {"name": "data2agent", "version": "0.0.1", "commit": "f" * 40}
+    path.write_text(json.dumps(provenance), encoding="utf-8")
+
+    service = DatasetService(ingested.output_dir, mode="fair-deterministic")
+    assert service.get_provenance()["tool"]["version"] == "0.0.1"
+    assessment = service.run_fair_check()
+    assert assessment["assessment_version"] == "0.2.0"
+    assert assessment["generator"]["data2agent"] == build_identity()
 
 
 def test_dataset_inventory_reports_the_missing_value_convention(service):
