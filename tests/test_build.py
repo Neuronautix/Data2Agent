@@ -50,6 +50,29 @@ def test_uncommitted_package_changes_mark_the_build_dirty(monkeypatch):
     assert build.build_version() == f"{__version__}+g{_SHA[:12]}.dirty"
 
 
+def test_an_untracked_source_file_marks_the_build_dirty_whatever_the_git_config(
+    monkeypatch, tmp_path
+):
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], capture_output=True, check=True)
+
+    git("init", "-q")
+    git("config", "user.name", "test")
+    git("config", "user.email", "test@example.org")
+    git("config", "status.showUntrackedFiles", "no")
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "module.py").write_text("", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-q", "-m", "initial")
+    monkeypatch.setattr(build, "_checkout_root", lambda: tmp_path)
+    assert build.build_identity()["dirty"] is False
+
+    build._identity.cache_clear()
+    (tmp_path / "src" / "added.py").write_text("", encoding="utf-8")
+    assert build.build_identity()["dirty"] is True
+
+
 def test_an_installed_package_reports_the_version_and_says_why_there_is_no_commit(monkeypatch):
     monkeypatch.setattr(build, "_checkout_root", lambda: None)
     identity = build.build_identity()

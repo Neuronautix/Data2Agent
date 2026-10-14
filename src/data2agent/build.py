@@ -68,7 +68,9 @@ def _identity() -> dict[str, Any]:
         return identity
     try:
         commit = _git(root, "rev-parse", "HEAD").strip()
-        status = _git(root, "status", "--porcelain", "--", "src")
+        # Explicit mode: a user's status.showUntrackedFiles=no must not hide
+        # an untracked source file and so pass a modified build off as clean.
+        status = _git(root, "status", "--porcelain", "--untracked-files=all", "--", "src")
     except FileNotFoundError:
         identity["commit_unavailable"] = "git is not installed"
         return identity
