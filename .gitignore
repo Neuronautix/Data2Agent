@@ -24,8 +24,9 @@ venv/
 
 # Local-only preclinical source datasets and their audits. These are
 # unpublished experimental data belonging to the dataset owner and must not
-# reach the public repository.
-/Shank3-experiments/
+# reach the public repository. The pattern also covers archives of them
+# (Shank3-experiments.zip and the like).
+/Shank3-experiments*
 /local-data/
 /local-audits/
 
