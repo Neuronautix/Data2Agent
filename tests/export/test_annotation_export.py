@@ -28,16 +28,19 @@ from data2agent.export import (
     result_for_label,
 )
 from data2agent.export.annotations import (
+    EXPORT_SPELLING,
     LABEL_BY_RESULT,
     RESULT_BY_LABEL,
     normalise_created_at,
+    shared_ids,
 )
 
 pytest.importorskip("yaml")
 
 
-def _ann_id(rule_id: str, variant: str = "original", suffix: str = "") -> str:
-    return f"ann-{FAMILY}-{variant}-{rule_id}{suffix}"
+def _ann_id(tail: str, variant: str = "original", suffix: str = "") -> str:
+    """``<family>-<variant>-<tail>``, the collaborator's format: no ``ann-`` prefix."""
+    return f"{FAMILY}-{variant}-{tail}{suffix}"
 
 
 # -- label mapping --------------------------------------------------------------------
@@ -58,7 +61,7 @@ def test_every_mapping_row_reaches_the_record(export, dataspace, write_assessmen
     text = {"rationale": "because the check said so"} if outcome != "pass" else {}
     write_assessment("fair", [result("F2-METADATA-PRESENT", "F2", outcome, **text)])
     export()
-    record = read_proposed(dataspace)[_ann_id("F2-METADATA-PRESENT")]
+    record = read_proposed(dataspace)[_ann_id("F2-metadata-present")]
     assert record["judgement"]["label"] == label
     assert record["annotation_type"] == "fair_assessment"
 
@@ -113,10 +116,10 @@ def test_the_fair_dimension_comes_from_the_principle_letter(export, dataspace, w
     records = read_proposed(dataspace)
     dimensions = {r["criterion"]["id"]: r["fair_dimension"] for r in records.values()}
     assert dimensions == {
-        "F1-PID-METADATA": "findable",
-        "A1-RETRIEVAL-PROTOCOL": "accessible",
-        "I1-DATA-FORMATS-OPEN": "interoperable",
-        "R1.1-LICENCE-DECLARED": "reusable",
+        "FAIR-F1_PID-METADATA": "findable",
+        "FAIR-A1_RETRIEVAL-PROTOCOL": "accessible",
+        "FAIR-I1_DATA-FORMATS-OPEN": "interoperable",
+        "FAIR-R1.1_LICENSE-DECLARED": "reusable",
     }
 
 
@@ -136,9 +139,9 @@ def test_the_real_fair_assessment_exports_every_rule(export, dataspace, ingest_d
 def test_the_criterion_description_is_the_profile_question(export, dataspace, write_assessment):
     write_assessment("fair", [result("F1-PID-METADATA", "F1", "pass")])
     export()
-    record = read_proposed(dataspace)[_ann_id("F1-PID-METADATA")]
+    record = read_proposed(dataspace)[_ann_id("F1-pid-metadata")]
     assert record["criterion"] == {
-        "id": "F1-PID-METADATA",
+        "id": "FAIR-F1_PID-METADATA",
         "description": "Does the dataset's metadata carry a globally unique persistent identifier?",
     }
 
@@ -164,11 +167,11 @@ def test_a_principle_that_is_neither_fair_nor_quality_is_skipped_with_a_warning(
         ],
     )
     summary = export(profiles_root=root)
-    assert list(read_proposed(dataspace)) == [_ann_id("A-FINDABLE")]
+    assert list(read_proposed(dataspace)) == [_ann_id("F1-a-findable")]
     assert [s["rule_id"] for s in summary["skipped"]] == ["A-REPORT", "A-REPRO"]
     assert sum("maps to no FAIR dimension" in w for w in summary["warnings"]) == 2
     # 'Reproducibility' merely starts with R: it is not guessed into 'reusable'.
-    assert "A-REPRO" not in " ".join(read_proposed(dataspace))
+    assert "a-repro" not in " ".join(read_proposed(dataspace)).lower()
 
 
 # -- quality profile ------------------------------------------------------------------
@@ -205,9 +208,9 @@ def test_quality_issue_is_written_only_for_fail_partial_unknown(
     summary = export(profiles_root=quality_root)
     records = read_proposed(dataspace)
     assert sorted(r["criterion"]["id"] for r in records.values()) == [
-        "Q-FAIL",
-        "Q-PARTIAL",
-        "Q-UNKNOWN",
+        "QC_FAIL",
+        "QC_PARTIAL",
+        "QC_UNKNOWN",
     ]
     for record in records.values():
         assert record["annotation_type"] == "quality_issue"
@@ -244,8 +247,8 @@ def test_each_quality_offender_gets_its_own_annotation(
     )
     summary = export(profiles_root=quality_root)
     records = read_proposed(dataspace)
-    assert sorted(records) == [_ann_id("Q-FAIL", suffix=f"-{n}") for n in (1, 2, 3, 4)]
-    targets = [records[_ann_id("Q-FAIL", suffix=f"-{n}")]["target"] for n in (1, 2, 3, 4)]
+    assert sorted(records) == [_ann_id("QC-fail", suffix=f"-{n}") for n in (1, 2, 3, 4)]
+    targets = [records[_ann_id("QC-fail", suffix=f"-{n}")]["target"] for n in (1, 2, 3, 4)]
     assert targets[0] == {
         "kind": "field",
         "path": f"{DATASET_PATH}/t.csv",
@@ -256,7 +259,7 @@ def test_each_quality_offender_gets_its_own_annotation(
     assert targets[3] == {"kind": "file", "path": f"{DATASET_PATH}/t.csv"}
     assert sum("skipped" in w for w in summary["warnings"]) == 2
     # The offender's own file leads the evidence, with its manifest checksum.
-    first = records[_ann_id("Q-FAIL", suffix="-1")]["evidence"][0]
+    first = records[_ann_id("QC-fail", suffix="-1")]["evidence"][0]
     assert first["locator"] == f"{DATASET_PATH}/t.csv"
     assert "offending field 'Trial'" in first["description"]
 
@@ -266,7 +269,7 @@ def test_a_quality_result_without_offenders_targets_the_dataset(
 ):
     write_assessment("quality", [result("Q-FAIL", "typing", "fail", rationale="bad")])
     export(profiles_root=quality_root)
-    record = read_proposed(dataspace)[_ann_id("Q-FAIL")]
+    record = read_proposed(dataspace)[_ann_id("QC-fail")]
     assert record["target"] == {"kind": "dataset", "path": DATASET_PATH}
 
 
@@ -278,7 +281,7 @@ def test_unreadable_offenders_fall_back_to_the_dataset_with_a_warning(
         [result("Q-FAIL", "typing", "fail", rationale="bad", observations={"offenders": [7]})],
     )
     summary = export(profiles_root=quality_root)
-    assert read_proposed(dataspace)[_ann_id("Q-FAIL")]["target"]["kind"] == "dataset"
+    assert read_proposed(dataspace)[_ann_id("QC-fail")]["target"]["kind"] == "dataset"
     assert any("no offender could be read" in w for w in summary["warnings"])
 
 
@@ -305,7 +308,7 @@ def test_a_pass_without_a_rationale_cites_its_evidence_checks(
         [result("I1-DATA-FORMATS-OPEN", "I1", "pass", evidence=[claim_for("t.csv")])],
     )
     export()
-    rationale = read_proposed(dataspace)[_ann_id("I1-DATA-FORMATS-OPEN")]["judgement"]["rationale"]
+    rationale = read_proposed(dataspace)[_ann_id("I1-data-formats-open")]["judgement"]["rationale"]
     assert "file.format-detection" in rationale
     assert rationale == (
         "Rule I1-DATA-FORMATS-OPEN returned 'pass' (conformant); the deterministic check "
@@ -320,7 +323,7 @@ def test_a_stated_rationale_is_kept_with_its_whitespace_normalised(
         "fair", [result("F2-METADATA-PRESENT", "F2", "fail", rationale="no  file\nwas found\n")]
     )
     export()
-    record = read_proposed(dataspace)[_ann_id("F2-METADATA-PRESENT")]
+    record = read_proposed(dataspace)[_ann_id("F2-metadata-present")]
     assert record["judgement"]["rationale"] == "no file was found"
 
 
@@ -329,7 +332,7 @@ def test_provenance_is_a_draft_agent_proposal_with_the_given_model(
 ):
     write_assessment("fair", [result("F2-METADATA-PRESENT", "F2", "pass")])
     export()
-    record = read_proposed(dataspace)[_ann_id("F2-METADATA-PRESENT")]
+    record = read_proposed(dataspace)[_ann_id("F2-metadata-present")]
     from data2agent import __version__
 
     assert record["schema_version"] == "0.1.0"
@@ -352,7 +355,7 @@ def test_provenance_is_a_draft_agent_proposal_with_the_given_model(
 def test_created_by_can_be_overridden(export, dataspace, write_assessment):
     write_assessment("fair", [result("F2-METADATA-PRESENT", "F2", "pass")])
     export(created_by="pipeline run 7")
-    record = read_proposed(dataspace)[_ann_id("F2-METADATA-PRESENT")]
+    record = read_proposed(dataspace)[_ann_id("F2-metadata-present")]
     assert record["provenance"]["created_by"] == "pipeline run 7"
 
 
@@ -421,7 +424,7 @@ def test_evidence_locators_are_legal_relative_and_pinned_to_manifest_checksums(
                 # ... and that really is the sha256 of the bytes in the dataspace.
                 actual = hashlib.sha256((dataspace / item["locator"]).read_bytes()).hexdigest()
                 assert actual == item["checksum"]["value"]
-    record = read_proposed(dataspace)[_ann_id("I1-DATA-FORMATS-OPEN")]
+    record = read_proposed(dataspace)[_ann_id("I1-data-formats-open")]
     assert [e["locator"] for e in record["evidence"]] == [
         f"{DATASET_PATH}/t.csv",
         f"{DATASET_PATH}/README.md",
@@ -436,7 +439,7 @@ def test_a_result_that_cites_no_file_points_at_the_dataset_directory(
         "fair", [result("A1-RETRIEVAL-PROTOCOL", "A1", "unknown", rationale="offline")]
     )
     export()
-    (item,) = read_proposed(dataspace)[_ann_id("A1-RETRIEVAL-PROTOCOL")]["evidence"]
+    (item,) = read_proposed(dataspace)[_ann_id("A1-retrieval-protocol")]["evidence"]
     assert item["locator"] == DATASET_PATH
     assert "checksum" not in item
     assert "no single file is cited" in item["description"]
@@ -480,7 +483,7 @@ def test_a_file_name_that_cannot_be_a_locator_falls_back_to_the_dataset_director
         agent_model=AGENT_MODEL,
         created_at=CREATED_AT,
     )
-    (item,) = read_proposed(dataspace)[_ann_id("I1-DATA-FORMATS-OPEN")]["evidence"]
+    (item,) = read_proposed(dataspace)[_ann_id("I1-data-formats-open")]["evidence"]
     assert item["locator"] == DATASET_PATH
     assert "my file.csv" in item["description"] and digest in item["description"]
     assert "cannot be written as a legal dataspace locator" in item["description"]
@@ -551,12 +554,29 @@ def test_fair_and_quality_together(export, dataspace, write_assessment, tmp_path
 
 
 def test_a_colliding_annotation_id_is_an_error(export, write_assessment, tmp_path):
+    # Two profiles grading the same FAIR principle under the same rule id.
+    root = write_profile(tmp_path / "both", "arrive", {"F1-X": ("F1", "q?")})
+    write_profile(root, "fair", {"F1-X": ("F1", "q?")})
+    write_assessment("fair", [result("F1-X", "F1", "pass")])
+    write_assessment("arrive", [result("F1-X", "F1", "fail", rationale="bad")])
+    with pytest.raises(AnnotationExportError, match="collision"):
+        export(profiles_root=root)
+
+
+def test_the_same_rule_id_in_fair_and_quality_does_not_collide(
+    export, dataspace, write_assessment, tmp_path
+):
+    """The criterion family (FAIR, QC) keeps them apart."""
     root = write_profile(tmp_path / "both", "quality", {"F1-X": ("typing", "q?")})
     write_profile(root, "fair", {"F1-X": ("F1", "q?")})
     write_assessment("fair", [result("F1-X", "F1", "pass")])
     write_assessment("quality", [result("F1-X", "typing", "fail", rationale="bad")])
-    with pytest.raises(AnnotationExportError, match="collision"):
-        export(profiles_root=root)
+    export(profiles_root=root)
+    records = read_proposed(dataspace)
+    assert {name: r["criterion"]["id"] for name, r in records.items()} == {
+        _ann_id("F1-x"): "FAIR-F1_X",
+        _ann_id("QC-f1-x"): "QC_F1-X",
+    }
 
 
 def test_a_rule_id_that_cannot_form_an_annotation_id_is_refused(export, write_assessment, tmp_path):
@@ -564,6 +584,102 @@ def test_a_rule_id_that_cannot_form_an_annotation_id_is_refused(export, write_as
     write_assessment("fair", [result("F1 bad", "F1", "pass")])
     with pytest.raises(AnnotationExportError, match="legal annotation_id"):
         export(profiles_root=root)
+
+
+# -- shared ids ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("source", "rule_id", "principle", "criterion", "tail"),
+    [
+        # LICENCE is exported as LICENSE; nothing else about the slug changes.
+        (
+            "fair",
+            "R1.1-LICENCE-DECLARED",
+            "R1.1",
+            "FAIR-R1.1_LICENSE-DECLARED",
+            "R1.1-license-declared",
+        ),
+        # Split on the first hyphen only: the slug keeps its own hyphens.
+        ("fair", "F1-PID-RESOLVABLE", "F1", "FAIR-F1_PID-RESOLVABLE", "F1-pid-resolvable"),
+        # A dotted principle is one code, never split.
+        (
+            "fair",
+            "R1.3-MISSING-VALUES-DECLARED",
+            "R1.3",
+            "FAIR-R1.3_MISSING-VALUES-DECLARED",
+            "R1.3-missing-values-declared",
+        ),
+        # A rule id that does not start with its principle keeps every part of it.
+        ("fair", "A-FINDABLE", "F1", "FAIR-F1_A-FINDABLE", "F1-a-findable"),
+        # Quality rules have a category, not a code; only the Q- prefix goes.
+        ("quality", "Q-HEADERS-PORTABLE", None, "QC_HEADERS-PORTABLE", "QC-headers-portable"),
+        ("quality", "F1-X", None, "QC_F1-X", "QC-f1-x"),
+        ("curation", "ORIGINAL-UNCHANGED", None, "CV_ORIGINAL-UNCHANGED", "CV-original-unchanged"),
+        ("curation", "CELL-ROUND-TRIP", None, "CV_CELL-ROUND-TRIP", "CV-cell-round-trip"),
+        ("curation", "PACKAGE-VALID", None, "CV_PACKAGE-VALID", "CV-package-valid"),
+    ],
+)
+def test_shared_ids_follow_the_agreed_convention(source, rule_id, principle, criterion, tail):
+    assert shared_ids(source, rule_id, principle) == (criterion, tail)
+
+
+def test_the_spelling_map_replaces_whole_words_only():
+    assert EXPORT_SPELLING == {"LICENCE": "LICENSE"}
+    assert shared_ids("fair", "R1.1-LICENCES-X", "R1.1")[0] == "FAIR-R1.1_LICENCES-X"
+
+
+def test_licence_is_exported_as_license_and_the_rule_id_stays_traceable(
+    export, dataspace, write_assessment
+):
+    write_assessment("fair", [result("R1.1-LICENCE-DECLARED", "R1.1", "fail", rationale="none")])
+    export()
+    records = read_proposed(dataspace)
+    assert list(records) == [f"{FAMILY}-original-R1.1-license-declared"]
+    record = records[f"{FAMILY}-original-R1.1-license-declared"]
+    assert record["annotation_id"] == f"{FAMILY}-original-R1.1-license-declared"
+    assert record["criterion"]["id"] == "FAIR-R1.1_LICENSE-DECLARED"
+    # The internal rule id, in its own spelling, is still in the record.
+    assert "rule R1.1-LICENCE-DECLARED," in record["provenance"]["notes"]
+
+
+def test_every_shipped_fair_rule_gets_a_shared_id(export, dataspace, ingest_dir):
+    from data2agent.cli import main
+
+    assert main(["assess", str(ingest_dir)]) == 0
+    export(variant="curated")
+    records = read_proposed(dataspace)
+    assessment = json.loads((ingest_dir / "assessment.json").read_text(encoding="utf-8"))
+    assert len(records) == len(assessment["results"]) == 12
+    by_rule = {
+        re.search(r"rule (\S+),", r["provenance"]["notes"]).group(1): (name, r)
+        for name, r in records.items()
+    }
+    for item in assessment["results"]:
+        rule_id, principle = item["rule_id"], item["principle"]
+        name, record = by_rule[rule_id]
+        slug = rule_id.split("-", 1)[1].replace("LICENCE", "LICENSE")
+        assert record["criterion"]["id"] == f"FAIR-{principle}_{slug}"
+        assert name == record["annotation_id"] == f"{FAMILY}-curated-{principle}-{slug.lower()}"
+        assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name)
+    assert f"{FAMILY}-curated-F1-pid-resolvable" in records
+    assert not any(name.startswith("ann-") for name in records)
+
+
+def test_a_family_that_cannot_lead_an_annotation_id_is_refused(export, write_assessment):
+    write_assessment("fair", [result("F2-METADATA-PRESENT", "F2", "pass")])
+    with pytest.raises(AnnotationExportError, match="starting with a letter or digit"):
+        export(family="-synthfam")
+
+
+def test_ids_that_differ_only_in_case_collide_once_lower_cased(export, tmp_path, manifest):
+    payload = _log(manifest)
+    payload["verification"]["checks"] = [
+        {"id": "HEADERS", "result": "pass"},
+        {"id": "headers", "result": "fail"},
+    ]
+    with pytest.raises(AnnotationExportError, match="collision"):
+        export(variant="curated", curation_log=_write_log(tmp_path, payload))
 
 
 # -- curation log ------------------------------------------------------------------------
@@ -610,18 +726,29 @@ def test_the_curation_log_becomes_curation_validation_annotations(
     records = read_proposed(dataspace)
     by_criterion = {r["criterion"]["id"]: r for r in records.values()}
     assert set(by_criterion) == {
-        "CV-ORIGINAL-UNCHANGED",
-        "CV-CELL-ROUND-TRIP",
-        "CV-PACKAGE-VALID",
-        "CV-HEADERS",
+        "CV_ORIGINAL-UNCHANGED",
+        "CV_CELL-ROUND-TRIP",
+        "CV_PACKAGE-VALID",
+        "CV_HEADERS",
     }
     assert summary["by_type"] == {"curation_validation": 4}
-    assert by_criterion["CV-ORIGINAL-UNCHANGED"]["judgement"]["label"] == "conformant"
-    assert by_criterion["CV-CELL-ROUND-TRIP"]["judgement"]["label"] == "conformant"
-    assert "324 of 324" in by_criterion["CV-CELL-ROUND-TRIP"]["judgement"]["rationale"]
-    assert by_criterion["CV-PACKAGE-VALID"]["judgement"]["label"] == "conformant"
-    assert by_criterion["CV-PACKAGE-VALID"]["judgement"]["rationale"] == "descriptor validates"
-    assert by_criterion["CV-HEADERS"]["judgement"]["label"] == "non_conformant"
+    assert sorted(records) == [
+        _ann_id(tail, variant="curated")
+        for tail in (
+            "CV-cell-round-trip",
+            "CV-headers",
+            "CV-original-unchanged",
+            "CV-package-valid",
+        )
+    ]
+    # The log field each record came from stays named in its notes.
+    assert "verification.checks[HEADERS]" in by_criterion["CV_HEADERS"]["provenance"]["notes"]
+    assert by_criterion["CV_ORIGINAL-UNCHANGED"]["judgement"]["label"] == "conformant"
+    assert by_criterion["CV_CELL-ROUND-TRIP"]["judgement"]["label"] == "conformant"
+    assert "324 of 324" in by_criterion["CV_CELL-ROUND-TRIP"]["judgement"]["rationale"]
+    assert by_criterion["CV_PACKAGE-VALID"]["judgement"]["label"] == "conformant"
+    assert by_criterion["CV_PACKAGE-VALID"]["judgement"]["rationale"] == "descriptor validates"
+    assert by_criterion["CV_HEADERS"]["judgement"]["label"] == "non_conformant"
     for record in records.values():
         assert record["dataset"]["variant"] == "curated"
         assert record["dataset"]["version"] == manifest["dataset_id"]
@@ -640,9 +767,9 @@ def test_curation_log_failures_map_to_non_conformant(export, dataspace, tmp_path
     log = _write_log(tmp_path, payload)
     export(variant="curated", curation_log=log)
     records = {r["criterion"]["id"]: r for r in read_proposed(dataspace).values()}
-    assert records["CV-ORIGINAL-UNCHANGED"]["judgement"]["label"] == "non_conformant"
-    assert records["CV-CELL-ROUND-TRIP"]["judgement"]["label"] == "non_conformant"
-    assert "320 of 324" in records["CV-CELL-ROUND-TRIP"]["judgement"]["rationale"]
+    assert records["CV_ORIGINAL-UNCHANGED"]["judgement"]["label"] == "non_conformant"
+    assert records["CV_CELL-ROUND-TRIP"]["judgement"]["label"] == "non_conformant"
+    assert "320 of 324" in records["CV_CELL-ROUND-TRIP"]["judgement"]["rationale"]
 
 
 def test_a_round_trip_that_compared_nothing_is_insufficient_evidence(
@@ -652,7 +779,7 @@ def test_a_round_trip_that_compared_nothing_is_insufficient_evidence(
     payload["verification"].update(cells_compared=0, cells_round_trip=0)
     export(variant="curated", curation_log=_write_log(tmp_path, payload))
     records = {r["criterion"]["id"]: r for r in read_proposed(dataspace).values()}
-    assert records["CV-CELL-ROUND-TRIP"]["judgement"]["label"] == "insufficient_evidence"
+    assert records["CV_CELL-ROUND-TRIP"]["judgement"]["label"] == "insufficient_evidence"
 
 
 def test_a_curation_log_needs_the_curated_variant(export, tmp_path, manifest):
@@ -744,7 +871,7 @@ def test_the_summary_is_deterministic_and_machine_readable(export, write_assessm
     assert first == second
     assert json.loads(json.dumps(first)) == first
     assert first["output_dir"] == "annotations/proposed"
-    assert first["files"] == [f"{_ann_id('F2-METADATA-PRESENT')}.json"]
+    assert first["files"] == [f"{_ann_id('F2-metadata-present')}.json"]
 
 
 # -- validation ----------------------------------------------------------------------------

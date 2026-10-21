@@ -27,7 +27,7 @@ def _record(
         review.update(reviewed_by="reviewer", reviewed_at="2026-01-01T00:00:00Z")
     return {
         "schema_version": "0.1.0",
-        "annotation_id": f"ann-{family}-{variant}-{criterion}",
+        "annotation_id": f"{family}-{variant}-{criterion}",
         "dataset": {"dataset_family_id": family, "variant": variant},
         "annotation_type": "fair_assessment",
         "fair_dimension": "findable",
@@ -182,7 +182,7 @@ def test_against_a_temp_copy_of_the_real_dataspace(tmp_path):
 
     schema = json.loads((copy / "schemas" / "annotation.schema.json").read_text("utf-8"))
     validator = jsonschema.Draft202012Validator(schema)
-    files = sorted((copy / "annotations" / "proposed").glob(f"ann-{family}-*.json"))
+    files = sorted((copy / "annotations" / "proposed").glob(f"{family}-*.json"))
     assert len(files) == 12
     for path in files:
         record = json.loads(path.read_text(encoding="utf-8"))

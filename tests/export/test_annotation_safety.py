@@ -98,7 +98,7 @@ def test_a_dataset_path_that_is_a_file_is_refused(export, dataspace, assessed):
 
 def test_a_trailing_slash_is_normalised(export, dataspace, assessed):
     export(dataset_path=DATASET_PATH + "/")
-    record = read_proposed(dataspace)["ann-synthfam-original-F1-PID-METADATA"]
+    record = read_proposed(dataspace)["synthfam-original-F1-pid-metadata"]
     assert record["target"]["path"] == DATASET_PATH
 
 
@@ -127,7 +127,11 @@ def test_only_annotations_proposed_is_ever_written(export, dataspace, assessed):
     export()
     assert sorted(p.name for p in (dataspace / "annotations" / "curated").iterdir()) == []
     assert _tree_digest(dataspace / "data") == before  # data/original untouched
-    written = {p.relative_to(dataspace).as_posix() for p in dataspace.rglob("ann-*") if p.is_file()}
+    written = {
+        p.relative_to(dataspace).as_posix()
+        for p in dataspace.rglob("synthfam-*.json")
+        if p.is_file()
+    }
     assert written
     assert all(name.startswith("annotations/proposed/") for name in written)
 
@@ -151,7 +155,7 @@ def test_writing_to_any_other_directory_is_refused(dataspace, ingest_dir, assess
         with pytest.raises(ExportRefused, match="not exactly"):
             write_records(built.records, forbidden, root)
     assert sorted((dataspace / "annotations" / "curated").iterdir()) == []
-    assert not any(dataspace.rglob("ann-*"))
+    assert not any(dataspace.rglob("synthfam-*.json"))
 
 
 def test_a_missing_proposed_folder_is_not_created(export, dataspace, assessed):
@@ -179,7 +183,7 @@ def test_a_symlinked_proposed_folder_is_refused(export, dataspace, tmp_path, ass
 
 def test_an_existing_file_is_never_overwritten_without_the_flag(export, dataspace, assessed):
     export()
-    target = dataspace / "annotations" / "proposed" / "ann-synthfam-original-F1-PID-METADATA.json"
+    target = dataspace / "annotations" / "proposed" / "synthfam-original-F1-pid-metadata.json"
     target.write_text("SENTINEL", encoding="utf-8")
     with pytest.raises(ExportRefused, match="already exist"):
         export()
@@ -188,18 +192,16 @@ def test_an_existing_file_is_never_overwritten_without_the_flag(export, dataspac
 
 def test_a_conflict_on_one_file_writes_none_of_the_others(export, dataspace, assessed):
     proposed = dataspace / "annotations" / "proposed"
-    (proposed / "ann-synthfam-original-F2-METADATA-PRESENT.json").write_text("x", encoding="utf-8")
+    (proposed / "synthfam-original-F2-metadata-present.json").write_text("x", encoding="utf-8")
     with pytest.raises(ExportRefused):
         export()
-    assert [p.name for p in proposed.iterdir()] == [
-        "ann-synthfam-original-F2-METADATA-PRESENT.json"
-    ]
+    assert [p.name for p in proposed.iterdir()] == ["synthfam-original-F2-metadata-present.json"]
 
 
 def test_overwrite_replaces_an_untouched_draft(export, dataspace, assessed):
     export()
     proposed = dataspace / "annotations" / "proposed"
-    target = proposed / "ann-synthfam-original-F1-PID-METADATA.json"
+    target = proposed / "synthfam-original-F1-pid-metadata.json"
     record = json.loads(target.read_text(encoding="utf-8"))
     record["judgement"]["rationale"] = "stale"
     target.write_text(json.dumps(record), encoding="utf-8")
@@ -212,7 +214,7 @@ def test_overwrite_never_clobbers_a_record_a_reviewer_moved_past_draft(
     export, dataspace, assessed, status
 ):
     export()
-    target = dataspace / "annotations" / "proposed" / "ann-synthfam-original-F1-PID-METADATA.json"
+    target = dataspace / "annotations" / "proposed" / "synthfam-original-F1-pid-metadata.json"
     record = json.loads(target.read_text(encoding="utf-8"))
     record["review"] = {"status": status, "comments": "human notes"}
     reviewed = json.dumps(record)
@@ -224,7 +226,7 @@ def test_overwrite_never_clobbers_a_record_a_reviewer_moved_past_draft(
 
 def test_overwrite_never_replaces_a_human_authored_record(export, dataspace, assessed):
     export()
-    target = dataspace / "annotations" / "proposed" / "ann-synthfam-original-F1-PID-METADATA.json"
+    target = dataspace / "annotations" / "proposed" / "synthfam-original-F1-pid-metadata.json"
     record = json.loads(target.read_text(encoding="utf-8"))
     record["provenance"]["method"] = "expert_review"
     target.write_text(json.dumps(record), encoding="utf-8")
@@ -234,7 +236,7 @@ def test_overwrite_never_replaces_a_human_authored_record(export, dataspace, ass
 
 def test_overwrite_refuses_an_unreadable_existing_file(export, dataspace, assessed):
     export()
-    target = dataspace / "annotations" / "proposed" / "ann-synthfam-original-F1-PID-METADATA.json"
+    target = dataspace / "annotations" / "proposed" / "synthfam-original-F1-pid-metadata.json"
     target.write_text("{not json", encoding="utf-8")
     with pytest.raises(ExportRefused, match="not an untouched draft"):
         export(overwrite=True)

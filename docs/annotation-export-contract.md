@@ -35,7 +35,7 @@ stdout is a JSON summary; warnings also go to stderr:
 ```json
 {"dataset_id": "sha256:...", "dataset_family_id": "...", "variant": "original",
  "dataset_path": "data/original/...", "output_dir": "annotations/proposed",
- "written": 12, "by_type": {"fair_assessment": 12}, "files": ["ann-....json"],
+ "written": 12, "by_type": {"fair_assessment": 12}, "files": ["<family>-original-F1-pid-metadata.json", ...],
  "profiles": [{"id": "fair", "version": "0.1.0", "results": 12, "exported": 12}],
  "skipped": [], "warnings": [], "schema_validated": true}
 ```
@@ -90,14 +90,44 @@ dimension. Each skipped rule is listed in the summary.
 | Field | Value |
 | --- | --- |
 | `schema_version` | `0.1.0` |
-| `annotation_id` | `ann-<family>-<variant>-<rule id>`; `-<n>` (1-based) appended when a quality result yields several records; `ann-<family>-<variant>-CV-<check id>` for curation. Ids are never rewritten: one that cannot be schema-legal (`A-Za-z0-9._-`) refuses the export. A collision is an error. |
+| `annotation_id` | `<family>-<variant>-<code or family>-<slug in lower case>` (see [Shared ids](#shared-ids)); `-<n>` (1-based) appended when a quality result yields several records. Beyond that convention ids are never rewritten: one that cannot be schema-legal (`A-Za-z0-9._-`, first character a letter or digit) refuses the export. A collision (including two ids that differ only in case) is an error. |
 | `dataset` | `{dataset_family_id, variant, version = the Data2Agent dataset_id}` |
 | `target` | `dataset` at `--dataset-path` for FAIR and curation records. Quality: see offenders below |
-| `criterion` | `{id = rule id, description = the rule's question from the profile}` |
+| `criterion` | `{id = the shared criterion id (see [Shared ids](#shared-ids)), description = the rule's question from the profile}` |
 | `judgement` | `{label, rationale}`; the result's rationale, whitespace-normalised. When there is none (typically a pass), a fixed sentence naming the rule, the result and the evidence check ids it cited. Never empty |
 | `evidence` | see below |
-| `provenance` | `method: agent_proposal`, `created_by`, `created_at`, `agent_model`, `notes` (a fixed sentence: profile, rule, result, `inferred`, dataset id, "computed by code, not by a model") |
+| `provenance` | `method: agent_proposal`, `created_by`, `created_at`, `agent_model`, `notes` (a fixed sentence: profile, the Data2Agent rule id, result, `inferred`, dataset id, "computed by code, not by a model"; for curation records, the log field instead of the rule) |
 | `review` | `{status: draft}` |
+
+### Shared ids
+
+`criterion.id` and `annotation_id` follow a convention agreed with the dataspace owner, so
+that these records and those of other harnesses (an LLM harness writes, for example,
+`phenotyper-original-R1.1-license`) can be compared in one corpus. One function,
+`shared_ids` in `src/data2agent/export/annotations.py`, applies it:
+
+| Source | `criterion.id` | `annotation_id` |
+| --- | --- | --- |
+| FAIR rule `<principle>-<SLUG>` | `FAIR-<principle>_<SLUG>` | `<family>-<variant>-<principle>-<slug>` |
+| quality rule `Q-<SLUG>` | `QC_<SLUG>` | `<family>-<variant>-QC-<slug>` |
+| curation log | `CV_<SLUG>` | `<family>-<variant>-CV-<slug>` |
+
+- A FAIR rule id is split on its **first** hyphen only: principles carry dots (`R1.3`),
+  never hyphens. A rule whose id does not start with its own principle keeps its whole id
+  as the slug (`A-FINDABLE` graded under F1 becomes `FAIR-F1_A-FINDABLE`).
+- Quality rules carry a category (`Q.headers`), not a code, so they take no code; only the
+  `Q-` prefix is dropped. A quality rule id without it keeps its whole id.
+- The exported slug spells `LICENCE` as `LICENSE` (GitHub, SPDX), whole words only, through
+  the `EXPORT_SPELLING` map. The Data2Agent rule id keeps its own spelling, and the record
+  names it in `provenance.notes`.
+
+| Data2Agent rule | `criterion.id` | `annotation_id` (family `phenotyper`, variant `original`) |
+| --- | --- | --- |
+| `F1-PID-METADATA` | `FAIR-F1_PID-METADATA` | `phenotyper-original-F1-pid-metadata` |
+| `F1-PID-RESOLVABLE` | `FAIR-F1_PID-RESOLVABLE` | `phenotyper-original-F1-pid-resolvable` |
+| `R1.1-LICENCE-DECLARED` | `FAIR-R1.1_LICENSE-DECLARED` | `phenotyper-original-R1.1-license-declared` |
+| `R1.3-MISSING-VALUES-DECLARED` | `FAIR-R1.3_MISSING-VALUES-DECLARED` | `phenotyper-original-R1.3-missing-values-declared` |
+| `Q-HEADERS-PORTABLE` (offenders 1, 2) | `QC_HEADERS-PORTABLE` | `phenotyper-original-QC-headers-portable-1`, `-2` |
 
 Key order is fixed, output is UTF-8 with `\n` newlines, and files are written in
 annotation-id order, so the same inputs plus `--created-at` give byte-identical files.
@@ -146,9 +176,9 @@ bytes changed after the log). It writes:
 
 | Criterion id | Label |
 | --- | --- |
-| `CV-ORIGINAL-UNCHANGED` | `conformant` if `original_unchanged` is true, else `non_conformant` |
-| `CV-CELL-ROUND-TRIP` | `conformant` if `cells_round_trip == cells_compared`, `non_conformant` if fewer, `insufficient_evidence` when nothing was compared |
-| `CV-<check id>` | `conformant` for `pass`, `non_conformant` for `fail`; rationale is the check's `detail` |
+| `CV_ORIGINAL-UNCHANGED` | `conformant` if `original_unchanged` is true, else `non_conformant` |
+| `CV_CELL-ROUND-TRIP` | `conformant` if `cells_round_trip == cells_compared`, `non_conformant` if fewer, `insufficient_evidence` when nothing was compared |
+| `CV_<check id>` | `conformant` for `pass`, `non_conformant` for `fail`; rationale is the check's `detail` |
 
 Evidence is the curated result files. `changes` and `open_items` are not exported.
 
@@ -186,7 +216,7 @@ existing file (without `--overwrite`), or a reviewed one (with it); a missing or
 agent model; a `--created-at` that is not ISO-8601 UTC with a `Z`; an assessment for another
 dataset than the ingest output; an assessment file whose name contradicts its profile id; a
 profile that cannot be loaded, a rule the profile does not define, or a result word outside
-the table; a rule or check id that cannot form a legal `annotation_id`; an annotation id
+the table; a family, rule or check id that cannot form a legal `annotation_id`; an annotation id
 collision; a cited file missing from the dataspace; a curation log that is malformed,
 mismatched or paired with `--variant original`; any schema error; and any invariant break.
 

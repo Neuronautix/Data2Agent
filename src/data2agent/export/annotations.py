@@ -596,13 +596,62 @@ def _record(
     return record
 
 
-def _annotation_id(ctx: _Context, fragment: str, suffix: int | None = None) -> str:
-    tail = f"{fragment}-{suffix}" if suffix is not None else fragment
-    identifier = f"ann-{ctx.family}-{ctx.variant}-{tail}"
-    if not _ID_FRAGMENT.fullmatch(fragment) or not _ANNOTATION_ID.fullmatch(identifier):
+# -- shared ids ------------------------------------------------------------------
+#
+# Agreed with the dataspace owner so that these records and those of other harnesses
+# (an LLM harness writes ``phenotyper-original-R1.1-license``, criterion ``FAIR-R1.1``)
+# can be compared in one corpus. The Data2Agent rule id is not part of the convention;
+# it stays in ``provenance.notes``.
+
+#: Criterion family per record source.
+CRITERION_FAMILY: dict[str, str] = {"fair": "FAIR", "quality": "QC", "curation": "CV"}
+
+#: Spelling of the shared corpus, applied word by word to the *exported* slug only. The
+#: rule id keeps its own spelling: ``R1.1-LICENCE-DECLARED`` is cited by the profile,
+#: the tests and assessments already on disk, and renaming it would orphan them.
+EXPORT_SPELLING: dict[str, str] = {"LICENCE": "LICENSE"}
+
+
+def shared_ids(source: str, rule_id: str, principle: str | None = None) -> tuple[str, str]:
+    """``(criterion.id, annotation_id tail)`` under the shared convention.
+
+    ``criterion.id`` is ``<FAMILY>-<code>_<SLUG>``, or ``<FAMILY>_<SLUG>`` where there is
+    no code; the tail is ``<code or FAMILY>-<slug in lower case>``:
+
+    * ``fair``: the code is the principle. A rule id ``<principle>-<SLUG>`` is split on
+      its *first* hyphen only (``R1.1`` has dots, never hyphens): ``R1.1-LICENCE-DECLARED``
+      -> ``FAIR-R1.1_LICENSE-DECLARED`` / ``R1.1-license-declared``. A rule id that does
+      not start with its own principle keeps the whole id as its slug, so nothing is lost.
+    * ``quality``: no code (a quality rule has a category, not a principle); a leading
+      ``Q-`` is dropped: ``Q-HEADERS-PORTABLE`` -> ``QC_HEADERS-PORTABLE`` /
+      ``QC-headers-portable``.
+    * ``curation``: no code: ``ORIGINAL-UNCHANGED`` -> ``CV_ORIGINAL-UNCHANGED``.
+    """
+    family = CRITERION_FAMILY[source]
+    head, hyphen, rest = rule_id.partition("-")
+    code: str | None = None
+    slug = rule_id
+    if source == "fair":
+        code = principle
+        if hyphen and rest and head == principle:
+            slug = rest
+    elif source == "quality" and hyphen and rest and head == "Q":
+        slug = rest
+    slug = "-".join(EXPORT_SPELLING.get(word, word) for word in slug.split("-"))
+    criterion = f"{family}-{code}_{slug}" if code else f"{family}_{slug}"
+    return criterion, f"{code or family}-{slug.lower()}"
+
+
+def _annotation_id(ctx: _Context, tail: str, origin: str, suffix: int | None = None) -> str:
+    """``<family>-<variant>-<tail>[-<n>]``. ``origin`` is the rule or check id, for errors."""
+    identifier = f"{ctx.family}-{ctx.variant}-{tail}"
+    if suffix is not None:
+        identifier = f"{identifier}-{suffix}"
+    if not _ID_FRAGMENT.fullmatch(tail) or not _ANNOTATION_ID.fullmatch(identifier):
         raise AnnotationExportError(
-            f"{fragment!r} cannot form a legal annotation_id (allowed: A-Z a-z 0-9 . _ -); "
-            "ids are never rewritten, so this rule or check cannot be exported"
+            f"{origin!r} cannot form a legal annotation_id (allowed: A-Z a-z 0-9 . _ -); "
+            "ids are never rewritten beyond the shared convention, so this rule or check "
+            "cannot be exported"
         )
     return identifier
 
@@ -753,6 +802,9 @@ def _assessment_records(
                 )
                 continue
             annotation_type, dimension = "fair_assessment", FAIR_DIMENSIONS[match.group(1)]
+        criterion_id, tail = shared_ids(
+            "quality" if is_quality else "fair", rule_id, None if is_quality else principle
+        )
 
         uses, checks, claim_ids = _collect_evidence(ctx, result)
         cited = list(uses)
@@ -784,11 +836,11 @@ def _assessment_records(
                 _record(
                     ctx,
                     stamp,
-                    annotation_id=_annotation_id(ctx, rule_id, index if numbered else None),
+                    annotation_id=_annotation_id(ctx, tail, rule_id, index if numbered else None),
                     annotation_type=annotation_type,
                     target=target,
                     fair_dimension=dimension,
-                    criterion_id=rule_id,
+                    criterion_id=criterion_id,
                     description=_squash(rule.question),
                     label=label,
                     rationale=rationale,
@@ -883,21 +935,22 @@ def _curation_records(
         + (f" ({len(derived_files)} file(s))" if derived_files else "")
     )
 
-    def make(fragment: str, description: str, passed: bool | None, rationale: str, note: str):
+    def make(check_id: str, description: str, passed: bool | None, rationale: str, note: str):
         label = (
             "insufficient_evidence"
             if passed is None
             else ("conformant" if passed else "non_conformant")
         )
-        evidence, _ = _evidence_list(ctx, fragment, uses)
+        criterion_id, tail = shared_ids("curation", check_id)
+        evidence, _ = _evidence_list(ctx, criterion_id, uses)
         return _record(
             ctx,
             stamp,
-            annotation_id=_annotation_id(ctx, fragment),
+            annotation_id=_annotation_id(ctx, tail, check_id),
             annotation_type="curation_validation",
             target={"kind": "dataset", "path": ctx.dataset_path},
             fair_dimension=None,
-            criterion_id=fragment,
+            criterion_id=criterion_id,
             description=description,
             label=label,
             rationale=rationale,
@@ -909,7 +962,7 @@ def _curation_records(
     compared, round_trip = verification["cells_compared"], verification["cells_round_trip"]
     records = [
         make(
-            "CV-ORIGINAL-UNCHANGED",
+            "ORIGINAL-UNCHANGED",
             "The original dataset must be byte-identical before and after curation.",
             unchanged,
             (
@@ -920,7 +973,7 @@ def _curation_records(
             "verification.original_unchanged.",
         ),
         make(
-            "CV-CELL-ROUND-TRIP",
+            "CELL-ROUND-TRIP",
             "Every curated cell must map back to its original cell.",
             None if compared == 0 else round_trip == compared,
             (
@@ -935,7 +988,7 @@ def _curation_records(
         detail = _squash(check.get("detail", ""))
         records.append(
             make(
-                f"CV-{check['id']}",
+                check["id"],
                 f"Curation check '{check['id']}' recorded in the curation log.",
                 check["result"] == "pass",
                 detail or f"The curation log records check '{check['id']}' as {check['result']}.",
@@ -986,9 +1039,11 @@ def build_annotations(
             "agent_model is required: the dataspace demands it on every agent proposal and it "
             "is never defaulted or guessed"
         )
-    if not _ID_FRAGMENT.fullmatch(family or ""):
+    # The family now leads the annotation_id, so it must also start with a letter or digit.
+    if not _ANNOTATION_ID.fullmatch(family or ""):
         raise AnnotationExportError(
-            f"family {family!r} cannot form a legal annotation_id (allowed: A-Z a-z 0-9 . _ -)"
+            f"family {family!r} cannot form a legal annotation_id "
+            "(A-Z a-z 0-9 . _ -, starting with a letter or digit)"
         )
     if variant not in ("original", "curated"):
         raise AnnotationExportError(f"variant must be 'original' or 'curated', not {variant!r}")
