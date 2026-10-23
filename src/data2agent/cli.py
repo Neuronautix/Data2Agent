@@ -7,6 +7,8 @@ data2agent recommend <output>              generate evidence-linked FAIR actions
 data2agent serve   <output> --mode <mode>  run the Data2MCP server over stdio
 data2agent relationships <output>          resolve cross-table relationships
     [--declarations rel.json] [--crosswalk [NAME=]ids.csv ...]
+data2agent export-annotations <output> --dataspace <root> --dataset-path <dir> ...
+                                           assessments as FAIR-VCG proposed annotations
 data2agent modes                           list benchmark modes and their status
 """
 
@@ -157,6 +159,36 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     relationships_parser.set_defaults(handler=_cmd_relationships)
 
+    export_parser = subparsers.add_parser(
+        "export-annotations",
+        help="write assessments as FAIR-VCG proposed annotations (drafts, never curated)",
+    )
+    export_parser.add_argument("output", type=Path, help="an ingest output directory")
+    export_parser.add_argument(
+        "--dataspace", type=Path, required=True, help="root of the FAIR-VCG dataspace"
+    )
+    export_parser.add_argument(
+        "--dataset-path",
+        required=True,
+        help="ingested dataset directory, relative to --dataspace (e.g. data/original/name)",
+    )
+    export_parser.add_argument("--family", required=True, help="dataset_family_id")
+    export_parser.add_argument("--variant", required=True, choices=["original", "curated"])
+    export_parser.add_argument(
+        "--agent-model", required=True, help="model/tool id recorded on every proposal"
+    )
+    export_parser.add_argument("--created-by", default=None, help="default: data2agent <version>")
+    export_parser.add_argument(
+        "--created-at", default=None, help="ISO-8601 UTC ending in Z (default: now)"
+    )
+    export_parser.add_argument(
+        "--curation-log", type=Path, default=None, help="curation log from 'apply' (curated only)"
+    )
+    export_parser.add_argument(
+        "--overwrite", action="store_true", help="replace existing untouched draft proposals"
+    )
+    export_parser.set_defaults(handler=_cmd_export_annotations)
+
     modes_parser = subparsers.add_parser("modes", help="list benchmark modes")
     modes_parser.set_defaults(handler=_cmd_modes)
     return parser
@@ -213,6 +245,9 @@ def _cmd_assess(args: argparse.Namespace) -> int:
     # from code, so the mode label on the assessment must say so.
     service = DatasetService(args.output, source_dir=args.source, mode="fair-deterministic")
 
+    if args.profile != "fair":
+        return _assess_other_profile(service, args)
+
     if args.list:
         listing = service.list_fair_rules()
         print(f"{listing['profile']['id']} {listing['profile']['version']}")
@@ -242,6 +277,36 @@ def _cmd_assess(args: argparse.Namespace) -> int:
         if result.get("rationale"):
             print(f"  {'':<32} {' '.join(result['rationale'].split())}")
     # A failed indicator is a finding about the dataset, not a tool error.
+    return 0
+
+
+def _assess_other_profile(service: DatasetService, args: argparse.Namespace) -> int:
+    """Run a non-FAIR profile. FAIR keeps its own path: it alone writes remediation guidance."""
+    profile_id = args.profile
+    if args.list:
+        listing = service.list_profile_rules(profile_id)
+        print(f"{listing['profile']['id']} {listing['profile']['version']}")
+        for rule in listing["rules"]:
+            status = "" if rule["implemented"] else "  [NOT IMPLEMENTED -> always unknown]"
+            print(f"  {rule['id']:<32} {rule['principle']:<10} {rule['check']}{status}")
+            print(f"  {'':<32} {rule['question'].strip()}")
+        return 0
+
+    assessment = service.run_profile_check(profile_id, args.rule, orchestrator="deterministic")
+    destination = Path(args.output) / f"assessment.{profile_id}.json"
+    write_json(destination, assessment)
+    summary = assessment["summary"]
+    print(f"dataset_id : {assessment['dataset_id']}")
+    print(f"profile    : {assessment['profile']['id']} {assessment['profile']['version']}")
+    print(
+        "results    : " + ", ".join(f"{count} {name}" for name, count in summary.items() if count)
+    )
+    print(f"written    : {destination}")
+    print()
+    for result in assessment["results"]:
+        print(f"  {result['rule_id']:<32} {result['result']}")
+        if result.get("rationale"):
+            print(f"  {'':<32} {' '.join(result['rationale'].split())}")
     return 0
 
 
@@ -322,6 +387,27 @@ def _load_crosswalk_argument(value: str):
     if separator and name and not any(char in name for char in "/\\:"):
         return load_crosswalk_file(Path(rest), name=name)
     return load_crosswalk_file(Path(value))
+
+
+def _cmd_export_annotations(args: argparse.Namespace) -> int:
+    from .export import export_annotations
+
+    summary = export_annotations(
+        args.output,
+        dataspace=args.dataspace,
+        dataset_path=args.dataset_path,
+        family=args.family,
+        variant=args.variant,
+        agent_model=args.agent_model,
+        created_by=args.created_by,
+        created_at=args.created_at,
+        curation_log=args.curation_log,
+        overwrite=args.overwrite,
+    )
+    for warning in summary["warnings"]:
+        print(f"warning: {warning}", file=sys.stderr)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 0
 
 
 def _cmd_modes(_: argparse.Namespace) -> int:
