@@ -8,6 +8,41 @@ ledger, and a generic MCP server that any coding agent can drive — without an
 agent ever having to guess at the dataset's structure, and without being able to
 invent a value the dataset does not state.
 
+## Independent project identity and upstream attribution
+
+**Data2Agent is now a distinct research software project, not a Paper2Agent
+configuration or a generated per-dataset Paper2Agent agent.** Its product is a
+fixed, versioned and reproducible **data-to-MCP** interface over immutable
+dataset bytes. It solves the problem of reliable dataset access, not the
+problem of discovering and running arbitrary paper-associated research code.
+
+| Dimension | Paper2Agent ancestry | Data2Agent today |
+| --- | --- | --- |
+| Input | Research papers, associated repositories and executable workflows | A scientific dataset directory and explicit metadata/conventions |
+| Main approach | Discover and expose heterogeneous research tools | Deterministically inventory/profile/checksum source files; expose bounded generic queries |
+| Agent role | Helps discover and assemble operations | Reasons only after data identity, structure and evidence have been computed |
+| MCP | Tools tailored to the particular paper/software | One generic, host-agnostic MCP service with an explicit contract |
+| Evidence | An upstream inspiration for reproducible tool use | First-class claim-to-source evidence ledger, drift checks and immutable manifest identity |
+
+This separation is also reflected in the code: the canonical Data2Agent
+implementation lives under `src/data2agent/`, with strict ingest/service/profile
+boundaries, and is maintained and versioned independently. Paper2Agent is not
+required to operate Data2Agent. The retained `skills/paper2agent/` tree is
+upstream reference material, **not the Data2Agent runtime**.
+
+**Provenance and credit are not changed by this distinction.** Data2Agent was
+derived in part from [Paper2Agent](https://github.com/jmiao24/Paper2Agent).
+The fork relationship and original Git commits remain part of the project's
+history. The upstream copyright/license notices remain in [LICENSE](LICENSE),
+and the specific inherited ideas, retained material and differences are
+documented in [NOTICE.md](NOTICE.md). Independent maintenance is not a claim
+of independent original authorship of every component.
+
+Design and contribution decisions should follow [docs/architecture.md](docs/architecture.md),
+the [contracts](docs/data-contract.md), and [AGENTS.md](AGENTS.md).
+Future upstream synchronization should be selective and reviewed, not an
+automatic overwrite of Data2Agent-specific behavior.
+
 > Architecture inspired by / derived in part from **Paper2Agent**
 > Miao et al., *Nature*, 2026 — see [`NOTICE.md`](NOTICE.md).
 
