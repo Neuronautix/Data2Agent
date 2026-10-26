@@ -155,6 +155,39 @@
           }
         }
       }
+    },
+    {
+      "description": "The fair profile keeps its closed set of FAIR principles.",
+      "if": {
+        "properties": {
+          "profile": {
+            "properties": {
+              "id": {
+                "const": "fair"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          }
+        },
+        "required": [
+          "profile"
+        ]
+      },
+      "then": {
+        "properties": {
+          "results": {
+            "items": {
+              "properties": {
+                "principle": {
+                  "$ref": "#/$defs/fairPrinciple"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -175,23 +208,9 @@
           ]
         },
         "principle": {
-          "enum": [
-            "F1",
-            "F2",
-            "F3",
-            "F4",
-            "A1",
-            "A1.1",
-            "A1.2",
-            "A2",
-            "I1",
-            "I2",
-            "I3",
-            "R1",
-            "R1.1",
-            "R1.2",
-            "R1.3"
-          ]
+          "type": "string",
+          "minLength": 1,
+          "description": "For the fair profile: the FAIR principle the rule tests (enforced below). For any other profile: that profile's own category label."
         },
         "result": {
           "enum": [
@@ -226,6 +245,25 @@
           "description": "Must be false unless the rule explicitly sets inference_allowed: true."
         }
       }
+    },
+    "fairPrinciple": {
+      "enum": [
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "A1",
+        "A1.1",
+        "A1.2",
+        "A2",
+        "I1",
+        "I2",
+        "I3",
+        "R1",
+        "R1.1",
+        "R1.2",
+        "R1.3"
+      ]
     }
   }
 }

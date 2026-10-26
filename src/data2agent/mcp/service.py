@@ -1687,18 +1687,57 @@ class DatasetService:
         unknown and stays in the denominator. A local pass does not establish
         the full GO FAIR Foundation interpretation.
         """
-        from ..profiles.fair import CHECKS
+        return self.run_profile_check(
+            "fair", rule_id, host=host, model=model, orchestrator=orchestrator
+        )
+
+    def list_profile_rules(self, profile_id: str) -> dict[str, Any]:
+        """List any shipped profile's rules: id, category, question, implementation status."""
+        profile = self.load_profile(profile_id)
+        return {
+            "profile": {"id": profile.id, "version": profile.version, "title": profile.title},
+            "description": profile.description,
+            "rules": [
+                {
+                    "id": rule.id,
+                    "principle": rule.principle,
+                    "question": rule.question,
+                    "check": rule.check_type,
+                    "implemented": rule.implemented,
+                    "allowed_results": list(rule.allowed_results),
+                }
+                for rule in profile.rules
+            ],
+        }
+
+    def run_profile_check(
+        self,
+        profile_id: str,
+        rule_id: str | None = None,
+        *,
+        host: str | None = None,
+        model: str | None = None,
+        orchestrator: str | None = None,
+    ) -> dict[str, Any]:
+        """Run any shipped profile's deterministic checks and return an assessment.
+
+        ``run_fair_check`` is this method with ``profile_id="fair"``; its output is
+        unchanged. The source bytes are re-verified first, for every profile: an
+        assessment drawn from drifted bytes is indistinguishable from a good one.
+        """
+        from ..profiles.registry import checks_for
         from ..profiles.runner import run
 
+        checks = checks_for(profile_id)
         verification = self.verify_dataset()
         if not verification["intact"]:
             changed = ", ".join(sorted(item["path"] for item in verification["mismatched"]))
             raise OutputError(
-                f"FAIR assessment cannot use changed or missing source files: {changed}; "
-                "re-ingest the dataset before reassessing"
+                f"{profile_id} assessment cannot use changed or missing source files: "
+                f"{changed}; re-ingest the dataset before reassessing"
             )
 
-        profile = self.load_profile("fair")
+        profile = self.load_profile(profile_id)
         # The build that computes the verdicts is this serving process, which
         # can differ from the build recorded in provenance.json at ingest (#33).
         generator: dict[str, Any] = {
@@ -1712,7 +1751,7 @@ class DatasetService:
             generator["model"] = model
 
         assessment = run(
-            profile, self.profile_context(), CHECKS, generator=generator, rule_id=rule_id
+            profile, self.profile_context(), checks, generator=generator, rule_id=rule_id
         )
         payload = assessment.as_dict()
         payload["summary"] = assessment.summary()
