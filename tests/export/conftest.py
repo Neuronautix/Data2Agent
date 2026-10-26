@@ -26,10 +26,10 @@ def dataspace(tmp_path: Path) -> Path:
         (root / sub).mkdir(parents=True)
     dataset = root / DATASET_PATH
     dataset.mkdir(parents=True)
-    (dataset / "t.csv").write_text(
-        "id,Trial,v\n1,Trial   1,2.5\n2,Trial   2,3.5\n", encoding="utf-8"
-    )
-    (dataset / "README.md").write_text("# Synthetic\n\nA synthetic table.\n", encoding="utf-8")
+    # Bytes, not text: write_text would turn \n into \r\n on Windows, so checksums
+    # and the content-addressed claim ids would differ from those on Linux.
+    (dataset / "t.csv").write_bytes(b"id,Trial,v\n1,Trial   1,2.5\n2,Trial   2,3.5\n")
+    (dataset / "README.md").write_bytes(b"# Synthetic\n\nA synthetic table.\n")
     (root / "schemas" / "annotation.schema.json").write_text(
         json.dumps(STANDIN_SCHEMA), encoding="utf-8"
     )
@@ -50,12 +50,21 @@ def manifest(ingest_dir: Path) -> dict[str, Any]:
 
 
 @pytest.fixture
-def claim_for(ingest_dir: Path) -> Callable[[str], str]:
-    """Claim id of the first ledger claim whose subject is the given file."""
+def claim_for(ingest_dir: Path) -> Callable[..., str]:
+    """Claim id of the first ledger claim whose subject is the given file.
+
+    The ledger is ordered by content-addressed claim id, so "first" is arbitrary;
+    pass ``check`` when the test depends on which evidence check the claim carries.
+    """
     claims = json.loads((ingest_dir / "evidence.json").read_text(encoding="utf-8"))["claims"]
 
-    def find(subject: str) -> str:
-        return next(c["claim_id"] for c in claims if c["subject"] == subject)
+    def find(subject: str, check: str | None = None) -> str:
+        return next(
+            c["claim_id"]
+            for c in claims
+            if c["subject"] == subject
+            and (check is None or any(e["check"] == check for e in c["evidence"]))
+        )
 
     return find
 

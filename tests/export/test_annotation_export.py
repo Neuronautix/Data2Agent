@@ -305,7 +305,14 @@ def test_a_pass_without_a_rationale_cites_its_evidence_checks(
 ):
     write_assessment(
         "fair",
-        [result("I1-DATA-FORMATS-OPEN", "I1", "pass", evidence=[claim_for("t.csv")])],
+        [
+            result(
+                "I1-DATA-FORMATS-OPEN",
+                "I1",
+                "pass",
+                evidence=[claim_for("t.csv", check="file.format-detection")],
+            )
+        ],
     )
     export()
     rationale = read_proposed(dataspace)[_ann_id("I1-data-formats-open")]["judgement"]["rationale"]
