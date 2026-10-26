@@ -465,10 +465,12 @@ def _check_file_present(ctx: _Context, file_path: str) -> None:
 
 
 def _file_entry(ctx: _Context, file_path: str, description: str) -> dict[str, Any] | None:
+    # Presence first: a file that cannot be a locator still has its name and checksum
+    # stated in the dataset-level fallback, so it must exist just the same.
+    _check_file_present(ctx, file_path)
     locator = _locator_for(ctx, file_path)
     if locator is None:
         return None
-    _check_file_present(ctx, file_path)
     return {
         "locator": locator,
         "checksum": {"algorithm": "sha256", "value": ctx.files[file_path]["sha256"]},
@@ -901,13 +903,30 @@ def _load_curation_log(path: Path, ctx: _Context) -> dict[str, Any]:
             f"{path} describes curated dataset {result.get('dataset_id')!r}, but the ingest output "
             f"is {ctx.dataset_id!r}; ingest the curated dataset the log produced"
         )
-    for item in result.get("files", []):
-        recorded = ctx.files.get(item.get("path")) if isinstance(item, dict) else None
+    result_files = result.get("files")
+    if not isinstance(result_files, list):
+        raise AnnotationExportError(f"{path}: result.files must be a list")
+    listed: set[str] = set()
+    for item in result_files:
+        file_path = item.get("path") if isinstance(item, dict) else None
+        recorded = ctx.files.get(file_path) if isinstance(file_path, str) else None
         if recorded is None or recorded.get("sha256") != item.get("sha256"):
             raise AnnotationExportError(
                 f"{path}: result file {item!r} does not match the ingest manifest; the curated "
                 "bytes changed after the log was written"
             )
+        if file_path in listed:
+            raise AnnotationExportError(f"{path}: result file {file_path!r} is listed twice")
+        listed.add(file_path)
+    # The log must describe the whole curated dataset, not a subset of it: validations
+    # exported for a partial file list would speak for files the log never covered.
+    missing = sorted(set(ctx.files) - listed)
+    if missing:
+        raise AnnotationExportError(
+            f"{path}: result.files omits {len(missing)} file(s) of the ingest manifest "
+            f"({', '.join(missing[:5])}{', ...' if len(missing) > 5 else ''}); the log must "
+            "describe the complete curated dataset"
+        )
     return log
 
 
@@ -1233,18 +1252,61 @@ def _existing_is_untouched_draft(path: Path) -> bool:
         return False
 
 
+def _obsolete_drafts(
+    records: list[dict[str, Any]], output_dir: Path, current: set[Path]
+) -> list[Path]:
+    """Earlier drafts of this export that the current run no longer produces.
+
+    Only untouched Data2Agent draft proposals for the same dataset family, variant and
+    version, and of an annotation type this run writes, qualify. Anything else -- a
+    reviewed record, a human's, another harness's, another dataset version's, or a type
+    this run does not produce (a curation export does not retire FAIR drafts) -- is kept.
+    """
+    scopes = {
+        (
+            record["dataset"]["dataset_family_id"],
+            record["dataset"]["variant"],
+            record["dataset"]["version"],
+            record["annotation_type"],
+        )
+        for record in records
+    }
+    obsolete: list[Path] = []
+    for path in sorted(output_dir.glob("*.json")):
+        if path in current or path.is_symlink() or not path.is_file():
+            continue
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            dataset = existing["dataset"]
+            scope = (
+                dataset["dataset_family_id"],
+                dataset["variant"],
+                dataset["version"],
+                existing["annotation_type"],
+            )
+            ours = f"Data2Agent dataset_id {dataset['version']}." in existing["provenance"]["notes"]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if scope in scopes and ours and _existing_is_untouched_draft(path):
+            obsolete.append(path)
+    return obsolete
+
+
 def serialise(record: dict[str, Any]) -> str:
     return json.dumps(record, indent=2, ensure_ascii=False, sort_keys=False) + "\n"
 
 
 def write_records(
     records: list[dict[str, Any]], output_dir: Path, dataspace: Path, *, overwrite: bool = False
-) -> list[Path]:
+) -> tuple[list[Path], list[Path]]:
     """Write validated records into ``annotations/proposed/`` -- all of them or none.
 
     Refuses any output directory other than exactly ``<dataspace>/annotations/proposed``,
     any existing file unless ``overwrite`` (and even then any file a reviewer has moved
-    past ``draft``), and stages every file before the first one becomes visible.
+    past ``draft``), and stages every file before the first one becomes visible. With
+    ``overwrite``, earlier drafts of the same export that this run no longer produces
+    are removed in the same all-or-nothing step, so a shrinking result set leaves no
+    stale proposal behind. Returns ``(written, removed)``.
     """
     _require_exact_output_dir(output_dir, dataspace)
     resolved_dir = output_dir.resolve()
@@ -1275,9 +1337,13 @@ def write_records(
             "(reviewed, edited by a human, unreadable, or not a regular file). Nothing was written."
         )
 
-    previous = {path: path.read_bytes() for path in existing}
+    obsolete = (
+        _obsolete_drafts(records, output_dir, {path for path, _ in targets}) if overwrite else []
+    )
+    previous = {path: path.read_bytes() for path in [*existing, *obsolete]}
     staged: list[tuple[Path, Path]] = []
     replaced: list[Path] = []
+    removed: list[Path] = []
     try:
         for path, text in targets:
             temporary = path.with_name(f".{path.name}.tmp")
@@ -1286,6 +1352,9 @@ def write_records(
         for temporary, path in staged:
             os.replace(temporary, path)
             replaced.append(path)
+        for path in obsolete:
+            path.unlink()
+            removed.append(path)
     except BaseException:
         # Best-effort rollback so a failure part-way leaves the folder as it was found.
         for temporary, _ in staged:
@@ -1295,8 +1364,10 @@ def write_records(
                 path.write_bytes(previous[path])
             else:
                 path.unlink(missing_ok=True)
+        for path in removed:
+            path.write_bytes(previous[path])
         raise
-    return [path for _, path in staged]
+    return [path for _, path in staged], removed
 
 
 # -- public: export --------------------------------------------------------------
@@ -1345,7 +1416,7 @@ def export_annotations(
     warnings = list(built.warnings)
     if not validated:
         warnings.append(f"records were NOT validated against the dataspace schema: {note}")
-    written = write_records(built.records, output_dir, root, overwrite=overwrite)
+    written, removed = write_records(built.records, output_dir, root, overwrite=overwrite)
 
     by_type: dict[str, int] = {}
     for record in built.records:
@@ -1359,6 +1430,7 @@ def export_annotations(
         "written": len(written),
         "by_type": dict(sorted(by_type.items())),
         "files": [path.name for path in written],
+        "removed": [path.name for path in removed],
         "profiles": built.profiles,
         "skipped": built.skipped,
         "warnings": warnings,

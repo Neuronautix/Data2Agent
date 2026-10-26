@@ -234,6 +234,61 @@ def test_overwrite_never_replaces_a_human_authored_record(export, dataspace, ass
         export(overwrite=True)
 
 
+def test_overwrite_removes_drafts_the_export_no_longer_produces(
+    export, dataspace, assessed, write_assessment
+):
+    export()
+    proposed = dataspace / "annotations" / "proposed"
+    stale = proposed / "synthfam-original-F2-metadata-present.json"
+    assert stale.exists()
+    write_assessment("fair", [result("F1-PID-METADATA", "F1", "pass")])
+    summary = export(overwrite=True)
+    assert not stale.exists()
+    assert summary["removed"] == [stale.name]
+    assert sorted(p.name for p in proposed.iterdir()) == ["synthfam-original-F1-pid-metadata.json"]
+
+
+def test_overwrite_keeps_obsolete_records_that_are_not_untouched_data2agent_drafts(
+    export, dataspace, assessed, write_assessment
+):
+    export()
+    proposed = dataspace / "annotations" / "proposed"
+    reviewed = proposed / "synthfam-original-F2-metadata-present.json"
+    record = json.loads(reviewed.read_text(encoding="utf-8"))
+    record["review"] = {"status": "in_review"}
+    reviewed.write_text(json.dumps(record), encoding="utf-8")
+    # Another harness's draft for the same dataset, and a different dataset version's.
+    other = dict(record, review={"status": "draft"})
+    other["provenance"] = dict(record["provenance"], notes="written by another harness")
+    (proposed / "synthfam-original-other.json").write_text(json.dumps(other), encoding="utf-8")
+    old = dict(record, review={"status": "draft"})
+    old["dataset"] = dict(record["dataset"], version="sha256:" + "0" * 64)
+    old["provenance"] = dict(
+        record["provenance"], notes=f"Data2Agent dataset_id {old['dataset']['version']}."
+    )
+    (proposed / "synthfam-original-old.json").write_text(json.dumps(old), encoding="utf-8")
+
+    write_assessment("fair", [result("F1-PID-METADATA", "F1", "pass")])
+    summary = export(overwrite=True)
+    assert summary["removed"] == []
+    assert sorted(p.name for p in proposed.iterdir()) == [
+        "synthfam-original-F1-pid-metadata.json",
+        "synthfam-original-F2-metadata-present.json",
+        "synthfam-original-old.json",
+        "synthfam-original-other.json",
+    ]
+
+
+def test_without_overwrite_obsolete_drafts_are_left_alone(export, dataspace, assessed):
+    export()
+    proposed = dataspace / "annotations" / "proposed"
+    for path in proposed.iterdir():
+        path.rename(path.with_name("kept-" + path.name))
+    summary = export()
+    assert summary["removed"] == []
+    assert len(list(proposed.iterdir())) == 4
+
+
 def test_overwrite_refuses_an_unreadable_existing_file(export, dataspace, assessed):
     export()
     target = dataspace / "annotations" / "proposed" / "synthfam-original-F1-pid-metadata.json"

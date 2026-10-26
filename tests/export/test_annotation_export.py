@@ -496,6 +496,47 @@ def test_a_file_name_that_cannot_be_a_locator_falls_back_to_the_dataset_director
     assert "cannot be written as a legal dataspace locator" in item["description"]
 
 
+def test_a_file_that_cannot_be_a_locator_must_still_exist_in_the_dataspace(dataspace, tmp_path):
+    from data2agent.ingest import ingest
+
+    odd = dataspace / DATASET_PATH / "my file.csv"
+    odd.write_bytes(b"a,b\n1,2\n")
+    out = tmp_path / "ingest-spaces"
+    ingest(dataspace / DATASET_PATH, out)
+    manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    (out / "assessment.json").write_text(
+        json.dumps(
+            {
+                "assessment_version": "0.1.0",
+                "dataset_id": manifest["dataset_id"],
+                "profile": {"id": "fair", "version": "0.1.0"},
+                "generator": {"mode": "fair-deterministic"},
+                "results": [
+                    result(
+                        "I1-DATA-FORMATS-OPEN",
+                        "I1",
+                        "pass",
+                        evidence=[{"check": "file.format-detection", "result": ["my file.csv"]}],
+                    )
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    odd.unlink()
+    with pytest.raises(AnnotationExportError, match="does not exist in the dataspace"):
+        export_annotations(
+            out,
+            dataspace=dataspace,
+            dataset_path=DATASET_PATH,
+            family=FAMILY,
+            variant="original",
+            agent_model=AGENT_MODEL,
+            created_at=CREATED_AT,
+        )
+    assert read_proposed(dataspace) == {}
+
+
 def test_evidence_files_must_exist_in_the_dataspace(export, dataspace, write_assessment, claim_for):
     write_assessment(
         "fair", [result("I1-DATA-FORMATS-OPEN", "I1", "pass", evidence=[claim_for("t.csv")])]
@@ -807,6 +848,13 @@ def test_a_curation_log_needs_the_curated_variant(export, tmp_path, manifest):
         (
             lambda p: p["result"]["files"][0].update(sha256="f" * 64),
             "does not match the ingest manifest",
+        ),
+        (lambda p: p["result"]["files"].pop(), "omits 1 file"),
+        (lambda p: p["result"].update(files=[]), "omits 2 file"),
+        (lambda p: p["result"].pop("files"), "must be a list"),
+        (
+            lambda p: p["result"]["files"].append(dict(p["result"]["files"][0])),
+            "listed twice",
         ),
         (lambda p: p["verification"].update(original_unchanged="yes"), "true or false"),
         (lambda p: p["verification"]["checks"][0].update(result="maybe"), "'pass' or 'fail'"),

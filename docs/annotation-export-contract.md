@@ -36,7 +36,7 @@ stdout is a JSON summary; warnings also go to stderr:
 {"dataset_id": "sha256:...", "dataset_family_id": "...", "variant": "original",
  "dataset_path": "data/original/...", "output_dir": "annotations/proposed",
  "written": 12, "by_type": {"fair_assessment": 12}, "files": ["<family>-original-F1-pid-metadata.json", ...],
- "profiles": [{"id": "fair", "version": "0.1.0", "results": 12, "exported": 12}],
+ "removed": [], "profiles": [{"id": "fair", "version": "0.1.0", "results": 12, "exported": 12}],
  "skipped": [], "warnings": [], "schema_validated": true}
 ```
 
@@ -161,7 +161,8 @@ Every record has at least one entry `{locator, checksum, description}`:
   manifest's.
 - A file whose name cannot be a legal locator (characters outside `A-Za-z0-9._/-#[]=`, or
   `..`) is not cited by path. An entry pointing at the dataset directory says so and
-  quotes the name and sha256 in its description.
+  quotes the name and sha256 in its description. The file must still exist under the
+  dataspace, exactly as for a citable one.
 - A result that cites no file (for example "no file was recognised as metadata") gets one
   entry at the dataset directory, without a checksum, whose description says that the rule
   examined dataset-level facts of that `dataset_id`. A directory has no byte checksum, and
@@ -171,8 +172,10 @@ Every record has at least one entry `{locator, checksum, description}`:
 
 `--curation-log` takes the log written by `apply` (`log_version "1"`) and requires
 `--variant curated`. The exporter refuses a log whose `result.dataset_id` differs from the
-ingested dataset, or whose `result.files` do not match the manifest's checksums (the curated
-bytes changed after the log). It writes:
+ingested dataset, or whose `result.files` do not match the manifest exactly: every entry
+must carry the manifest's checksum (the curated bytes changed after the log otherwise), no
+path may be listed twice, and no manifest file may be missing, so the log describes the
+complete curated dataset. It writes:
 
 | Criterion id | Label |
 | --- | --- |
@@ -199,6 +202,12 @@ These are enforced in code, and each has a test.
 - An existing annotation file is never overwritten unless `--overwrite`, and even with it
   never one that is not an untouched draft agent proposal (a reviewer moved it to
   `in_review`/`rejected`, a human authored it, or it is unreadable).
+- With `--overwrite`, earlier drafts of the same export that the run no longer produces
+  (a failure that now passes, fewer offenders, a dropped curation check) are removed in the
+  same all-or-nothing step and listed under `removed` in the summary. Only untouched
+  Data2Agent draft proposals for the same family, variant, dataset version and annotation
+  type qualify; a reviewed or human record, another harness's, another version's, or a type
+  this run does not write is never removed.
 - All-or-nothing: paths are checked, every record is built and invariant-checked, and all
   of them are validated against the dataspace schema **before the first file is written**.
   Files are then staged under temporary names and renamed, and staging is cleaned up on
