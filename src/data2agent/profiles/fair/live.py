@@ -110,6 +110,16 @@ def _public_address(host: str, port: int) -> str:
 
 
 def _fetch_once(value: str) -> dict[str, Any]:
+    response = _request(value, accept="text/html,application/json,*/*", max_body=_MAX_BODY)
+    body = response.pop("body")
+    return {**response, "body_sample": body[:_MAX_BODY].decode("utf-8", errors="replace")}
+
+
+def _request(value: str, *, accept: str, max_body: int) -> dict[str, Any]:
+    """One GET to a checked public address; reads at most ``max_body + 1`` bytes.
+
+    The extra byte lets a caller tell a body that fits from one that was cut.
+    """
     clean, host, port, scheme = _safe_url(value)
     address = _public_address(host, port)
     parsed = urlsplit(clean)
@@ -126,22 +136,83 @@ def _fetch_once(value: str) -> dict[str, Any]:
             headers={
                 "Host": parsed.netloc,
                 "User-Agent": "Data2Agent-FAIR/0.1",
-                "Accept": "text/html,application/json,*/*",
-                "Range": f"bytes=0-{_MAX_BODY - 1}",
+                "Accept": accept,
+                "Range": f"bytes=0-{max_body}",
                 "Connection": "close",
             },
         )
         response = connection.getresponse()
-        body = response.read(_MAX_BODY)
         return {
             "url": clean,
             "status_code": response.status,
             "location": response.getheader("Location"),
             "content_type": response.getheader("Content-Type"),
-            "body_sample": body.decode("utf-8", errors="replace"),
+            "body": response.read(max_body + 1),
         }
     finally:
         connection.close()
+
+
+def check_public_url(value: str) -> str:
+    """Reject an unsuitable URL without any network access; return its clean form.
+
+    A host name is checked again when it is resolved; an address literal can be
+    refused now.
+    """
+    clean, host, _, _ = _safe_url(value)
+    try:
+        literal = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return clean
+    if not literal.is_global:
+        raise PublicURLRequired("publication URL must use a public host")
+    return clean
+
+
+def fetch_public_document(value: str, *, accept: str, max_body: int) -> dict[str, Any]:
+    """Fetch one public document with the probe's address and redirect checks.
+
+    Unlike ``probe_public_url`` this keeps the body (at most ``max_body`` bytes,
+    with ``truncated`` set when more was sent), so it can be frozen as evidence.
+    A failed exchange is reported, never raised: a timeout is an observation.
+    """
+    clean = check_public_url(value)
+    observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    chain: list[dict[str, Any]] = []
+    current = clean
+    response: dict[str, Any] | None = None
+    try:
+        for _ in range(_MAX_REDIRECTS + 1):
+            response = _request(current, accept=accept, max_body=max_body)
+            chain.append(
+                {key: response[key] for key in ("url", "status_code", "location", "content_type")}
+            )
+            if response["status_code"] in {301, 302, 303, 307, 308} and response["location"]:
+                current = urljoin(current, response["location"])
+                _safe_url(current)
+                continue
+            break
+    except (OSError, ssl.SSLError, http.client.HTTPException, PublicURLRequired) as error:
+        return {
+            "source": clean,
+            "observed_at": observed_at,
+            "result": "network_error",
+            "error_type": type(error).__name__,
+            "chain": chain,
+        }
+    assert response is not None
+    body = response["body"]
+    return {
+        "source": clean,
+        "observed_at": observed_at,
+        "result": "reached" if 200 <= response["status_code"] < 300 else "not_reached",
+        "status_code": response["status_code"],
+        "final_url": response["url"],
+        "content_type": response["content_type"],
+        "chain": chain,
+        "body": body[:max_body],
+        "truncated": len(body) > max_body,
+    }
 
 
 def probe_public_url(value: str, *, expected_identifier: str | None = None) -> dict[str, Any]:

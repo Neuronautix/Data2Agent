@@ -13,6 +13,7 @@ adding it to this table.
 | Path | Enabled by | Bounds |
 |---|---|---|
 | `src/data2agent/profiles/fair/live.py` (`probe_public_url`) | `assess_fair_principles(live=True, publication_url=...)`; both arguments are required, and `publication_url` without `live=True` is refused | Public, globally routable addresses only (checked after DNS, and again after each redirect); at most 3 redirects; 64 KiB body; 6 s timeout; URL user-info and query strings rejected |
+| `src/data2agent/snapshot.py` (`collect`, via `fetch_public_document` in `live.py`) | `data2agent snapshot <spec.json> -o <new dir>`: only the URLs listed in an operator-written spec, each fetched once | The same address, redirect, user-info and query-string checks, and address literals that are not public are refused before any request; at most 64 requests; 2 MB body per request; never overwrites a snapshot. Serving a snapshot (`serve --evidence-snapshot`) makes no network call |
 
 Not in scope for the core, and owned by whoever runs it: model inference
 endpoints, model downloads, telemetry of an agent host, and OS-level isolation.
