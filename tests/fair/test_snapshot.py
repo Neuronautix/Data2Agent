@@ -88,6 +88,7 @@ def test_collect_freezes_bodies_with_checksums_and_keeps_failures(tmp_path):
         {"url": "file:///etc/passwd"},
         {"url": "https://example.org/café"},  # http.client cannot send it
         {"url": "https://exämple.org/records"},
+        {"url": "https://[bad/records"},  # urlsplit raises a plain ValueError
         {"id": "../escape"},
         {"id": "doi"},  # duplicate
         {"extra": "field"},
@@ -228,8 +229,10 @@ def test_fetch_reports_a_redirect_to_a_private_address_as_an_error(monkeypatch):
     assert "body" not in result
 
 
-@pytest.mark.parametrize("location", ["https://example.org/café", "https://exämple.org/"])
-def test_fetch_reports_a_non_ascii_redirect_as_an_error(monkeypatch, location):
+@pytest.mark.parametrize(
+    "location", ["https://example.org/café", "https://exämple.org/", "https://[bad", "http://[::1"]
+)
+def test_fetch_reports_an_unusable_redirect_as_an_error(monkeypatch, location):
     def request(url, *, accept, max_body):
         return {
             "url": url,
@@ -243,6 +246,31 @@ def test_fetch_reports_a_non_ascii_redirect_as_an_error(monkeypatch, location):
     result = fetch_public_document(DOI, accept="text/html", max_body=10)
     assert result["result"] == "network_error" and result["error_type"] == "PublicURLRequired"
     assert [hop["url"] for hop in result["chain"]] == [DOI]
+
+
+def test_a_malformed_redirect_is_one_failed_record_not_a_lost_snapshot(monkeypatch, tmp_path):
+    def request(url, *, accept, max_body):
+        if url == API:
+            return {
+                "url": url,
+                "status_code": 302,
+                "location": "https://[bad",
+                "content_type": None,
+                "body": b"",
+            }
+        return {
+            "url": url,
+            "status_code": 200,
+            "location": None,
+            "content_type": "text/html",
+            "body": b"ok",
+        }
+
+    monkeypatch.setattr("data2agent.profiles.fair.live._request", request)
+    collect(_spec(), tmp_path / "snap")
+    doi, record = Snapshot(tmp_path / "snap").describe()["records"]
+    assert doi["result"] == "reached" and doi["body_bytes"] == 2
+    assert record["result"] == "network_error" and record["error_type"] == "PublicURLRequired"
 
 
 def test_fetch_records_an_encoding_failure_instead_of_raising(monkeypatch):

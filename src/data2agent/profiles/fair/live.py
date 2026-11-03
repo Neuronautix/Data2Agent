@@ -59,8 +59,12 @@ def _safe_url(value: str) -> tuple[str, str, int, str]:
         raise PublicURLRequired(
             "publication URL must be ASCII: percent-encode the path and give the host in IDNA form"
         )
-    parsed = urlsplit(value)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+    except ValueError as error:
+        raise PublicURLRequired("publication URL is not a valid URL") from error
+    if parsed.scheme.lower() not in {"http", "https"} or not hostname:
         raise PublicURLRequired("publication URL must be HTTP or HTTPS")
     if parsed.username or parsed.password:
         raise PublicURLRequired("publication URL must not contain credentials")
@@ -72,7 +76,7 @@ def _safe_url(value: str) -> tuple[str, str, int, str]:
         raise PublicURLRequired("publication URL has an invalid port") from error
     if port != (443 if parsed.scheme.lower() == "https" else 80):
         raise PublicURLRequired("publication URL must use the standard HTTP or HTTPS port")
-    host = parsed.hostname.rstrip(".").lower()
+    host = hostname.rstrip(".").lower()
     if not host or host == "localhost":
         raise PublicURLRequired("publication URL must use a public host")
     clean = urlunsplit((parsed.scheme.lower(), parsed.netloc, parsed.path or "/", parsed.query, ""))
@@ -101,6 +105,16 @@ def matching_declared_doi(value: str, declared_identifiers: list[str]) -> str | 
 def bound_doi_url(value: str, declared_identifiers: list[str]) -> bool:
     """True only for the DOI resolver URL of a locally declared dataset DOI."""
     return matching_declared_doi(value, declared_identifiers) is not None
+
+
+def _redirect_target(current: str, location: str) -> str:
+    """The checked absolute URL of a redirect; a malformed one is refused like a private one."""
+    try:
+        target = urljoin(current, location)
+    except ValueError as error:
+        raise PublicURLRequired("redirect target is not a valid URL") from error
+    _safe_url(target)
+    return target
 
 
 def _public_address(host: str, port: int) -> str:
@@ -193,8 +207,7 @@ def fetch_public_document(value: str, *, accept: str, max_body: int) -> dict[str
                 {key: response[key] for key in ("url", "status_code", "location", "content_type")}
             )
             if response["status_code"] in {301, 302, 303, 307, 308} and response["location"]:
-                current = urljoin(current, response["location"])
-                _safe_url(current)
+                current = _redirect_target(current, response["location"])
                 continue
             break
     except (
@@ -242,8 +255,7 @@ def probe_public_url(value: str, *, expected_identifier: str | None = None) -> d
                 location = response["location"]
                 if not location:
                     break
-                current = urljoin(current, location)
-                _safe_url(current)
+                current = _redirect_target(current, location)
                 continue
             break
     except (OSError, ssl.SSLError, http.client.HTTPException) as error:
