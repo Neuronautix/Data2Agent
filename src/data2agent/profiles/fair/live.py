@@ -161,12 +161,17 @@ def _request(value: str, *, accept: str, max_body: int) -> dict[str, Any]:
             },
         )
         response = connection.getresponse()
+        body = response.read(max_body + 1)
+        # http.client returns a short body silently when the peer closes before its
+        # declared Content-Length; an incomplete document must not pass as complete.
+        if response.length and len(body) <= max_body:
+            raise http.client.IncompleteRead(body, response.length)
         return {
             "url": clean,
             "status_code": response.status,
             "location": response.getheader("Location"),
             "content_type": response.getheader("Content-Type"),
-            "body": response.read(max_body + 1),
+            "body": body,
         }
     finally:
         connection.close()

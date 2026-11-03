@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 
 import pytest
 
@@ -10,11 +11,13 @@ from data2agent.cli import main
 from data2agent.errors import ModeError, OutputError
 from data2agent.mcp import DatasetService
 from data2agent.mcp.modes import MODES
+from data2agent.profiles.fair import live
 from data2agent.profiles.fair.live import fetch_public_document
 from data2agent.snapshot import MAX_READ_CHARS, Snapshot, SnapshotError, collect, validate_spec
 
 DOI = "https://doi.org/10.5281/zenodo.0000000"
 API = "https://api.repository.example/records/0000000"
+POLICY = "http://repository.example/policy"
 
 
 def _spec(**overrides):
@@ -271,6 +274,38 @@ def test_a_malformed_redirect_is_one_failed_record_not_a_lost_snapshot(monkeypat
     doi, record = Snapshot(tmp_path / "snap").describe()["records"]
     assert doi["result"] == "reached" and doi["body_bytes"] == 2
     assert record["result"] == "network_error" and record["error_type"] == "PublicURLRequired"
+
+
+def _served(monkeypatch, raw):
+    """Route the pinned connection to a local socket pair that answers ``raw``, then stops."""
+    server, client = socket.socketpair()
+    server.sendall(raw)
+    server.shutdown(socket.SHUT_WR)
+    monkeypatch.setattr(live, "_public_address", lambda host, port: "192.0.2.1")
+    monkeypatch.setattr(live.socket, "create_connection", lambda address, timeout=None: client)
+    return server
+
+
+def test_a_body_cut_before_its_content_length_is_not_frozen_as_complete(monkeypatch):
+    head = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 100\r\n\r\n"
+    server = _served(monkeypatch, head + b"policy prefix")
+    try:
+        result = fetch_public_document(POLICY, accept="text/plain", max_body=1000)
+    finally:
+        server.close()
+    assert result["result"] == "network_error" and result["error_type"] == "IncompleteRead"
+    assert "body" not in result
+
+
+def test_a_body_that_matches_its_content_length_is_kept(monkeypatch):
+    head = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\n"
+    server = _served(monkeypatch, head + b"policy prefix")
+    try:
+        result = fetch_public_document(POLICY, accept="text/plain", max_body=1000)
+    finally:
+        server.close()
+    assert result["result"] == "reached" and result["body"] == b"policy prefix"
+    assert result["truncated"] is False
 
 
 def test_fetch_records_an_encoding_failure_instead_of_raising(monkeypatch):
