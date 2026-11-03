@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -97,16 +98,25 @@ def collect(spec: dict[str, Any], output_dir: Path, *, fetch: Any = None) -> dic
     """Fetch every request once and write a new snapshot directory.
 
     ``output_dir`` must not exist: a snapshot is never overwritten or resumed.
+    A collection that stops early removes the directory it created, so a
+    half-written snapshot is never served and the same path can be retried.
     """
-    from .profiles.fair.live import fetch_public_document
-
     validate_spec(spec)
-    fetch = fetch or fetch_public_document
     output_dir = Path(output_dir).expanduser()
     if output_dir.exists():
         raise SnapshotError(f"{output_dir} already exists; a snapshot is never overwritten")
-    bodies = output_dir / BODIES_DIRNAME
-    bodies.mkdir(parents=True)
+    (output_dir / BODIES_DIRNAME).mkdir(parents=True)
+    try:
+        return _collect_into(spec, output_dir, fetch)
+    except BaseException:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        raise
+
+
+def _collect_into(spec: dict[str, Any], output_dir: Path, fetch: Any) -> dict[str, Any]:
+    from .profiles.fair.live import fetch_public_document
+
+    fetch = fetch or fetch_public_document
     started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     records = []
     for item in spec["requests"]:
@@ -136,6 +146,21 @@ def collect(spec: dict[str, Any], output_dir: Path, *, fetch: Any = None) -> dic
     path = output_dir / SNAPSHOT_FILENAME
     path.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return {**snapshot, "snapshot_sha256": hash_file(path)}
+
+
+def _utf8_text(body: bytes, *, cut: bool) -> str | None:
+    """Decode a stored body; a body cut at collection may end inside a character.
+
+    Only that incomplete trailing character (at most 3 bytes) is left out of the
+    text; the stored bytes and their checksum stay exactly as collected.
+    """
+    for drop in range(4 if cut else 1):
+        try:
+            return body[: len(body) - drop].decode("utf-8")
+        except UnicodeDecodeError as error:
+            if error.reason != "unexpected end of data":
+                return None
+    return None
 
 
 class Snapshot:
@@ -208,9 +233,8 @@ class Snapshot:
         meta = {key: value for key, value in record.items() if key != "body_path"}
         if body is None:
             return {**meta, "text": None, "detail": "no body was received for this request"}
-        try:
-            text = body.decode("utf-8")
-        except UnicodeDecodeError:
+        text = _utf8_text(body, cut=bool(record.get("truncated")))
+        if text is None:
             return {**meta, "text": None, "detail": "body is not UTF-8 text; not served"}
         return {
             **meta,

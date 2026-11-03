@@ -54,6 +54,11 @@ def _safe_url(value: str) -> tuple[str, str, int, str]:
         raise PublicURLRequired("publication URL must not contain control characters")
     if len(value) > 2048:
         raise PublicURLRequired("publication URL is too long")
+    # http.client sends only ASCII; IDNA hosts and percent-encoding are the caller's choice.
+    if not value.isascii():
+        raise PublicURLRequired(
+            "publication URL must be ASCII: percent-encode the path and give the host in IDNA form"
+        )
     parsed = urlsplit(value)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
         raise PublicURLRequired("publication URL must be HTTP or HTTPS")
@@ -192,7 +197,13 @@ def fetch_public_document(value: str, *, accept: str, max_body: int) -> dict[str
                 _safe_url(current)
                 continue
             break
-    except (OSError, ssl.SSLError, http.client.HTTPException, PublicURLRequired) as error:
+    except (
+        OSError,
+        ssl.SSLError,
+        http.client.HTTPException,
+        PublicURLRequired,
+        UnicodeError,
+    ) as error:
         return {
             "source": clean,
             "observed_at": observed_at,

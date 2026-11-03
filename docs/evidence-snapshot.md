@@ -32,13 +32,19 @@ data2agent snapshot spec.json -o snapshots/<dataset>    # a new directory
   other dataset.
 - The whole spec is checked before the first request: closed fields, ids
   matching `[a-z0-9][a-z0-9._-]{0,63}`, at most 64 requests, public HTTP(S) URLs
-  on standard ports, no user-info, no query string, no non-public address
-  literal. Host names are checked again after DNS and after each redirect.
+  on standard ports, ASCII only (percent-encoded path, IDNA host), no user-info,
+  no query string, no non-public address literal. Host names are checked again
+  after DNS, and every redirect target gets the same checks.
 - Each body is kept up to 2 MB; a longer one is cut and marked `truncated`.
+  Reading a cut UTF-8 body serves its text up to the last complete character;
+  the stored bytes and checksum are unchanged.
 - A failed request stays in the snapshot as `network_error` (with its error
   type) or `not_reached` (with its status). It is an observation about that
-  moment, never evidence that the resource does not exist.
-- An existing directory is never overwritten or resumed.
+  moment, never evidence that the resource does not exist. Each record keeps
+  its own `observed_at`.
+- An existing directory is never overwritten or resumed. A collection that
+  stops early (for example on Ctrl-C) removes the directory it created, so the
+  same path can be retried.
 
 ## Output
 
