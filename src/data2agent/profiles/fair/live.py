@@ -20,6 +20,7 @@ from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 _MAX_REDIRECTS = 3
 _MAX_BODY = 65_536
 _TIMEOUT_SECONDS = 6
+_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)")
 
 
 class PublicURLRequired(ValueError):
@@ -171,10 +172,22 @@ def _request(value: str, *, accept: str, max_body: int) -> dict[str, Any]:
             "status_code": response.status,
             "location": response.getheader("Location"),
             "content_type": response.getheader("Content-Type"),
+            "content_range": response.getheader("Content-Range"),
             "body": body,
         }
     finally:
         connection.close()
+
+
+def _whole_representation(status: int, content_range: str | None, received: int) -> bool:
+    """False when a 206 answer shows, or cannot rule out, that part of the document is missing."""
+    if status != 206:
+        return True
+    match = _CONTENT_RANGE.fullmatch((content_range or "").strip())
+    if not match or match[3] == "*":
+        return False
+    start, end, total = (int(group) for group in match.groups())
+    return start == 0 and end + 1 == total == received
 
 
 def check_public_url(value: str) -> str:
@@ -231,6 +244,8 @@ def fetch_public_document(value: str, *, accept: str, max_body: int) -> dict[str
         }
     assert response is not None
     body = response["body"]
+    content_range = response.get("content_range")
+    whole = _whole_representation(response["status_code"], content_range, len(body))
     return {
         "source": clean,
         "observed_at": observed_at,
@@ -238,9 +253,10 @@ def fetch_public_document(value: str, *, accept: str, max_body: int) -> dict[str
         "status_code": response["status_code"],
         "final_url": response["url"],
         "content_type": response["content_type"],
+        "content_range": content_range,
         "chain": chain,
         "body": body[:max_body],
-        "truncated": len(body) > max_body,
+        "truncated": len(body) > max_body or not whole,
     }
 
 

@@ -308,6 +308,32 @@ def test_a_body_that_matches_its_content_length_is_kept(monkeypatch):
     assert result["truncated"] is False
 
 
+@pytest.mark.parametrize(
+    ("content_range", "truncated"),
+    [
+        ("bytes 0-12/100", True),  # a complete exchange carrying part of the document
+        ("bytes 0-12/*", True),  # extent unknown: completeness cannot be shown
+        ("bytes 5-17/100", True),
+        ("not a range", True),
+        ("bytes 0-12/13", False),
+    ],
+)
+def test_a_partial_content_answer_is_complete_only_when_its_range_is_whole(
+    monkeypatch, content_range, truncated
+):
+    head = (
+        b"HTTP/1.1 206 Partial Content\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n"
+        b"Content-Range: " + content_range.encode() + b"\r\n\r\n"
+    )
+    server = _served(monkeypatch, head + b"policy prefix")
+    try:
+        result = fetch_public_document(POLICY, accept="text/plain", max_body=1000)
+    finally:
+        server.close()
+    assert result["result"] == "reached" and result["body"] == b"policy prefix"
+    assert result["truncated"] is truncated and result["content_range"] == content_range
+
+
 def test_fetch_records_an_encoding_failure_instead_of_raising(monkeypatch):
     def request(url, *, accept, max_body):
         raise UnicodeEncodeError("ascii", "é", 0, 1, "ordinal not in range(128)")

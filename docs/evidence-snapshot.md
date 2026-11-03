@@ -35,7 +35,10 @@ data2agent snapshot spec.json -o snapshots/<dataset>    # a new directory
   on standard ports, ASCII only (percent-encoded path, IDNA host), no user-info,
   no query string, no non-public address literal. Host names are checked again
   after DNS, and every redirect target gets the same checks.
-- Each body is kept up to 2 MB; a longer one is cut and marked `truncated`.
+- Each body is kept up to 2 MB; a longer one is cut and marked `truncated`. A
+  `206 Partial Content` answer is also `truncated` unless its `Content-Range`
+  (kept in the record) shows the whole document, and a body shorter than its
+  declared `Content-Length` is a `network_error` (`IncompleteRead`), not a body.
   Reading a cut UTF-8 body serves its text up to the last complete character;
   the stored bytes and checksum are unchanged.
 - A failed request stays in the snapshot as `network_error` (with its error
