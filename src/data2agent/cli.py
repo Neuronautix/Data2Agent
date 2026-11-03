@@ -9,6 +9,8 @@ data2agent relationships <output>          resolve cross-table relationships
     [--declarations rel.json] [--crosswalk [NAME=]ids.csv ...]
 data2agent export-annotations <output> --dataspace <root> --dataset-path <dir> ...
                                            assessments as FAIR-VCG proposed annotations
+data2agent snapshot <spec.json> -o <dir>   fetch listed public URLs once, freeze them
+                                           (the only command that contacts the network)
 data2agent modes                           list benchmark modes and their status
 """
 
@@ -31,6 +33,7 @@ from .mcp.service import DatasetService
 from .profiles.fair.remediation import write_recommendations
 from .relationships import RELATIONSHIPS_FILENAME, load_crosswalk_file
 from .report import write_mcp_config, write_report
+from .snapshot import SnapshotError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -128,6 +131,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     serve_parser.add_argument("--mode", default=DEFAULT_MODE, choices=sorted(MODES))
     serve_parser.add_argument("--transport", default="stdio")
+    serve_parser.add_argument(
+        "--evidence-snapshot",
+        type=Path,
+        default=None,
+        help="a directory written by 'data2agent snapshot', served read-only",
+    )
     serve_parser.set_defaults(handler=_cmd_serve)
 
     relationships_parser = subparsers.add_parser(
@@ -188,6 +197,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--overwrite", action="store_true", help="replace existing untouched draft proposals"
     )
     export_parser.set_defaults(handler=_cmd_export_annotations)
+
+    snapshot_parser = subparsers.add_parser(
+        "snapshot", help="freeze public external evidence (contacts the listed URLs once)"
+    )
+    snapshot_parser.add_argument("spec", type=Path, help="a snapshot spec (JSON)")
+    snapshot_parser.add_argument(
+        "-o", "--output", type=Path, required=True, help="a new directory for the snapshot"
+    )
+    snapshot_parser.set_defaults(handler=_cmd_snapshot)
 
     modes_parser = subparsers.add_parser("modes", help="list benchmark modes")
     modes_parser.set_defaults(handler=_cmd_modes)
@@ -327,7 +345,13 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
 def _cmd_serve(args: argparse.Namespace) -> int:
     from .mcp.server import serve
 
-    serve(args.output, source_dir=args.source, mode=args.mode, transport=args.transport)
+    serve(
+        args.output,
+        source_dir=args.source,
+        mode=args.mode,
+        transport=args.transport,
+        evidence_snapshot=args.evidence_snapshot,
+    )
     return 0
 
 
@@ -407,6 +431,22 @@ def _cmd_export_annotations(args: argparse.Namespace) -> int:
     for warning in summary["warnings"]:
         print(f"warning: {warning}", file=sys.stderr)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_snapshot(args: argparse.Namespace) -> int:
+    from .snapshot import collect
+
+    try:
+        spec = json.loads(args.spec.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise SnapshotError(f"cannot read spec {args.spec}: {error}") from None
+    snapshot = collect(spec, args.output)
+    for record in snapshot["records"]:
+        size = "-" if record["body_bytes"] is None else f"{record['body_bytes']} B"
+        cut = " (truncated)" if record.get("truncated") else ""
+        print(f"{record['id']:<24} {record['result']:<14} {size}{cut}")
+    print(f"snapshot   : {args.output} (sha256 {snapshot['snapshot_sha256']})")
     return 0
 
 

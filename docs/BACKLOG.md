@@ -139,7 +139,7 @@ always been structured.
 | D2A-29b | Layering test: the core may not import a profile | done |
 | D2A-29c | Modes gate resources as well as tools; `raw` serves no manifest or ledger | done |
 | D2A-26 | Rule → Markdown Skill projection (for `fair-skill`) | open — v0.3 |
-| D2A-28 | `validate_identifier` resolves over the network, recording the attempt | open — v0.3 |
+| D2A-28 | `validate_identifier` resolves over the network, recording the attempt | partly done: external evidence is frozen with `data2agent snapshot` and read offline ([evidence-snapshot.md](evidence-snapshot.md)); no check resolves live |
 | D2A-24b | `validate_metadata_schema` against a declared schema | open — v0.3 |
 
 D2A-29 and D2A-29b are the ones that protect the experiment. Without them, FAIR

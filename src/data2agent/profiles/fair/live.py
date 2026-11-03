@@ -20,6 +20,7 @@ from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 _MAX_REDIRECTS = 3
 _MAX_BODY = 65_536
 _TIMEOUT_SECONDS = 6
+_CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+|\*)")
 
 
 class PublicURLRequired(ValueError):
@@ -54,8 +55,17 @@ def _safe_url(value: str) -> tuple[str, str, int, str]:
         raise PublicURLRequired("publication URL must not contain control characters")
     if len(value) > 2048:
         raise PublicURLRequired("publication URL is too long")
-    parsed = urlsplit(value)
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+    # http.client sends only ASCII; IDNA hosts and percent-encoding are the caller's choice.
+    if not value.isascii():
+        raise PublicURLRequired(
+            "publication URL must be ASCII: percent-encode the path and give the host in IDNA form"
+        )
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+    except ValueError as error:
+        raise PublicURLRequired("publication URL is not a valid URL") from error
+    if parsed.scheme.lower() not in {"http", "https"} or not hostname:
         raise PublicURLRequired("publication URL must be HTTP or HTTPS")
     if parsed.username or parsed.password:
         raise PublicURLRequired("publication URL must not contain credentials")
@@ -67,7 +77,7 @@ def _safe_url(value: str) -> tuple[str, str, int, str]:
         raise PublicURLRequired("publication URL has an invalid port") from error
     if port != (443 if parsed.scheme.lower() == "https" else 80):
         raise PublicURLRequired("publication URL must use the standard HTTP or HTTPS port")
-    host = parsed.hostname.rstrip(".").lower()
+    host = hostname.rstrip(".").lower()
     if not host or host == "localhost":
         raise PublicURLRequired("publication URL must use a public host")
     clean = urlunsplit((parsed.scheme.lower(), parsed.netloc, parsed.path or "/", parsed.query, ""))
@@ -98,6 +108,16 @@ def bound_doi_url(value: str, declared_identifiers: list[str]) -> bool:
     return matching_declared_doi(value, declared_identifiers) is not None
 
 
+def _redirect_target(current: str, location: str) -> str:
+    """The checked absolute URL of a redirect; a malformed one is refused like a private one."""
+    try:
+        target = urljoin(current, location)
+    except ValueError as error:
+        raise PublicURLRequired("redirect target is not a valid URL") from error
+    _safe_url(target)
+    return target
+
+
 def _public_address(host: str, port: int) -> str:
     try:
         records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -110,6 +130,16 @@ def _public_address(host: str, port: int) -> str:
 
 
 def _fetch_once(value: str) -> dict[str, Any]:
+    response = _request(value, accept="text/html,application/json,*/*", max_body=_MAX_BODY)
+    body = response.pop("body")
+    return {**response, "body_sample": body[:_MAX_BODY].decode("utf-8", errors="replace")}
+
+
+def _request(value: str, *, accept: str, max_body: int) -> dict[str, Any]:
+    """One GET to a checked public address; reads at most ``max_body + 1`` bytes.
+
+    The extra byte lets a caller tell a body that fits from one that was cut.
+    """
     clean, host, port, scheme = _safe_url(value)
     address = _public_address(host, port)
     parsed = urlsplit(clean)
@@ -126,22 +156,108 @@ def _fetch_once(value: str) -> dict[str, Any]:
             headers={
                 "Host": parsed.netloc,
                 "User-Agent": "Data2Agent-FAIR/0.1",
-                "Accept": "text/html,application/json,*/*",
-                "Range": f"bytes=0-{_MAX_BODY - 1}",
+                "Accept": accept,
+                "Range": f"bytes=0-{max_body}",
                 "Connection": "close",
             },
         )
         response = connection.getresponse()
-        body = response.read(_MAX_BODY)
+        body = response.read(max_body + 1)
+        # http.client returns a short body silently when the peer closes before its
+        # declared Content-Length; an incomplete document must not pass as complete.
+        if response.length and len(body) <= max_body:
+            raise http.client.IncompleteRead(body, response.length)
         return {
             "url": clean,
             "status_code": response.status,
             "location": response.getheader("Location"),
             "content_type": response.getheader("Content-Type"),
-            "body_sample": body.decode("utf-8", errors="replace"),
+            "content_range": response.getheader("Content-Range"),
+            "body": body,
         }
     finally:
         connection.close()
+
+
+def _whole_representation(status: int, content_range: str | None, received: int) -> bool:
+    """False when a 206 answer shows, or cannot rule out, that part of the document is missing."""
+    if status != 206:
+        return True
+    match = _CONTENT_RANGE.fullmatch((content_range or "").strip())
+    if not match or match[3] == "*":
+        return False
+    start, end, total = (int(group) for group in match.groups())
+    return start == 0 and end + 1 == total == received
+
+
+def check_public_url(value: str) -> str:
+    """Reject an unsuitable URL without any network access; return its clean form.
+
+    A host name is checked again when it is resolved; an address literal can be
+    refused now.
+    """
+    clean, host, _, _ = _safe_url(value)
+    try:
+        literal = ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return clean
+    if not literal.is_global:
+        raise PublicURLRequired("publication URL must use a public host")
+    return clean
+
+
+def fetch_public_document(value: str, *, accept: str, max_body: int) -> dict[str, Any]:
+    """Fetch one public document with the probe's address and redirect checks.
+
+    Unlike ``probe_public_url`` this keeps the body (at most ``max_body`` bytes,
+    with ``truncated`` set when more was sent), so it can be frozen as evidence.
+    A failed exchange is reported, never raised: a timeout is an observation.
+    """
+    clean = check_public_url(value)
+    observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    chain: list[dict[str, Any]] = []
+    current = clean
+    response: dict[str, Any] | None = None
+    try:
+        for _ in range(_MAX_REDIRECTS + 1):
+            response = _request(current, accept=accept, max_body=max_body)
+            chain.append(
+                {key: response[key] for key in ("url", "status_code", "location", "content_type")}
+            )
+            if response["status_code"] in {301, 302, 303, 307, 308} and response["location"]:
+                current = _redirect_target(current, response["location"])
+                continue
+            break
+    except (
+        OSError,
+        ssl.SSLError,
+        http.client.HTTPException,
+        PublicURLRequired,
+        UnicodeError,
+    ) as error:
+        return {
+            "source": clean,
+            "observed_at": observed_at,
+            "result": "network_error",
+            "error_type": type(error).__name__,
+            "chain": chain,
+        }
+    assert response is not None
+    body = response["body"]
+    content_range = response.get("content_range")
+    whole = _whole_representation(response["status_code"], content_range, len(body))
+    return {
+        "source": clean,
+        "observed_at": observed_at,
+        "result": "reached" if 200 <= response["status_code"] < 300 else "not_reached",
+        "status_code": response["status_code"],
+        "final_url": response["url"],
+        "content_type": response["content_type"],
+        "content_range": content_range,
+        "chain": chain,
+        "body": body[:max_body],
+        "truncated": len(body) > max_body or not whole,
+    }
 
 
 def probe_public_url(value: str, *, expected_identifier: str | None = None) -> dict[str, Any]:
@@ -160,8 +276,7 @@ def probe_public_url(value: str, *, expected_identifier: str | None = None) -> d
                 location = response["location"]
                 if not location:
                     break
-                current = urljoin(current, location)
-                _safe_url(current)
+                current = _redirect_target(current, location)
                 continue
             break
     except (OSError, ssl.SSLError, http.client.HTTPException) as error:

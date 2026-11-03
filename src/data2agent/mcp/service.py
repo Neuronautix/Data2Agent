@@ -46,6 +46,7 @@ from ..relationships.crosswalk import (
     mapping_facts,
     parse_key_format,
 )
+from ..snapshot import Snapshot
 from .modes import ALL_RESOURCES, DEFAULT_MODE, Mode, resolve_mode
 
 # Content is served in bounded slices; an agent that wants more asks again.
@@ -65,6 +66,10 @@ _MAX_JOIN_SCAN_ROWS = 50_000
 # Contributor provenance stays exact when compact enough to fit normal MCP results.
 _MAX_PROVENANCE_RANGES = 4096
 _MAX_PROVENANCE_LOCATORS = 1024
+# Offered in every mode, but only when a snapshot is attached: the frozen
+# external evidence belongs to the package all conditions see, and a server
+# started without one keeps exactly its mode's historical tool list.
+SNAPSHOT_TOOLS = ("list_snapshot_records", "read_snapshot_record")
 # The resolved join key is carried through query.join_rows in a synthetic
 # column. A NUL cannot occur in a header the readers surface, so it cannot
 # shadow a real column; it is stripped before any row is returned.
@@ -101,6 +106,7 @@ class DatasetService:
         source_dir: Path | None = None,
         mode: str = DEFAULT_MODE,
         load_relationships: bool = True,
+        evidence_snapshot: Path | None = None,
     ) -> None:
         self.output_dir = Path(output_dir).expanduser().resolve()
         self.mode: Mode = resolve_mode(mode)
@@ -138,6 +144,14 @@ class DatasetService:
         self.source_dir = candidate.expanduser().resolve()
         self._by_path = {entry["path"]: entry for entry in self.manifest.get("files", [])}
         self._profiles: dict[str, Any] = {}
+        # Loading re-checks every frozen body; a snapshot bound to another
+        # dataset is refused rather than served beside this one.
+        self.snapshot = Snapshot(evidence_snapshot) if evidence_snapshot else None
+        if self.snapshot and self.snapshot.dataset_id not in (None, self.dataset_id):
+            raise OutputError(
+                f"evidence snapshot is bound to dataset {self.snapshot.dataset_id}, "
+                f"not {self.dataset_id}"
+            )
 
     # -- capability surface -------------------------------------------------
 
@@ -151,13 +165,13 @@ class DatasetService:
         return self.provenance.get("started_at")
 
     def available_tools(self) -> list[str]:
-        return list(self.mode.tools)
+        return list(self.mode.tools) + (list(SNAPSHOT_TOOLS) if self.snapshot else [])
 
     def available_resources(self) -> list[str]:
         return list(self.mode.resources)
 
     def supports(self, tool: str) -> bool:
-        return tool in self.mode.tools
+        return tool in self.available_tools()
 
     def serves(self, uri: str) -> bool:
         """Whether this mode may serve a resource URI, templates included."""
@@ -1463,6 +1477,21 @@ class DatasetService:
             "total": len(matches),
             "returned": len(capped),
         }
+
+    def list_snapshot_records(self) -> dict[str, Any]:
+        """List the frozen external observations attached to this dataset."""
+        return self._require_snapshot().describe()
+
+    def read_snapshot_record(
+        self, record_id: str, *, offset: int = 0, limit: int = 8192
+    ) -> dict[str, Any]:
+        """Return a slice of one frozen document, after re-checking its SHA-256."""
+        return self._require_snapshot().read(record_id, offset=offset, limit=limit)
+
+    def _require_snapshot(self) -> Snapshot:
+        if self.snapshot is None:
+            raise ModeError("no evidence snapshot is attached to this server")
+        return self.snapshot
 
     def resolve_identifier(self, value: str) -> dict[str, Any]:
         """Report where an identifier occurs in the dataset.

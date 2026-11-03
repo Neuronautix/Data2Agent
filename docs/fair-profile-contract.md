@@ -220,7 +220,8 @@ digit for an ORCID — and returns `resolves: null` with
 resolvable one, and the response says so rather than leaving the distinction to
 the reader.
 
-Network resolution remains unimplemented. When it arrives it must record the
-attempt — endpoint, status, timestamp — as evidence in `provenance.json`,
-because unlike every other check in the system it is not reproducible from the
-dataset bytes alone.
+Network resolution stays out of every check. External evidence is instead
+**frozen once** with `data2agent snapshot` and served offline: see
+[evidence-snapshot.md](evidence-snapshot.md). Each record keeps the endpoint,
+status, redirect chain, time and body SHA-256, because unlike every other input
+it is not reproducible from the dataset bytes alone.
