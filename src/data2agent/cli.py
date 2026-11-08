@@ -137,6 +137,22 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="a directory written by 'data2agent snapshot', served read-only",
     )
+    serve_parser.add_argument(
+        "--semantic-snapshot",
+        type=Path,
+        default=None,
+        help="optional (off by default): a pinned d2a-ontology-snapshot-1; with --semantic-policy "
+        "adds the four ontology-constraint tools to any mode",
+    )
+    serve_parser.add_argument(
+        "--semantic-policy",
+        type=Path,
+        default=None,
+        help="a d2a-mapping-policy-1 bound to the snapshot",
+    )
+    serve_parser.add_argument(
+        "--semantic-snapshot-sha256", default=None, help="refuse a snapshot whose digest differs"
+    )
     serve_parser.set_defaults(handler=_cmd_serve)
 
     relationships_parser = subparsers.add_parser(
@@ -206,6 +222,39 @@ def _build_parser() -> argparse.ArgumentParser:
         "-o", "--output", type=Path, required=True, help="a new directory for the snapshot"
     )
     snapshot_parser.set_defaults(handler=_cmd_snapshot)
+
+    semantic_parser = subparsers.add_parser(
+        "semantic",
+        help="optional: write a semantic mapping record beside an ingest output (never edits it)",
+    )
+    semantic_parser.add_argument("output", type=Path, help="an ingest output directory")
+    semantic_parser.add_argument(
+        "--snapshot", type=Path, required=True, help="pinned ontology snapshot"
+    )
+    semantic_parser.add_argument("--snapshot-sha256", default=None, help="expected snapshot digest")
+    semantic_parser.add_argument("--policy", type=Path, required=True, help="d2a-mapping-policy-1")
+    semantic_parser.add_argument(
+        "--bindings",
+        type=Path,
+        required=True,
+        help="d2a-semantic-bindings-1: source field -> policy field",
+    )
+    semantic_parser.add_argument(
+        "--inferred",
+        type=Path,
+        default=None,
+        help="d2a-semantic-inferred-1: external selector decisions, validated, kept as inferences",
+    )
+    semantic_parser.add_argument(
+        "--source", type=Path, default=None, help="override the recorded source"
+    )
+    semantic_parser.add_argument(
+        "--record",
+        type=Path,
+        default=None,
+        help="record path (default OUTPUT/semantic/semantic-mapping.json)",
+    )
+    semantic_parser.set_defaults(handler=_cmd_semantic)
 
     modes_parser = subparsers.add_parser("modes", help="list benchmark modes")
     modes_parser.set_defaults(handler=_cmd_modes)
@@ -351,7 +400,41 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         mode=args.mode,
         transport=args.transport,
         evidence_snapshot=args.evidence_snapshot,
+        semantic_snapshot=args.semantic_snapshot,
+        semantic_policy=args.semantic_policy,
+        semantic_snapshot_sha256=args.semantic_snapshot_sha256,
     )
+    return 0
+
+
+def _cmd_semantic(args: argparse.Namespace) -> int:
+    from .semantic.constraints import OntologyRuntime
+    from .semantic.mapping import (
+        build_semantic_record,
+        load_bindings,
+        load_inferred,
+        record_digest,
+        write_semantic_record,
+    )
+
+    runtime = OntologyRuntime.load(
+        args.snapshot, args.policy, expected_snapshot_sha256=args.snapshot_sha256
+    )
+    bindings, bindings_sha256 = load_bindings(args.bindings)
+    inferred, inferred_sha256 = load_inferred(args.inferred) if args.inferred else (None, None)
+    record = build_semantic_record(
+        args.output,
+        runtime,
+        bindings,
+        bindings_sha256=bindings_sha256,
+        source_dir=args.source,
+        inferred=inferred,
+        inferred_sha256=inferred_sha256,
+    )
+    path = write_semantic_record(record, args.output, args.record)
+    for status, count in record["summary"].items():
+        print(f"{status:<30} {count}")
+    print(f"record     : {path} (sha256 {record_digest(record)})")
     return 0
 
 

@@ -16,9 +16,12 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "data2agent"
 
 # layer -> packages it must never import
 FORBIDDEN = {
-    "ingest": {"profiles", "mcp"},
-    "evidence": {"profiles", "mcp"},
+    "ingest": {"profiles", "mcp", "semantic"},
+    "evidence": {"profiles", "mcp", "semantic"},
     "profiles": {"mcp"},
+    # The optional semantic layer reads the core's outputs; it never depends on
+    # the FAIR profiles or the server (BACKLOG D2A-80).
+    "semantic": {"profiles", "mcp"},
 }
 
 

@@ -1,0 +1,42 @@
+{
+  "schema_version": "d2a-snapshot-build-1",
+  "snapshot_id": "d2a-example-preclinical-v1",
+  "description": "Engineering example: hand-transcribed NCBITaxon and PATO extracts for the preclinical-minimal example. Not an authoritative ontology release.",
+  "prefixes": {
+    "obo": "http://purl.obolibrary.org/obo/",
+    "NCBITaxon": "http://purl.obolibrary.org/obo/NCBITaxon_",
+    "PATO": "http://purl.obolibrary.org/obo/PATO_"
+  },
+  "ontologies": {
+    "ncbitaxon": {
+      "iri": "http://purl.obolibrary.org/obo/ncbitaxon.owl",
+      "version": "extract-2026-11-08",
+      "title": "NCBI organismal classification (hand-transcribed extract)"
+    },
+    "pato": {
+      "iri": "http://purl.obolibrary.org/obo/pato.owl",
+      "version": "extract-2026-11-08",
+      "title": "Phenotype And Trait Ontology (hand-transcribed extract)"
+    }
+  },
+  "sources": [
+    {
+      "ontology": "ncbitaxon",
+      "artifact": "sources/ncbitaxon-extract.json",
+      "format": "d2a-terms-json-1",
+      "sha256": "0887b313eceeff244ce4191dfd3fde76b72aed33c8640da75159f4bf7c982e85",
+      "origin": "hand-transcribed from NCBITaxon; see note",
+      "status": "hand-transcribed-extract",
+      "license": "CC0-1.0 (NCBITaxon)"
+    },
+    {
+      "ontology": "pato",
+      "artifact": "sources/pato-extract.json",
+      "format": "d2a-terms-json-1",
+      "sha256": "6bd64ef111c5a2b7949463f2c8bb5bc441c5d43b76b17bc947b9bc7d41d1d4ce",
+      "origin": "hand-transcribed from PATO; see note",
+      "status": "hand-transcribed-extract",
+      "license": "CC-BY-3.0 (PATO)"
+    }
+  ]
+}

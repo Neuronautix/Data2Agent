@@ -1,0 +1,201 @@
+{
+  "description": "Engineering example: hand-transcribed NCBITaxon and PATO extracts for the preclinical-minimal example. Not an authoritative ontology release.",
+  "ontologies": {
+    "ncbitaxon": {
+      "iri": "http://purl.obolibrary.org/obo/ncbitaxon.owl",
+      "title": "NCBI organismal classification (hand-transcribed extract)",
+      "version": "extract-2026-11-08"
+    },
+    "pato": {
+      "iri": "http://purl.obolibrary.org/obo/pato.owl",
+      "title": "Phenotype And Trait Ontology (hand-transcribed extract)",
+      "version": "extract-2026-11-08"
+    }
+  },
+  "prefixes": {
+    "NCBITaxon": "http://purl.obolibrary.org/obo/NCBITaxon_",
+    "PATO": "http://purl.obolibrary.org/obo/PATO_",
+    "obo": "http://purl.obolibrary.org/obo/"
+  },
+  "schema_version": "d2a-ontology-snapshot-1",
+  "snapshot_id": "d2a-example-preclinical-v1",
+  "sources": [
+    {
+      "artifact": "sources/ncbitaxon-extract.json",
+      "format": "d2a-terms-json-1",
+      "license": "CC0-1.0 (NCBITaxon)",
+      "note": null,
+      "ontology": "ncbitaxon",
+      "origin": "hand-transcribed from NCBITaxon; see note",
+      "sha256": "0887b313eceeff244ce4191dfd3fde76b72aed33c8640da75159f4bf7c982e85",
+      "status": "hand-transcribed-extract",
+      "terms": 9,
+      "version": null
+    },
+    {
+      "artifact": "sources/pato-extract.json",
+      "format": "d2a-terms-json-1",
+      "license": "CC-BY-3.0 (PATO)",
+      "note": null,
+      "ontology": "pato",
+      "origin": "hand-transcribed from PATO; see note",
+      "sha256": "6bd64ef111c5a2b7949463f2c8bb5bc441c5d43b76b17bc947b9bc7d41d1d4ce",
+      "status": "hand-transcribed-extract",
+      "terms": 4,
+      "version": null
+    }
+  ],
+  "terms": [
+    {
+      "definition": null,
+      "iri": "http://purl.obolibrary.org/obo/NCBITaxon_10066",
+      "kind": "class",
+      "label": "Muridae",
+      "ontology": "ncbitaxon",
+      "parents": [
+        "http://purl.obolibrary.org/obo/NCBITaxon_9989"
+      ],
+      "synonyms": []
+    },
+    {
+      "definition": null,
+      "iri": "http://purl.obolibrary.org/obo/NCBITaxon_10088",
+      "kind": "class",
+      "label": "Mus",
+      "ontology": "ncbitaxon",
+      "parents": [
+        "http://purl.obolibrary.org/obo/NCBITaxon_10066"
+      ],
+      "synonyms": []
+    },
+    {
+      "definition": null,
+      "iri": "http://purl.obolibrary.org/obo/NCBITaxon_10090",
+      "kind": "class",
+      "label": "Mus musculus",
+      "ontology": "ncbitaxon",
+      "parents": [
+        "http://purl.obolibrary.org/obo/NCBITaxon_10088"
+      ],
+      "synonyms": [
+        "house mouse",
+        "mouse"
+      ]
+    },
+    {
+      "definition": null,
+      "iri": "http://purl.obolibrary.org/obo/NCBITaxon_10114",
+      "kind": "class",
+      "label": "Rattus",
+      "ontology": "ncbitaxon",
+      "parents": [
+        "http://purl.obolibrary.org/obo/NCBITaxon_10066"
+      ],
+      "synonyms": []
+    },
+    {
+      "definition": null,
+      "iri": "http://purl.obolibrary.org/obo/NCBITaxon_10116",
+      "kind": "class",
+      "label": "Rattus norvegicus",
+      "ontology": "ncbitaxon",
+      "parents": [
+        "http://purl.obolibrary.org/obo/NCBITaxon_10114"
+      ],
+      "synonyms": [
+        "Norway rat",
+        "rat"
+      ]
+    },
+    {
+      "definition": null,
+      "iri": "http://purl.obolibrary.org/obo/NCBITaxon_40674",
+      "kind": "class",
+      "label": "Mammalia",
+      "ontology": "ncbitaxon",
+      "parents": [],
+      "synonyms": [
+        "mammals"
+      ]
+    },
+    {
+      "definition": null,
+      "iri": "http://purl.obolibrary.org/obo/NCBITaxon_9443",
+      "kind": "class",
+      "label": "Primates",
+      "ontology": "ncbitaxon",
+      "parents": [
+        "http://purl.obolibrary.org/obo/NCBITaxon_40674"
+      ],
+      "synonyms": []
+    },
+    {
+      "definition": null,
+      "iri": "http://purl.obolibrary.org/obo/NCBITaxon_9606",
+      "kind": "class",
+      "label": "Homo sapiens",
+      "ontology": "ncbitaxon",
+      "parents": [
+        "http://purl.obolibrary.org/obo/NCBITaxon_9443"
+      ],
+      "synonyms": [
+        "human"
+      ]
+    },
+    {
+      "definition": null,
+      "iri": "http://purl.obolibrary.org/obo/NCBITaxon_9989",
+      "kind": "class",
+      "label": "Rodentia",
+      "ontology": "ncbitaxon",
+      "parents": [
+        "http://purl.obolibrary.org/obo/NCBITaxon_40674"
+      ],
+      "synonyms": [
+        "rodents"
+      ]
+    },
+    {
+      "definition": "An organismal quality inhering in an organism by virtue of its reproductive role.",
+      "iri": "http://purl.obolibrary.org/obo/PATO_0000047",
+      "kind": "class",
+      "label": "biological sex",
+      "ontology": "pato",
+      "parents": [],
+      "synonyms": []
+    },
+    {
+      "definition": "Phenotypic sex of an organism that produces ova.",
+      "iri": "http://purl.obolibrary.org/obo/PATO_0000383",
+      "kind": "class",
+      "label": "female",
+      "ontology": "pato",
+      "parents": [
+        "http://purl.obolibrary.org/obo/PATO_0001894"
+      ],
+      "synonyms": []
+    },
+    {
+      "definition": "Phenotypic sex of an organism that produces spermatozoa.",
+      "iri": "http://purl.obolibrary.org/obo/PATO_0000384",
+      "kind": "class",
+      "label": "male",
+      "ontology": "pato",
+      "parents": [
+        "http://purl.obolibrary.org/obo/PATO_0001894"
+      ],
+      "synonyms": []
+    },
+    {
+      "definition": "Biological sex as determined by the organism's phenotype.",
+      "iri": "http://purl.obolibrary.org/obo/PATO_0001894",
+      "kind": "class",
+      "label": "phenotypic sex",
+      "ontology": "pato",
+      "parents": [
+        "http://purl.obolibrary.org/obo/PATO_0000047"
+      ],
+      "synonyms": []
+    }
+  ]
+}

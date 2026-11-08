@@ -1,0 +1,34 @@
+{
+  "schema_version": "d2a-semantic-inferred-1",
+  "selector": {
+    "name": "example-hand-written",
+    "kind": "human",
+    "note": "Illustrative selector decisions for the example; not a model output."
+  },
+  "decisions": [
+    {
+      "source": {
+        "table": "animals.csv",
+        "column": "sex"
+      },
+      "field": "sex",
+      "raw_value": "M",
+      "decision": "map",
+      "value": "PATO:0000384",
+      "reason": "illustrative hand-written decision: the example README does not define the codes, so this stays an inference, not a source fact",
+      "alternatives": []
+    },
+    {
+      "source": {
+        "table": "animals.csv",
+        "column": "sex"
+      },
+      "field": "sex",
+      "raw_value": "F",
+      "decision": "map",
+      "value": "PATO:0000383",
+      "reason": "illustrative hand-written decision: the example README does not define the codes, so this stays an inference, not a source fact",
+      "alternatives": []
+    }
+  ]
+}

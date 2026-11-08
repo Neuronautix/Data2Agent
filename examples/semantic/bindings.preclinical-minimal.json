@@ -1,0 +1,27 @@
+{
+  "schema_version": "d2a-semantic-bindings-1",
+  "note": "User-declared: which source field of examples/preclinical-minimal fills which policy field. A declaration, not an inference.",
+  "bindings": [
+    {
+      "source": {
+        "file": "dataset_description.json",
+        "key": "Species"
+      },
+      "field": "species"
+    },
+    {
+      "source": {
+        "table": "animals.csv",
+        "column": "sex"
+      },
+      "field": "sex"
+    },
+    {
+      "source": {
+        "file": "dataset_description.json",
+        "key": "License"
+      },
+      "field": "license"
+    }
+  ]
+}

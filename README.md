@@ -334,7 +334,13 @@ data2agent modes
 | `fair-rules` | + the canonical rules, which it must apply itself | v0.2 |
 | `fair-deterministic` | + the checks, run by code — the reference condition | v0.2 |
 | `fair-skill` | `structured` + FAIR prose | planned |
-| `fair-semantic` | + vocabularies and SHACL | planned |
+| `fair-semantic` | + vocabularies and SHACL | planned (the optional semantic layer below is not this mode) |
+
+An experimental, opt-in semantic layer (runtime ontology constraints over a
+pinned snapshot, a sidecar mapping record and four MCP tools attached with
+`serve --semantic-snapshot/--semantic-policy`) is described in
+[docs/semantic-layer.md](docs/semantic-layer.md). It is off by default and does
+not enable `fair-semantic`.
 
 Each FAIR mode is a superset of the one before it, so the ladder varies the
 *form* of the constraint while the information underneath stays identical.
