@@ -153,6 +153,13 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument(
         "--semantic-snapshot-sha256", default=None, help="refuse a snapshot whose digest differs"
     )
+    serve_parser.add_argument(
+        "--semantic-tools",
+        default=None,
+        metavar="NAME,...",
+        help="exact semantic tools to expose (default: the three retrieval tools; "
+        "validate_semantic_mapping and get_semantic_mapping only when listed)",
+    )
     serve_parser.set_defaults(handler=_cmd_serve)
 
     relationships_parser = subparsers.add_parser(
@@ -249,10 +256,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--source", type=Path, default=None, help="override the recorded source"
     )
     semantic_parser.add_argument(
-        "--record",
-        type=Path,
+        "--record-name",
         default=None,
-        help="record path (default OUTPUT/semantic/semantic-mapping.json)",
+        help="plain *.json file name inside OUTPUT/semantic/ (default semantic-mapping.json); "
+        "the record is never written anywhere else",
     )
     semantic_parser.set_defaults(handler=_cmd_semantic)
 
@@ -403,6 +410,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         semantic_snapshot=args.semantic_snapshot,
         semantic_policy=args.semantic_policy,
         semantic_snapshot_sha256=args.semantic_snapshot_sha256,
+        semantic_tools=args.semantic_tools.split(",") if args.semantic_tools else None,
     )
     return 0
 
@@ -431,7 +439,13 @@ def _cmd_semantic(args: argparse.Namespace) -> int:
         inferred=inferred,
         inferred_sha256=inferred_sha256,
     )
-    path = write_semantic_record(record, args.output, args.record)
+    source = args.source
+    if source is None:
+        provenance = json.loads((args.output / "provenance.json").read_text(encoding="utf-8"))
+        source = provenance.get("source_path")
+    path = write_semantic_record(
+        record, args.output, args.record_name, source_dir=Path(source) if source else None
+    )
     for status, count in record["summary"].items():
         print(f"{status:<30} {count}")
     print(f"record     : {path} (sha256 {record_digest(record)})")

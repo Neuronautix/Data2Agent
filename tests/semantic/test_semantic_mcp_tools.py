@@ -9,17 +9,18 @@ import pytest
 from data2agent.cli import main
 from data2agent.errors import ModeError, OutputError, QueryValidationError
 from data2agent.mcp import MODES, DatasetService
-from data2agent.mcp.service import SEMANTIC_TOOLS
+from data2agent.mcp.service import SEMANTIC_RETRIEVAL_TOOLS, SEMANTIC_TOOLS
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "examples" / "semantic"
 
 
-def _service(ingested, mode="structured"):
+def _service(ingested, mode="structured", tools=None):
     return DatasetService(
         ingested.output_dir,
         mode=mode,
         semantic_snapshot=EXAMPLE / "snapshot.json",
         semantic_policy=EXAMPLE / "policy.json",
+        semantic_tools=tools,
     )
 
 
@@ -37,9 +38,12 @@ def test_fair_semantic_mode_stays_unavailable(ingested):
 
 def test_attached_tools_answer(ingested):
     service = _service(ingested)
-    assert service.available_tools()[-4:] == list(SEMANTIC_TOOLS)
+    assert service.available_tools()[-3:] == list(SEMANTIC_RETRIEVAL_TOOLS)
     found = service.search_ontology_terms("mouse", "species", 3)
     assert found["candidates"][0]["curie"] == "NCBITaxon:10090"
+    with pytest.raises(QueryValidationError, match="not exposed"):
+        service.validate_semantic_mapping([])
+    service = _service(ingested, tools=list(SEMANTIC_TOOLS))
     verdict = service.validate_semantic_mapping(
         [{"field": "species", "decision": "map", "value": "NCBITaxon:9606"}]
     )
@@ -70,8 +74,9 @@ def test_record_tool_appears_only_for_a_bound_record(ingested):
         )
         == 0
     )
-    service = _service(ingested)
-    assert "get_semantic_mapping" in service.available_tools()
+    assert "get_semantic_mapping" not in _service(ingested).available_tools()  # never by default
+    service = _service(ingested, tools=["get_semantic_mapping"])
+    assert service.available_tools()[-1:] == ["get_semantic_mapping"]
     assert service.get_semantic_mapping()["dataset_id"] == service.dataset_id
 
 
@@ -83,4 +88,4 @@ async def test_tools_are_registered_over_mcp_only_when_attached(ingested):
     plain = {t.name for t in await build_server(DatasetService(ingested.output_dir)).list_tools()}
     attached = {t.name for t in await build_server(_service(ingested)).list_tools()}
     assert not set(SEMANTIC_TOOLS) & plain
-    assert attached - plain == set(SEMANTIC_TOOLS)
+    assert attached - plain == set(SEMANTIC_RETRIEVAL_TOOLS)

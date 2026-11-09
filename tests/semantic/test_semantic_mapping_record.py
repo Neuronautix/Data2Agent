@@ -149,8 +149,8 @@ def test_semantic_mode_never_mutates_manifest_evidence_or_source(
 
 def test_record_cannot_overwrite_ingest_outputs(ingested, runtime):
     record = _record(ingested, runtime)
-    with pytest.raises(SemanticError, match="refusing"):
-        write_semantic_record(record, ingested.output_dir, ingested.output_dir / "manifest.json")
+    with pytest.raises(SemanticError, match="plain"):
+        write_semantic_record(record, ingested.output_dir, "../manifest.json")
 
 
 def test_drifted_source_is_not_read(ingested, runtime, tmp_path, example_dataset):

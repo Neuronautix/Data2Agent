@@ -337,8 +337,9 @@ data2agent modes
 | `fair-semantic` | + vocabularies and SHACL | planned (the optional semantic layer below is not this mode) |
 
 An experimental, opt-in semantic layer (runtime ontology constraints over a
-pinned snapshot, a sidecar mapping record and four MCP tools attached with
-`serve --semantic-snapshot/--semantic-policy`) is described in
+pinned snapshot, a sidecar mapping record, and three retrieval MCP tools attached with
+`serve --semantic-snapshot/--semantic-policy`, plus the validator and the record only when
+listed with `--semantic-tools`) is described in
 [docs/semantic-layer.md](docs/semantic-layer.md). It is off by default and does
 not enable `fair-semantic`.
 

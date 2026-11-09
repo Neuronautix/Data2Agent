@@ -32,6 +32,9 @@ reads or writes it unless the caller asks.
 from __future__ import annotations
 
 import json
+import os
+import re
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +61,7 @@ STATUSES = (
 )
 CANDIDATES_CONSIDERED = 3
 _MAX_JSON_BYTES = 8 * 1024 * 1024
-_PROTECTED = frozenset({"manifest.json", "evidence.json", "provenance.json", "relationships.json"})
+_RECORD_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.json$")
 
 
 def load_bindings(path: Path) -> tuple[list[dict], str]:
@@ -188,14 +191,21 @@ class _Inputs:
             }
         path = self.source_dir / source["file"]
         try:
-            raw = path.read_bytes()[: _MAX_JSON_BYTES + 1]
+            with path.open("rb") as handle:  # never more than the cap plus one byte in memory
+                raw = handle.read(_MAX_JSON_BYTES + 1)
         except OSError as error:
             return {
                 **base,
                 "status": "unresolved",
                 "reason": f"source file unreadable: {error.strerror}",
             }
-        if len(raw) > _MAX_JSON_BYTES or hash_bytes(raw) != entry["sha256"]:
+        if len(raw) > _MAX_JSON_BYTES:
+            return {
+                **base,
+                "status": "unresolved",
+                "reason": f"source file exceeds {_MAX_JSON_BYTES} bytes; nothing read",
+            }
+        if hash_bytes(raw) != entry["sha256"]:
             return {
                 **base,
                 "status": "unresolved",
@@ -317,63 +327,51 @@ def _map_value(
     inferred_by_key: dict,
     used: set,
 ) -> dict:
-    field = runtime.policy.fields[field_id]
-    if field["datatype"] != "iri":
-        check = runtime.validate_semantic_mapping(
-            {"field": field_id, "decision": "map", "value": raw}
-        )
-        result = check["results"][0]
-        if result["status"] == "admissible":
-            return {
-                "raw": raw,
-                "candidates_considered": [],
-                "status": "deterministic_transformation",
-                "iri": None,
-                "literal": raw,
-                "rule": "value is a member of the field's declared literal value set",
-                "validation": {"status": result["status"], "errors": result["errors"]},
-            }
-        return {
-            "raw": raw,
-            "candidates_considered": [],
-            "status": "unresolved",
-            "iri": None,
-            "reason": "value is not in the field's declared literal value set",
-            "validation": {"status": result["status"], "errors": result["errors"]},
-        }
-    exact = _exact_matches(runtime, field_id, raw)
-    search = runtime.search_ontology_terms(str(raw), field_id, CANDIDATES_CONSIDERED)
-    considered = [
-        {"iri": c["iri"], "label": c["label"], "score": c["score"]} for c in search["candidates"]
-    ]
-    value: dict[str, Any] = {"raw": raw, "candidates_considered": considered}
-    if len(exact) == 1:
-        check = runtime.validate_semantic_mapping(
-            {"field": field_id, "decision": "map", "value": exact[0]}
-        )
-        result = check["results"][0]
-        if result["status"] == "admissible":
+    """One verified raw value through one flow, for IRI and literal fields alike.
+
+    verified source fact -> deterministic exact match -> matching external inference ->
+    independent validation -> deterministic_transformation | inferred_mapping | unresolved.
+    """
+    is_iri = runtime.policy.fields[field_id]["datatype"] == "iri"
+    value: dict[str, Any] = {"raw": raw, "candidates_considered": []}
+    exact: list[str] = []
+    if is_iri:
+        exact = _exact_matches(runtime, field_id, raw)
+        search = runtime.search_ontology_terms(str(raw), field_id, CANDIDATES_CONSIDERED)
+        value["candidates_considered"] = [
+            {"iri": c["iri"], "label": c["label"], "score": c["score"]}
+            for c in search["candidates"]
+        ]
+        deterministic = exact[0] if len(exact) == 1 else None
+        rule = "exact case-insensitive label or synonym match inside the authorised scope"
+    else:
+        deterministic = raw
+        rule = "value is a member of the field's declared literal value set"
+    deterministic_check = None
+    if deterministic is not None:
+        deterministic_check = runtime.validate_semantic_mapping(
+            {"field": field_id, "decision": "map", "value": deterministic}
+        )["results"][0]
+        if deterministic_check["status"] == "admissible":
             return {
                 **value,
                 "status": "deterministic_transformation",
-                "iri": exact[0],
-                "label": runtime.snapshot.terms[exact[0]].get("label"),
-                "rule": "exact case-insensitive label or synonym match inside the authorised scope",
-                "validation": {"status": result["status"], "errors": result["errors"]},
+                **_resolved(runtime, is_iri, deterministic),
+                "rule": rule,
+                "validation": {"status": "admissible", "errors": []},
             }
     key = (_source_key(source), field_id, str(raw))
     decision = inferred_by_key.get(key)
     if decision is not None:
         used.add(key)
-        check = runtime.validate_semantic_mapping(
+        result = runtime.validate_semantic_mapping(
             {
                 "field": field_id,
                 "decision": decision.get("decision", "map"),
                 "value": decision.get("value"),
                 "reason": decision.get("reason"),
             }
-        )
-        result = check["results"][0]
+        )["results"][0]
         record = {
             "selector": decision["selector"],
             "proposed": decision.get("value"),
@@ -387,12 +385,10 @@ def _map_value(
             },
         }
         if result["status"] == "admissible":
-            iri = result["canonical_values"][0]
             return {
                 **value,
                 "status": "inferred_mapping",
-                "iri": iri,
-                "label": runtime.snapshot.terms[iri].get("label"),
+                **_resolved(runtime, is_iri, result["canonical_values"][0]),
                 "inference": record,
             }
         reason = (
@@ -401,31 +397,79 @@ def _map_value(
             else "selector proposal failed validation"
         )
         return {**value, "status": "unresolved", "iri": None, "reason": reason, "inference": record}
-    reason = (
-        "several authorised terms match exactly"
-        if len(exact) > 1
-        else "no authorised term's label or synonym equals the value"
-    )
-    return {
-        **value,
-        "status": "unresolved",
-        "iri": None,
-        "reason": reason,
-        **({"exact_matches": exact} if len(exact) > 1 else {}),
-    }
+    if is_iri:
+        reason = (
+            "several authorised terms match exactly"
+            if len(exact) > 1
+            else "no authorised term's label or synonym equals the value"
+        )
+    else:
+        reason = "value is not in the field's declared literal value set"
+    unresolved = {**value, "status": "unresolved", "iri": None, "reason": reason}
+    if len(exact) > 1:
+        unresolved["exact_matches"] = exact
+    if deterministic_check is not None and not is_iri:
+        unresolved["validation"] = {"status": "invalid", "errors": deterministic_check["errors"]}
+    return unresolved
 
 
-def write_semantic_record(record: dict, output_dir: Path, destination: Path | None = None) -> Path:
-    """Write the record beside the ingest outputs (never over one of them); returns the path."""
-    target = (
-        Path(destination) if destination else Path(output_dir) / SEMANTIC_DIRNAME / RECORD_FILENAME
-    )
-    if target.name in _PROTECTED:
-        raise SemanticError(f"refusing to write the semantic record over {target.name}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(
-        json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False).encode() + b"\n"
-    )
+def _resolved(runtime: OntologyRuntime, is_iri: bool, resolved: Any) -> dict:
+    if is_iri:
+        return {"iri": resolved, "label": runtime.snapshot.terms[resolved].get("label")}
+    return {"iri": None, "literal": resolved}
+
+
+def write_semantic_record(
+    record: dict,
+    output_dir: Path,
+    name: str | None = None,
+    *,
+    source_dir: Path | None = None,
+) -> Path:
+    """Write the record into ``OUTPUT/semantic/`` only, atomically; returns the path.
+
+    The destination is never an arbitrary path: ``name`` is a plain ``*.json`` file name inside
+    the output's own ``semantic/`` directory. A symlinked ``semantic/`` directory or record, a
+    non-regular existing file, or a ``semantic/`` directory that resolves into the source tree
+    is refused before anything is written. The bytes go to a temporary file in the same directory
+    and replace the record with one ``os.replace``, so a reader sees the old or the new record,
+    never a partial one, and an ingest output or source file can never be overwritten.
+    """
+    name = RECORD_FILENAME if name is None else name
+    if not isinstance(name, str) or not _RECORD_NAME.match(name):
+        raise SemanticError(
+            f"record name {name!r} must be a plain *.json file name; the record is always "
+            f"written inside OUTPUT/{SEMANTIC_DIRNAME}/"
+        )
+    output = Path(output_dir)
+    if output.is_symlink() or not output.is_dir():
+        raise SemanticError(f"{output} is not an ingest output directory")
+    output = output.resolve(strict=True)
+    if not (output / "manifest.json").is_file():
+        raise SemanticError(f"{output} holds no manifest.json; not an ingest output")
+    directory = output / SEMANTIC_DIRNAME
+    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+        raise SemanticError(f"refusing to write through {directory}: not a plain directory")
+    if source_dir is not None:
+        source = Path(source_dir).resolve()
+        if directory.resolve() == source or source in directory.resolve().parents:
+            raise SemanticError("refusing to write the semantic record inside the source tree")
+    directory.mkdir(exist_ok=True)
+    target = directory / name
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise SemanticError(f"refusing to replace {target}: not a regular file")
+    payload = json.dumps(record, indent=2, sort_keys=True, ensure_ascii=False).encode() + b"\n"
+    handle, temporary = tempfile.mkstemp(prefix=".semantic-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
     return target
 
 

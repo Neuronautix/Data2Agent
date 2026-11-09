@@ -784,6 +784,7 @@ def serve(
     semantic_snapshot: Path | None = None,
     semantic_policy: Path | None = None,
     semantic_snapshot_sha256: str | None = None,
+    semantic_tools: list[str] | None = None,
 ) -> None:
     """Run a Data2MCP server over an ingested dataset."""
     service = DatasetService(
@@ -794,5 +795,6 @@ def serve(
         semantic_snapshot=semantic_snapshot,
         semantic_policy=semantic_policy,
         semantic_snapshot_sha256=semantic_snapshot_sha256,
+        semantic_tools=semantic_tools,
     )
     build_server(service).run(transport=transport)

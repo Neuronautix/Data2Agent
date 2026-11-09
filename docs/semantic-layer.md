@@ -79,10 +79,35 @@ and, per value, exactly one status:
 - `unresolved`: everything else, with the reason and the candidates
   considered (listed, never committed).
 
+IRI and literal fields follow the same order: verified source fact, exact
+deterministic match, then a matching external inference, then independent
+validation. An inference becomes `inferred_mapping` only if it passes; otherwise
+the value stays `unresolved` with the inference and its errors attached.
+
 No fuzzy match is ever promoted (BACKLOG, D2A-82). The record has no timestamp,
-so it is byte-identical across runs. A JSON source key is read only after its
-file re-hashes to the manifest's checksum. An inferred decision about a value the
-source does not hold is listed under `rejected_inferences`.
+so it is byte-identical across runs. A JSON source key is read with at most
+8 MiB plus one byte, and only after its file re-hashes to the manifest's
+checksum. An inferred decision about a value the source does not hold is listed
+under `rejected_inferences`.
+
+**Where the record is written.** Always inside `OUTPUT/semantic/`, never
+anywhere else. `--record-name` takes a plain `*.json` file name, not a path. The
+writer refuses:
+
+- a symlinked `semantic/` directory or record file;
+- an existing non-regular file;
+- a `semantic/` directory that resolves into the source tree.
+
+It writes through a temporary file and one atomic `os.replace`. The ingest
+outputs and the source are never written (tested by digest).
+
+**Literal datatypes.** `literal`, `xsd:string`, `xsd:boolean`, `xsd:integer`,
+`xsd:decimal`, `xsd:date` and `xsd:dateTime` are checked against their lexical
+and value spaces, without coercion: `"2026-02-30"` is not a date, `True` is not
+an integer, `NaN` is not a decimal. The supported subset excludes leap seconds,
+hour `24:00:00` and years outside 0001–9999. A policy's literal value set must fit
+its own datatype. A `null` inside a `map` decision is an error, never filtered
+away before the cardinality check.
 
 In the example, `Species: Mus musculus` resolves deterministically to
 NCBITaxon:10090, `License: CC0-1.0` is in the literal set, and the `sex` codes
@@ -91,11 +116,22 @@ mappings only as labelled inferences.
 
 ## Agent-facing tools
 
-`serve --semantic-snapshot S --semantic-policy P` adds
-`get_mapping_constraints`, `search_ontology_terms`, `get_term_context` and
-`validate_semantic_mapping` to whatever mode is served, and
-`get_semantic_mapping` when a record bound to that dataset, manifest, snapshot
-and policy exists. Without the flags every mode's tool list is unchanged (tested).
+`serve --semantic-snapshot S --semantic-policy P` adds the three **retrieval**
+tools, `get_mapping_constraints`, `search_ontology_terms` and
+`get_term_context`, to whatever mode is served. The validator
+(`validate_semantic_mapping`) and the stored record (`get_semantic_mapping`) are
+trusted-side capabilities: they are exposed only when listed explicitly with
+`--semantic-tools NAME,...`. That flag is an exact allow-list: unknown or
+duplicate names are refused, and so is `get_semantic_mapping` without a bound
+record. The service refuses a call to a tool it does not expose, so an evaluated
+agent cannot reach the validator or the sidecar unless the operator chose to
+expose them. A benchmark harness should still enforce its own arm allow-list on
+top of this.
+
+The record is served only when it is bound to this dataset, manifest, **evidence
+ledger**, snapshot and policy; a stale record refuses to start the server.
+
+Without the flags, every mode's tool list is unchanged (tested).
 
 ## Reuse elsewhere
 

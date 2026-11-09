@@ -45,8 +45,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Callable, Iterable
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -61,10 +63,20 @@ TERM_KINDS = ("class", "property", "concept", "individual")
 LITERAL_DATATYPES = (
     "literal",
     "xsd:string",
+    "xsd:boolean",
     "xsd:decimal",
     "xsd:integer",
     "xsd:date",
     "xsd:dateTime",
+)
+# Lexical spaces of the supported XSD datatypes (XML Schema 1.1 Part 2), checked before the value
+# space. Supported subset, by design: no leap seconds, no hour 24:00:00, years 0001-9999.
+_XSD_INTEGER = re.compile(r"^[+-]?[0-9]+$")
+_XSD_DECIMAL = re.compile(r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$")
+_XSD_TZ = r"(Z|[+-](0[0-9]|1[0-3]):[0-5][0-9]|[+-]14:00)?"
+_XSD_DATE = re.compile(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})" + _XSD_TZ + "$")
+_XSD_DATETIME = re.compile(
+    r"^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]+)?" + _XSD_TZ + "$"
 )
 FORMAL_ONLY_NOTE = (
     "formal constraint validity only: the term exists in the pinned snapshot, is a canonical IRI, "
@@ -298,6 +310,10 @@ def _check_field(field_id: str, spec: Any, snapshot: OntologySnapshot) -> dict:
         )
     if datatype == "iri" and allowed.get("values"):
         raise SemanticError(f"policy field {field_id}: literal values need a literal datatype")
+    for value in allowed.get("values", []):
+        problem = literal_error(datatype, value)
+        if problem:
+            raise SemanticError(f"policy field {field_id}: allowed value {value!r} {problem}")
     if datatype != "iri" and set(allowed) - {"values"}:
         raise SemanticError(f"policy field {field_id}: a literal field admits values, not terms")
     for ontology in allowed.get("ontologies", []):
@@ -648,9 +664,19 @@ class OntologyRuntime:
                 return finish("invalid")
             return finish("unresolved")
         field = self.policy.fields[field_id]
-        values = item.get("value")
-        values = values if isinstance(values, list) else [values]
-        values = [v for v in values if v is not None]
+        raw = item.get("value")
+        values = raw if isinstance(raw, list) else [raw]
+        if any(v is None for v in values):
+            # Never filtered away: a null inside a map decision is an error in the payload, and
+            # dropping it would let [valid, None] pass a cardinality of one (no silent repair).
+            errors.append(
+                {
+                    "code": "null_value",
+                    "value": raw,
+                    "message": "a map decision must not contain null values",
+                }
+            )
+            return finish("invalid")
         low, high = field["cardinality"]["min"], field["cardinality"]["max"]
         if len(values) < max(low, 1) or (high is not None and len(values) > high):
             errors.append(
@@ -664,12 +690,13 @@ class OntologyRuntime:
         canonical: list = []
         for value in values:
             if field["datatype"] != "iri":
-                if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+                problem = literal_error(field["datatype"], value)
+                if problem:
                     errors.append(
                         {
                             "code": "datatype_mismatch",
                             "value": value,
-                            "message": f"{field_id} takes a {field['datatype']} literal",
+                            "message": f"{field_id} takes a {field['datatype']} literal: {problem}",
                         }
                     )
                 elif field["allowed"]["values"] and value not in field["allowed"]["values"]:
@@ -725,6 +752,57 @@ class OntologyRuntime:
                 errors.append(error)
             canonical.append(iri)
         return finish("invalid" if errors else "admissible", canonical)
+
+
+def literal_error(datatype: str, value: Any) -> str | None:
+    """Why ``value`` is not in the lexical and value space of ``datatype``, or None when it is.
+
+    Values are never coerced: ``"12"`` is an ``xsd:integer`` lexical form, ``True`` is not an
+    integer, ``float('nan')`` is not a decimal, ``"2026-02-30"`` is not a date.
+    """
+    if isinstance(value, bool):
+        return None if datatype == "xsd:boolean" else "a boolean is not of this datatype"
+    if datatype == "literal":
+        if isinstance(value, str):
+            return None
+        if isinstance(value, (int, float)):
+            return None if math.isfinite(value) else "a non-finite number is not a literal"
+        return "a literal must be a string or a finite number"
+    if datatype == "xsd:boolean":
+        return None if value in ("true", "false", "1", "0") else "not true, false, 1 or 0"
+    if datatype == "xsd:integer":
+        if isinstance(value, int):
+            return None
+        return None if isinstance(value, str) and _XSD_INTEGER.match(value) else "not an integer"
+    if datatype == "xsd:decimal":
+        if isinstance(value, int):
+            return None
+        if isinstance(value, float):
+            return None if math.isfinite(value) else "a non-finite number is not a decimal"
+        return None if isinstance(value, str) and _XSD_DECIMAL.match(value) else "not a decimal"
+    if not isinstance(value, str):
+        return "must be a string"
+    if datatype == "xsd:string":
+        return None
+    if datatype == "xsd:date":
+        match = _XSD_DATE.match(value)
+        if not match:
+            return "not an xsd:date (YYYY-MM-DD with an optional zone)"
+        try:
+            date(int(match[1]), int(match[2]), int(match[3]))
+        except ValueError:
+            return "not a calendar date"
+        return None
+    if datatype == "xsd:dateTime":
+        match = _XSD_DATETIME.match(value)
+        if not match:
+            return "not an xsd:dateTime (YYYY-MM-DDThh:mm:ss with optional fraction and zone)"
+        try:
+            datetime(*(int(match[i]) for i in range(1, 7)))
+        except ValueError:
+            return "not a valid date and time"
+        return None
+    return f"unsupported datatype {datatype}"
 
 
 def _score(query: str, term: dict) -> tuple[float, str]:
