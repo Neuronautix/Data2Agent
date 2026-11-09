@@ -200,6 +200,14 @@ Epic: **#2 — evidence-preserving semantic layer**. Renumbered from the former
 | D2A-89 | Semantic regression fixtures and scoring hooks | #12 | See below — XP14 supplies the first real fixture |
 | D2A-90 | Experimental ontology induction, candidate-generation only | #13 | Induced terms are never asserted as mappings |
 
+First narrow slice (experimental, off by default): `data2agent.semantic` and
+[docs/semantic-layer.md](semantic-layer.md) cover the pinned snapshot and the
+closed-world mapping policy (D2A-82), evidence-bearing deterministic mapping
+records that keep source facts, lookups, inferences and unresolved values apart
+(D2A-83, without reversibility yet) and opt-in Data2MCP tools (part of D2A-87,
+without SHACL). D2A-80's byte-identity criterion is tested; the LinkML contract,
+the statement store (D2A-81) and the SHACL gate (D2A-85) are not started.
+
 The architectural rule, from #2: ingest must not import semantics; semantics
 must not depend on FAIR; FAIR may consume validated semantic results through an
 explicit interface. Semantics stay optional.

@@ -1,0 +1,66 @@
+{
+  "schema_version": "d2a-mapping-policy-1",
+  "policy_id": "d2a-example-preclinical-subject",
+  "version": "1.0.0",
+  "description": "Engineering example policy: which terms the subject fields of the preclinical-minimal example may take.",
+  "snapshot": {
+    "snapshot_id": "d2a-example-preclinical-v1",
+    "sha256": "357597375b9f3f59154ff1eeff55c53a4c6c291cb68e3b5cbaa1790d53f23c98"
+  },
+  "closed_world": true,
+  "fields": {
+    "species": {
+      "description": "species of the subject; laboratory rodents only",
+      "datatype": "iri",
+      "term_kinds": [
+        "class"
+      ],
+      "allowed": {
+        "branches": [
+          "NCBITaxon:9989"
+        ]
+      },
+      "exclude": {
+        "terms": [
+          "NCBITaxon:9989",
+          "NCBITaxon:10066",
+          "NCBITaxon:10088",
+          "NCBITaxon:10114"
+        ]
+      },
+      "cardinality": {
+        "min": 1,
+        "max": 1
+      },
+      "notes": "the branch admits rodent taxa; ranks above species are excluded so a genus is not accepted as a species"
+    },
+    "sex": {
+      "description": "phenotypic sex of the subject",
+      "datatype": "iri",
+      "allowed": {
+        "terms": [
+          "PATO:0000383",
+          "PATO:0000384"
+        ]
+      },
+      "cardinality": {
+        "min": 1,
+        "max": 1
+      }
+    },
+    "license": {
+      "description": "licence identifier (SPDX)",
+      "datatype": "literal",
+      "allowed": {
+        "values": [
+          "CC0-1.0",
+          "CC-BY-4.0"
+        ]
+      },
+      "cardinality": {
+        "min": 1,
+        "max": 1
+      }
+    }
+  }
+}

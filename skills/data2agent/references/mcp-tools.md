@@ -394,6 +394,14 @@ The server is started in a mode that gates which tools exist:
 - `fair-skill`, `fair-semantic` — specified but **not implemented**; requesting
   one fails rather than falling back, so a run is never mislabelled.
 
+Optional, in any mode, only when the server was started with
+`--semantic-snapshot` and `--semantic-policy`: `get_mapping_constraints`,
+`search_ontology_terms` and `get_term_context`. `validate_semantic_mapping` and
+`get_semantic_mapping` appear only when the operator lists them with
+`--semantic-tools`. Search results are
+candidates, not decisions; an admissible term is formally valid, not proven
+correct; leave a value `unresolved` when the evidence does not settle it.
+
 If a tool you expect is absent, check the mode before assuming a fault. If you
 are in `structured` and asked for a FAIR verdict, say the assessment needs a
 `fair-*` mode — do not produce one yourself.

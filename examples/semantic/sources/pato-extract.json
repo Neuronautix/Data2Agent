@@ -1,0 +1,10 @@
+{
+  "format": "d2a-terms-json-1",
+  "note": "Hand-transcribed extract of PATO sex terms for engineering tests; definitions paraphrased, not quoted. Verify against the official PATO release before any research use.",
+  "terms": [
+    {"iri": "http://purl.obolibrary.org/obo/PATO_0000047", "kind": "class", "label": "biological sex", "synonyms": [], "definition": "An organismal quality inhering in an organism by virtue of its reproductive role.", "parents": []},
+    {"iri": "http://purl.obolibrary.org/obo/PATO_0001894", "kind": "class", "label": "phenotypic sex", "synonyms": [], "definition": "Biological sex as determined by the organism's phenotype.", "parents": ["http://purl.obolibrary.org/obo/PATO_0000047"]},
+    {"iri": "http://purl.obolibrary.org/obo/PATO_0000383", "kind": "class", "label": "female", "synonyms": [], "definition": "Phenotypic sex of an organism that produces ova.", "parents": ["http://purl.obolibrary.org/obo/PATO_0001894"]},
+    {"iri": "http://purl.obolibrary.org/obo/PATO_0000384", "kind": "class", "label": "male", "synonyms": [], "definition": "Phenotypic sex of an organism that produces spermatozoa.", "parents": ["http://purl.obolibrary.org/obo/PATO_0001894"]}
+  ]
+}

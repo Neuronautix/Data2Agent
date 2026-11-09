@@ -703,6 +703,32 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         """
         return service.validate_identifier(value)
 
+    def get_mapping_constraints(fields: list[str] | None = None) -> dict[str, Any]:
+        """Per-field constraints of the pinned mapping policy: authorised ontologies,
+        branches and explicit term sets, datatype, cardinality and the admissible IRIs.
+        Only listed terms are admissible (closed world)."""
+        return service.get_mapping_constraints(fields)
+
+    def search_ontology_terms(query: str, field: str, top_k: int = 5) -> dict[str, Any]:
+        """Candidate terms (canonical IRI, label, synonyms, definition, ontology and
+        version) inside one field's authorised scope, ranked by a fixed lexical rule.
+        Candidates are not decisions; an empty list means no authorised term matches."""
+        return service.search_ontology_terms(query, field, top_k)
+
+    def get_term_context(iri: str) -> dict[str, Any]:
+        """Parents, ancestors, children, domain/range, deprecation and version of a term."""
+        return service.get_term_context(iri)
+
+    def validate_semantic_mapping(decisions: list[dict]) -> dict[str, Any]:
+        """Check decisions {field, decision: map|abstain|needs_review, value, reason}
+        against the policy. Formal validity only: not scientific correctness."""
+        return service.validate_semantic_mapping(decisions)
+
+    def get_semantic_mapping() -> dict[str, Any]:
+        """The semantic mapping record bound to this dataset: verified source facts,
+        deterministic transformations, inferred mappings and unresolved values, kept apart."""
+        return service.get_semantic_mapping()
+
     implementations = {
         "dataset_inventory": dataset_inventory,
         "list_files": list_files,
@@ -733,6 +759,11 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         "validate_identifier": validate_identifier,
         "list_snapshot_records": list_snapshot_records,
         "read_snapshot_record": read_snapshot_record,
+        "get_mapping_constraints": get_mapping_constraints,
+        "search_ontology_terms": search_ontology_terms,
+        "get_term_context": get_term_context,
+        "validate_semantic_mapping": validate_semantic_mapping,
+        "get_semantic_mapping": get_semantic_mapping,
     }
     for tool_name in service.available_tools():
         implementation = implementations.get(tool_name)
@@ -750,9 +781,20 @@ def serve(
     mode: str = DEFAULT_MODE,
     transport: str = "stdio",
     evidence_snapshot: Path | None = None,
+    semantic_snapshot: Path | None = None,
+    semantic_policy: Path | None = None,
+    semantic_snapshot_sha256: str | None = None,
+    semantic_tools: list[str] | None = None,
 ) -> None:
     """Run a Data2MCP server over an ingested dataset."""
     service = DatasetService(
-        output_dir, source_dir=source_dir, mode=mode, evidence_snapshot=evidence_snapshot
+        output_dir,
+        source_dir=source_dir,
+        mode=mode,
+        evidence_snapshot=evidence_snapshot,
+        semantic_snapshot=semantic_snapshot,
+        semantic_policy=semantic_policy,
+        semantic_snapshot_sha256=semantic_snapshot_sha256,
+        semantic_tools=semantic_tools,
     )
     build_server(service).run(transport=transport)

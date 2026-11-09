@@ -70,10 +70,71 @@ _MAX_PROVENANCE_LOCATORS = 1024
 # external evidence belongs to the package all conditions see, and a server
 # started without one keeps exactly its mode's historical tool list.
 SNAPSHOT_TOOLS = ("list_snapshot_records", "read_snapshot_record")
+# Offered in every mode, but only when a pinned ontology snapshot and a mapping
+# policy are attached (off by default): the four runtime ontology-constraint
+# operations of data2agent.semantic. The fair-semantic mode itself stays
+# unavailable; attaching these tools changes no mode's historical tool list.
+SEMANTIC_TOOLS = (
+    "get_mapping_constraints",
+    "search_ontology_terms",
+    "get_term_context",
+    "validate_semantic_mapping",
+)
+SEMANTIC_RECORD_TOOL = "get_semantic_mapping"
+# What an attached snapshot exposes unless the operator lists tools explicitly: retrieval
+# only. The validator and the stored sidecar are trusted-side capabilities; an evaluated
+# agent must not reach them by default (benchmark arm contracts, Data2AgentBench #7).
+SEMANTIC_RETRIEVAL_TOOLS = SEMANTIC_TOOLS[:3]
+SEMANTIC_EXPOSABLE_TOOLS = (*SEMANTIC_TOOLS, SEMANTIC_RECORD_TOOL)
 # The resolved join key is carried through query.join_rows in a synthetic
 # column. A NUL cannot occur in a header the readers surface, so it cannot
 # shadow a real column; it is stripped before any row is returned.
 _RESOLVED_KEY = "\x00data2agent:resolved-key"
+
+
+def _resolve_semantic_tools(
+    requested: list[str] | tuple[str, ...] | None, attached: bool, has_record: bool
+) -> tuple[str, ...]:
+    """The exact semantic tools to expose, in a fixed order; unknown or unsatisfiable names fail."""
+    if requested is None:
+        return SEMANTIC_RETRIEVAL_TOOLS if attached else ()
+    if not attached:
+        raise OutputError("--semantic-tools needs --semantic-snapshot and --semantic-policy")
+    wanted = list(requested)
+    unknown = sorted(set(wanted) - set(SEMANTIC_EXPOSABLE_TOOLS))
+    if unknown or len(set(wanted)) != len(wanted):
+        raise OutputError(
+            f"--semantic-tools takes distinct names among {', '.join(SEMANTIC_EXPOSABLE_TOOLS)}; "
+            f"got {wanted}"
+        )
+    if SEMANTIC_RECORD_TOOL in wanted and not has_record:
+        raise OutputError(f"{SEMANTIC_RECORD_TOOL} needs a semantic record bound to this dataset")
+    return tuple(tool for tool in SEMANTIC_EXPOSABLE_TOOLS if tool in wanted)
+
+
+def _load_semantic_record(
+    output_dir: Path, dataset_id: str, manifest_sha256: str, runtime: Any
+) -> dict[str, Any] | None:
+    """The semantic sidecar, if present and bound to this dataset, manifest, snapshot and policy."""
+    from ..semantic.mapping import RECORD_FILENAME, SEMANTIC_DIRNAME
+
+    path = output_dir / SEMANTIC_DIRNAME / RECORD_FILENAME
+    if not path.is_file():
+        return None
+    record = _load_json(path)
+    engine = record.get("engine", {})
+    if (
+        record.get("dataset_id") != dataset_id
+        or record.get("manifest_sha256") != manifest_sha256
+        or record.get("evidence_sha256") != hash_file(output_dir / EVIDENCE_FILENAME)
+        or engine.get("snapshot", {}).get("sha256") != runtime.snapshot.sha256
+        or engine.get("policy", {}).get("sha256") != runtime.policy.sha256
+    ):
+        raise OutputError(
+            f"{SEMANTIC_DIRNAME}/{RECORD_FILENAME} is bound to another dataset, manifest, "
+            "evidence ledger, snapshot or policy; rebuild it with 'data2agent semantic'"
+        )
+    return record
 
 
 @dataclass
@@ -107,6 +168,10 @@ class DatasetService:
         mode: str = DEFAULT_MODE,
         load_relationships: bool = True,
         evidence_snapshot: Path | None = None,
+        semantic_snapshot: Path | None = None,
+        semantic_policy: Path | None = None,
+        semantic_snapshot_sha256: str | None = None,
+        semantic_tools: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self.output_dir = Path(output_dir).expanduser().resolve()
         self.mode: Mode = resolve_mode(mode)
@@ -152,6 +217,26 @@ class DatasetService:
                 f"evidence snapshot is bound to dataset {self.snapshot.dataset_id}, "
                 f"not {self.dataset_id}"
             )
+        self.semantic = None
+        self.semantic_record = None
+        if (semantic_snapshot is None) != (semantic_policy is None):
+            raise OutputError(
+                "--semantic-snapshot and --semantic-policy are given together or not at all"
+            )
+        if semantic_snapshot is not None:
+            from ..semantic.constraints import OntologyRuntime
+
+            self.semantic = OntologyRuntime.load(
+                semantic_snapshot,
+                semantic_policy,
+                expected_snapshot_sha256=semantic_snapshot_sha256,
+            )
+            self.semantic_record = _load_semantic_record(
+                self.output_dir, self.dataset_id, self.manifest_sha256, self.semantic
+            )
+        self.semantic_tools = _resolve_semantic_tools(
+            semantic_tools, self.semantic is not None, self.semantic_record is not None
+        )
 
     # -- capability surface -------------------------------------------------
 
@@ -165,7 +250,63 @@ class DatasetService:
         return self.provenance.get("started_at")
 
     def available_tools(self) -> list[str]:
-        return list(self.mode.tools) + (list(SNAPSHOT_TOOLS) if self.snapshot else [])
+        tools = list(self.mode.tools) + (list(SNAPSHOT_TOOLS) if self.snapshot else [])
+        return tools + list(self.semantic_tools)
+
+    # -- optional semantic layer (attached explicitly, never by default) ----
+
+    def _require_semantic(self):
+        if self.semantic is None:
+            raise QueryValidationError(
+                "no ontology snapshot and mapping policy are attached to this server"
+            )
+        return self.semantic
+
+    def _semantic_call(self, operation, tool: str):
+        from ..semantic.constraints import SemanticError
+
+        runtime = self._require_semantic()
+        if tool not in self.semantic_tools:
+            raise QueryValidationError(f"{tool} is not exposed by this server")
+        try:
+            return operation(runtime)
+        except SemanticError as error:
+            raise QueryValidationError(str(error)) from None
+
+    def get_mapping_constraints(self, fields: list[str] | None = None) -> dict[str, Any]:
+        """Per-field admissible scope, datatype and cardinality from the pinned policy."""
+        return self._semantic_call(
+            lambda runtime: runtime.get_mapping_constraints({"fields": fields} if fields else None),
+            "get_mapping_constraints",
+        )
+
+    def search_ontology_terms(self, query: str, field: str, top_k: int = 5) -> dict[str, Any]:
+        """Candidate terms inside one field's authorised scope; never commits to one."""
+        return self._semantic_call(
+            lambda runtime: runtime.search_ontology_terms(query, field, top_k),
+            "search_ontology_terms",
+        )
+
+    def get_term_context(self, iri: str) -> dict[str, Any]:
+        return self._semantic_call(
+            lambda runtime: runtime.get_term_context(iri), "get_term_context"
+        )
+
+    def validate_semantic_mapping(self, decisions: list[dict]) -> dict[str, Any]:
+        """Formal validation of mapping decisions; not a verdict on scientific correctness."""
+        return self._semantic_call(
+            lambda runtime: runtime.validate_semantic_mapping(decisions),
+            "validate_semantic_mapping",
+        )
+
+    def get_semantic_mapping(self) -> dict[str, Any]:
+        if SEMANTIC_RECORD_TOOL not in self.semantic_tools:
+            raise QueryValidationError(f"{SEMANTIC_RECORD_TOOL} is not exposed by this server")
+        if self.semantic_record is None:
+            raise QueryValidationError(
+                "no semantic mapping record bound to this dataset and policy"
+            )
+        return self.semantic_record
 
     def available_resources(self) -> list[str]:
         return list(self.mode.resources)

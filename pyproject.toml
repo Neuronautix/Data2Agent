@@ -32,6 +32,9 @@ xlsx = ["openpyxl>=3.1"]
 # Genuine legacy BIFF .xls, binary .xlsb and OpenDocument .ods (D2A-94).
 # Optional for the same reason as 'xlsx'; OOXML stays on openpyxl either way.
 workbooks = ["python-calamine>=0.8"]
+# Compiling an ontology snapshot from RDF artifacts (build time only). The
+# optional semantic layer reads the compiled JSON with the standard library.
+semantic-build = ["rdflib>=7.0"]
 dev = [
   "pytest>=8.0",
   "ruff>=0.5",

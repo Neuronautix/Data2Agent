@@ -1,0 +1,15 @@
+{
+  "format": "d2a-terms-json-1",
+  "note": "Hand-transcribed extract of NCBITaxon terms for engineering tests. Intermediate ranks between the listed taxa are omitted, so 'parents' is a shortened lineage, not the full NCBITaxon tree. Verify every IRI, label and synonym against the official NCBITaxon release before any research use.",
+  "terms": [
+    {"iri": "http://purl.obolibrary.org/obo/NCBITaxon_40674", "kind": "class", "label": "Mammalia", "synonyms": ["mammals"], "definition": null, "parents": []},
+    {"iri": "http://purl.obolibrary.org/obo/NCBITaxon_9989", "kind": "class", "label": "Rodentia", "synonyms": ["rodents"], "definition": null, "parents": ["http://purl.obolibrary.org/obo/NCBITaxon_40674"]},
+    {"iri": "http://purl.obolibrary.org/obo/NCBITaxon_10066", "kind": "class", "label": "Muridae", "synonyms": [], "definition": null, "parents": ["http://purl.obolibrary.org/obo/NCBITaxon_9989"]},
+    {"iri": "http://purl.obolibrary.org/obo/NCBITaxon_10088", "kind": "class", "label": "Mus", "synonyms": [], "definition": null, "parents": ["http://purl.obolibrary.org/obo/NCBITaxon_10066"]},
+    {"iri": "http://purl.obolibrary.org/obo/NCBITaxon_10090", "kind": "class", "label": "Mus musculus", "synonyms": ["house mouse", "mouse"], "definition": null, "parents": ["http://purl.obolibrary.org/obo/NCBITaxon_10088"]},
+    {"iri": "http://purl.obolibrary.org/obo/NCBITaxon_10114", "kind": "class", "label": "Rattus", "synonyms": [], "definition": null, "parents": ["http://purl.obolibrary.org/obo/NCBITaxon_10066"]},
+    {"iri": "http://purl.obolibrary.org/obo/NCBITaxon_10116", "kind": "class", "label": "Rattus norvegicus", "synonyms": ["Norway rat", "rat"], "definition": null, "parents": ["http://purl.obolibrary.org/obo/NCBITaxon_10114"]},
+    {"iri": "http://purl.obolibrary.org/obo/NCBITaxon_9443", "kind": "class", "label": "Primates", "synonyms": [], "definition": null, "parents": ["http://purl.obolibrary.org/obo/NCBITaxon_40674"]},
+    {"iri": "http://purl.obolibrary.org/obo/NCBITaxon_9606", "kind": "class", "label": "Homo sapiens", "synonyms": ["human"], "definition": null, "parents": ["http://purl.obolibrary.org/obo/NCBITaxon_9443"]}
+  ]
+}
