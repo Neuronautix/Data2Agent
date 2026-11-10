@@ -7,6 +7,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from ...errors import LookupRejected, echo
+
 
 def _item(
     identifier: str,
@@ -354,7 +356,9 @@ def list_principles() -> dict[str, Any]:
 def get_principle(identifier: str) -> dict[str, Any]:
     """Return the Foundation interpretation contract for one item."""
     if identifier not in _BY_ID:
-        raise KeyError(f"unknown FAIR principle '{identifier}'; known: {', '.join(_BY_ID)}")
+        raise LookupRejected(
+            f"unknown FAIR principle '{echo(identifier)}'; known: {', '.join(_BY_ID)}"
+        )
     item = deepcopy(_BY_ID[identifier])
     item["evidence_plan"] = _evidence_plan(item)
     item["acceptance_criteria"] = (

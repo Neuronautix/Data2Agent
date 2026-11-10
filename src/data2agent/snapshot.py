@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .build import build_version
-from .errors import Data2AgentError
+from .errors import Data2AgentError, LookupRejected, QueryValidationError, echo, name_list
 from .ingest.checksum import hash_bytes, hash_file
 
 SPEC_VERSION = "1.0"
@@ -187,8 +187,8 @@ class Snapshot:
     def _record(self, record_id: str) -> dict[str, Any]:
         record = self._records.get(record_id)
         if record is None:
-            known = ", ".join(sorted(self._records))
-            raise KeyError(f"no snapshot record {record_id!r}; records are: {known}")
+            known = name_list(sorted(self._records))
+            raise LookupRejected(f"no snapshot record '{echo(record_id)}'; records are: {known}")
         return record
 
     def _verified_body(self, record_id: str) -> bytes | None:
@@ -227,7 +227,9 @@ class Snapshot:
 
     def read(self, record_id: str, *, offset: int = 0, limit: int = 8192) -> dict[str, Any]:
         if offset < 0 or not 0 < limit <= MAX_READ_CHARS:
-            raise ValueError(f"offset must be >= 0 and limit between 1 and {MAX_READ_CHARS}")
+            raise QueryValidationError(
+                f"offset must be >= 0 and limit between 1 and {MAX_READ_CHARS}"
+            )
         record = self._record(record_id)
         body = self._verified_body(record_id)
         meta = {key: value for key, value in record.items() if key != "body_path"}
