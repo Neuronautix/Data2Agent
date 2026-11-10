@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..build import build_version
-from ..errors import QueryError
+from ..errors import LookupRejected, QueryError
 from ..query.operations import AGGREGATES, FILTER_OPERATORS, _validate_filters
 from .modes import DEFAULT_MODE
 from .service import DatasetService
@@ -61,13 +61,20 @@ def _tool_error_class() -> Any:
 
 
 def _expose_query_errors(function: Any) -> Any:
-    """Expose anticipated query rejections without leaking unexpected crashes."""
+    """Expose anticipated rejections without leaking unexpected crashes.
+
+    A QueryError (a query the dataset cannot answer, or an invalid argument) and
+    a LookupRejected (an unknown path, claim id, metadata file, principle, rule
+    or snapshot record) are caused by the caller's input, so the client gets
+    their message and can correct the call (#99). Any other exception, including
+    a plain KeyError from a bug, stays masked by the SDK.
+    """
 
     @wraps(function)
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         try:
             return function(*args, **kwargs)
-        except QueryError as error:
+        except (QueryError, LookupRejected) as error:
             raise _tool_error_class()(str(error)) from None
 
     return wrapped

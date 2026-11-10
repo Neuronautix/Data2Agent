@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..errors import LookupRejected, echo
 from ..evidence import EvidenceLedger
 
 # The four outcomes, and only these four.
@@ -79,7 +80,9 @@ class Profile:
             if rule.id == rule_id:
                 return rule
         known = ", ".join(rule.id for rule in self.rules)
-        raise KeyError(f"no rule '{rule_id}' in profile '{self.id}'; known rules: {known}")
+        raise LookupRejected(
+            f"no rule '{echo(rule_id)}' in profile '{self.id}'; known rules: {known}"
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
