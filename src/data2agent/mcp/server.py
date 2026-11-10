@@ -592,6 +592,11 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         Collected once before the run (DOI resolution, repository records,
         policy pages). No network call is made now. A network_error or
         not_reached record is not evidence that the resource is absent.
+        truncated means the body is not proven whole; truncation_reason says
+        why: body_limit (cut by the collector), partial_range (the server sent
+        part of the document), range_inconsistent (the server's range header
+        contradicts the body it sent; nothing shows a part is missing), or
+        not_recorded (collected before reasons were recorded).
         """
         return service.list_snapshot_records()
 

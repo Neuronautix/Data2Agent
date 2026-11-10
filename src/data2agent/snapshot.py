@@ -27,7 +27,13 @@ from .errors import Data2AgentError
 from .ingest.checksum import hash_bytes, hash_file
 
 SPEC_VERSION = "1.0"
-FORMAT_VERSION = "1.0"
+FORMAT_VERSION = "1.1"
+# 1.0 snapshots stay readable as collected: their records predate
+# ``truncation_reason``, so a truncated one is served with the reason
+# ``not_recorded`` -- unknown, never "not truncated".
+READABLE_FORMAT_VERSIONS = ("1.0", FORMAT_VERSION)
+TRUNCATION_REASONS = ("body_limit", "partial_range", "range_inconsistent")
+UNRECORDED_REASON = "not_recorded"
 SNAPSHOT_FILENAME = "snapshot.json"
 BODIES_DIRNAME = "bodies"
 MAX_REQUESTS = 64
@@ -130,6 +136,8 @@ def _collect_into(spec: dict[str, Any], output_dir: Path, fetch: Any) -> dict[st
             relative = f"{BODIES_DIRNAME}/{item['id']}{_extension(observation.get('content_type'))}"
             (output_dir / relative).write_bytes(body)
             record.update(body_path=relative, body_sha256=hash_bytes(body), body_bytes=len(body))
+        # Never write a record the loader would refuse.
+        _served_record(record, FORMAT_VERSION, output_dir / SNAPSHOT_FILENAME)
         records.append(record)
     snapshot = {
         "snapshot_format_version": FORMAT_VERSION,
@@ -163,6 +171,33 @@ def _utf8_text(body: bytes, *, cut: bool) -> str | None:
     return None
 
 
+def _served_record(record: dict[str, Any], version: str, path: Path) -> dict[str, Any]:
+    """A record as served: the stored fields, plus the truncation reason it implies.
+
+    The stored file is never changed, so a frozen snapshot keeps its SHA-256.
+    A stored reason must agree with ``truncated``; a disagreement refuses the
+    snapshot rather than serving a reason that contradicts the flag.
+    """
+    if "truncated" not in record:  # a failed request: no body, nothing to qualify
+        if "truncation_reason" in record:
+            raise SnapshotError(f"record {record.get('id')!r} in {path}: reason without a body")
+        return record
+    truncated = record["truncated"]
+    if version == "1.0":
+        if "truncation_reason" in record:
+            raise SnapshotError(
+                f"record {record.get('id')!r} in {path}: format 1.0 has no truncation_reason"
+            )
+        return {**record, "truncation_reason": UNRECORDED_REASON if truncated else None}
+    reason = record.get("truncation_reason", "missing")
+    if truncated is not (reason in TRUNCATION_REASONS) or (not truncated and reason is not None):
+        raise SnapshotError(
+            f"record {record.get('id')!r} in {path}: truncation_reason {reason!r} "
+            f"does not agree with truncated={truncated!r}"
+        )
+    return record
+
+
 class Snapshot:
     """A collected snapshot, every body re-checked on load and on each read."""
 
@@ -173,10 +208,13 @@ class Snapshot:
             self.data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             raise SnapshotError(f"cannot read {path}: {error}") from None
-        if self.data.get("snapshot_format_version") != FORMAT_VERSION:
+        version = self.data.get("snapshot_format_version")
+        if version not in READABLE_FORMAT_VERSIONS:
             raise SnapshotError(f"unsupported snapshot format in {path}")
         self.sha256 = hash_file(path)
-        self._records = {record["id"]: record for record in self.data["records"]}
+        self._records = {
+            record["id"]: _served_record(record, version, path) for record in self.data["records"]
+        }
         for record_id in self._records:
             self._verified_body(record_id)
 
@@ -217,7 +255,7 @@ class Snapshot:
             "collector": self.data["collector"],
             "records": [
                 {key: value for key, value in record.items() if key != "body_path"}
-                for record in self.data["records"]
+                for record in self._records.values()
             ],
             "note": (
                 "Observations frozen at collection time, not live checks. A network_error "

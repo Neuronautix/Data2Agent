@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import socket
 
@@ -54,6 +55,7 @@ REACHED = {
     "chain": [{"url": DOI, "status_code": 302}],
     "body": b"<html>DOI 10.5281/zenodo.0000000</html>",
     "truncated": False,
+    "truncation_reason": None,
 }
 FAILED = {
     "source": API,
@@ -136,7 +138,7 @@ def test_a_collection_that_stops_early_leaves_nothing_behind(tmp_path):
 @pytest.mark.parametrize("tail", ["é", "€", "😀"])
 def test_a_cut_utf8_body_serves_its_complete_characters(tmp_path, tail):
     whole = ("x" * 20 + tail).encode()
-    cut = {**REACHED, "body": whole[:-1], "truncated": True}
+    cut = {**REACHED, "body": whole[:-1], "truncated": True, "truncation_reason": "body_limit"}
     out = tmp_path / "snap"
     collect(_spec(), out, fetch=_fake_fetch({DOI: cut, API: FAILED}))
     page = Snapshot(out).read("doi")
@@ -146,7 +148,7 @@ def test_a_cut_utf8_body_serves_its_complete_characters(tmp_path, tail):
 
 
 def test_an_uncut_body_ending_mid_character_is_not_text(tmp_path):
-    broken = {**REACHED, "body": "xé".encode()[:-1], "truncated": False}
+    broken = {**REACHED, "body": "xé".encode()[:-1]}
     out = tmp_path / "snap"
     collect(_spec(), out, fetch=_fake_fetch({DOI: broken, API: FAILED}))
     assert Snapshot(out).read("doi")["text"] is None
@@ -213,6 +215,7 @@ def test_fetch_keeps_body_and_flags_truncation(monkeypatch):
     monkeypatch.setattr("data2agent.profiles.fair.live._request", request)
     result = fetch_public_document(API, accept="application/json", max_body=10)
     assert result["result"] == "reached" and result["truncated"] is True
+    assert result["truncation_reason"] == "body_limit"
     assert result["body"] == b"x" * 10
 
 
@@ -294,7 +297,7 @@ def test_a_body_cut_before_its_content_length_is_not_frozen_as_complete(monkeypa
     finally:
         server.close()
     assert result["result"] == "network_error" and result["error_type"] == "IncompleteRead"
-    assert "body" not in result
+    assert "body" not in result and "truncation_reason" not in result
 
 
 def test_a_body_that_matches_its_content_length_is_kept(monkeypatch):
@@ -305,21 +308,25 @@ def test_a_body_that_matches_its_content_length_is_kept(monkeypatch):
     finally:
         server.close()
     assert result["result"] == "reached" and result["body"] == b"policy prefix"
-    assert result["truncated"] is False
+    assert result["truncated"] is False and result["truncation_reason"] is None
 
 
 @pytest.mark.parametrize(
-    ("content_range", "truncated"),
+    ("content_range", "reason"),
     [
-        ("bytes 0-12/100", True),  # a complete exchange carrying part of the document
-        ("bytes 0-12/*", True),  # extent unknown: completeness cannot be shown
-        ("bytes 5-17/100", True),
-        ("not a range", True),
-        ("bytes 0-12/13", False),
+        ("bytes 0-12/100", "partial_range"),  # a complete exchange carrying part of the document
+        ("bytes 0-12/*", "partial_range"),  # extent unknown: completeness cannot be shown
+        ("bytes 5-17/100", "partial_range"),
+        ("bytes 5-17/13", "partial_range"),  # the beginning is missing, whatever the total says
+        ("not a range", "partial_range"),
+        ("bytes 0-5/14", "partial_range"),  # declared total larger than what came
+        ("bytes 0-4/5", "range_inconsistent"),  # declared total smaller than what came
+        ("bytes 0-5/13", "range_inconsistent"),  # total matches, range end does not
+        ("bytes 0-12/13", None),
     ],
 )
 def test_a_partial_content_answer_is_complete_only_when_its_range_is_whole(
-    monkeypatch, content_range, truncated
+    monkeypatch, content_range, reason
 ):
     head = (
         b"HTTP/1.1 206 Partial Content\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n"
@@ -331,7 +338,173 @@ def test_a_partial_content_answer_is_complete_only_when_its_range_is_whole(
     finally:
         server.close()
     assert result["result"] == "reached" and result["body"] == b"policy prefix"
-    assert result["truncated"] is truncated and result["content_range"] == content_range
+    assert result["truncated"] is (reason is not None)
+    assert result["truncation_reason"] == reason and result["content_range"] == content_range
+
+
+def _range_answer(monkeypatch, content_range, body, *, max_body=1000):
+    head = (
+        b"HTTP/1.1 206 Partial Content\r\nContent-Type: text/html\r\n"
+        + f"Content-Length: {len(body)}\r\nContent-Range: {content_range}\r\n\r\n".encode()
+    )
+    server = _served(monkeypatch, head + body)
+    try:
+        return fetch_public_document(POLICY, accept="text/html", max_body=max_body)
+    finally:
+        server.close()
+
+
+def test_a_body_larger_than_its_declared_total_is_range_inconsistent(monkeypatch):
+    # Observed on a licence page: 206, "bytes 0-11181/11182", 48,742 bytes ending </html>.
+    body = b"<html>" + b"x" * (48_742 - len(b"<html></html>")) + b"</html>"
+    assert len(body) == 48_742
+    result = _range_answer(monkeypatch, "bytes 0-11181/11182", body, max_body=2_000_000)
+    # Fail-closed is unchanged: wholeness is not proven. The reason says why.
+    assert result["truncated"] is True and result["truncation_reason"] == "range_inconsistent"
+    assert result["body"] == body
+
+
+def test_a_partial_answer_with_a_real_missing_part_is_partial_range(monkeypatch):
+    result = _range_answer(monkeypatch, "bytes 0-12/48742", b"<html>partial")
+    assert result["truncated"] is True and result["truncation_reason"] == "partial_range"
+
+
+def test_the_collector_cut_takes_precedence_over_the_range(monkeypatch):
+    result = _range_answer(monkeypatch, "bytes 0-12/13", b"<html>partial", max_body=5)
+    assert result["truncation_reason"] == "body_limit" and result["body"] == b"<html"
+
+
+@pytest.mark.parametrize("reason", ["body_limit", "partial_range", "range_inconsistent", None])
+def test_each_reason_is_frozen_and_served(tmp_path, reason):
+    out = tmp_path / "snap"
+    observed = {**REACHED, "truncated": reason is not None, "truncation_reason": reason}
+    collect(_spec(), out, fetch=_fake_fetch({DOI: observed, API: FAILED}))
+    data = json.loads((out / "snapshot.json").read_text(encoding="utf-8"))
+    assert data["snapshot_format_version"] == "1.1"
+    assert data["records"][0]["truncation_reason"] == reason
+    snapshot = Snapshot(out)
+    doi, failed = snapshot.describe()["records"]
+    assert doi["truncation_reason"] == reason
+    assert snapshot.read("doi")["truncation_reason"] == reason
+    # A failed request has no body, so nothing to qualify: no reason, not null.
+    assert "truncation_reason" not in failed and "truncated" not in failed
+
+
+@pytest.mark.parametrize(
+    ("truncated", "reason"),
+    [(True, None), (False, "body_limit"), (True, "cut somehow"), ("yes", "body_limit")],
+)
+def test_a_reason_that_contradicts_the_flag_is_never_written(tmp_path, truncated, reason):
+    observed = {**REACHED, "truncated": truncated, "truncation_reason": reason}
+    with pytest.raises(SnapshotError, match="does not agree"):
+        collect(_spec(), tmp_path / "snap", fetch=_fake_fetch({DOI: observed, API: FAILED}))
+    assert not (tmp_path / "snap").exists()
+
+
+def test_an_observation_without_a_reason_is_never_written(tmp_path):
+    observed = {key: value for key, value in REACHED.items() if key != "truncation_reason"}
+    with pytest.raises(SnapshotError, match="does not agree"):
+        collect(_spec(), tmp_path / "snap", fetch=_fake_fetch({DOI: observed, API: FAILED}))
+    assert not (tmp_path / "snap").exists()
+
+
+def _rewrite(out, edit):
+    path = out / "snapshot.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    edit(data)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def test_a_current_snapshot_without_reasons_or_with_a_contradiction_is_refused(tmp_path):
+    out, _ = _collected(tmp_path)
+    _rewrite(out, lambda data: data["records"][0].pop("truncation_reason"))
+    with pytest.raises(SnapshotError, match="does not agree"):
+        Snapshot(out)
+    _rewrite(out, lambda data: data["records"][0].update(truncation_reason="body_limit"))
+    with pytest.raises(SnapshotError, match="does not agree"):
+        Snapshot(out)
+    _rewrite(out, lambda data: data["records"][0].update(truncation_reason=None))
+    _rewrite(out, lambda data: data["records"][1].update(truncation_reason=None))
+    with pytest.raises(SnapshotError, match="reason without a body"):
+        Snapshot(out)
+
+
+def _legacy(tmp_path):
+    """A format 1.0 snapshot, as collected before reasons existed."""
+    cut = {**REACHED, "truncated": True, "truncation_reason": "body_limit"}
+    out = tmp_path / "legacy"
+    collect(_spec(), out, fetch=_fake_fetch({DOI: cut, API: FAILED}))
+
+    def downgrade(data):
+        data["snapshot_format_version"] = "1.0"
+        for record in data["records"]:
+            record.pop("truncation_reason", None)
+
+    _rewrite(out, downgrade)
+    return out
+
+
+def test_a_legacy_snapshot_is_served_unchanged_with_its_reason_unknown(tmp_path):
+    out = _legacy(tmp_path)
+    frozen = (out / "snapshot.json").read_bytes()
+    snapshot = Snapshot(out)
+    doi, failed = snapshot.describe()["records"]
+    # Unknown, never null: null would read as "not truncated".
+    assert doi["truncated"] is True and doi["truncation_reason"] == "not_recorded"
+    assert snapshot.read("doi")["truncation_reason"] == "not_recorded"
+    assert "truncation_reason" not in failed
+    # The frozen file, and so the snapshot's identity, is untouched.
+    assert (out / "snapshot.json").read_bytes() == frozen
+    assert snapshot.sha256 == hashlib.sha256(frozen).hexdigest()
+
+
+def test_a_legacy_record_that_was_whole_is_served_as_not_truncated(tmp_path):
+    out = _legacy(tmp_path)
+    _rewrite(out, lambda data: data["records"][0].update(truncated=False))
+    assert Snapshot(out).describe()["records"][0]["truncation_reason"] is None
+
+
+def test_a_legacy_snapshot_carrying_a_reason_is_refused(tmp_path):
+    out = _legacy(tmp_path)
+    _rewrite(out, lambda data: data["records"][0].update(truncation_reason="body_limit"))
+    with pytest.raises(SnapshotError, match="format 1.0 has no truncation_reason"):
+        Snapshot(out)
+
+
+def test_an_unknown_format_is_still_refused(tmp_path):
+    out, _ = _collected(tmp_path)
+    _rewrite(out, lambda data: data.update(snapshot_format_version="2.0"))
+    with pytest.raises(SnapshotError, match="unsupported snapshot format"):
+        Snapshot(out)
+
+
+def test_a_legacy_snapshot_still_attaches_to_a_server(ingested, tmp_path):
+    out = _legacy(tmp_path)
+    service = DatasetService(ingested.output_dir, mode="raw", evidence_snapshot=out)
+    listing = service.list_snapshot_records()
+    assert listing["records"][0]["truncation_reason"] == "not_recorded"
+    frozen = (out / "snapshot.json").read_bytes()
+    assert listing["snapshot_sha256"] == hashlib.sha256(frozen).hexdigest()
+
+
+def test_cli_snapshot_prints_the_truncation_reason(monkeypatch, tmp_path, capsys):
+    body = b"<html>" + b"x" * 30 + b"</html>"
+
+    def request(url, *, accept, max_body):
+        return {
+            "url": url,
+            "status_code": 206,
+            "location": None,
+            "content_type": "text/html",
+            "content_range": "bytes 0-9/10",
+            "body": body,
+        }
+
+    monkeypatch.setattr("data2agent.profiles.fair.live._request", request)
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps(_spec()), encoding="utf-8")
+    assert main(["snapshot", str(spec), "-o", str(tmp_path / "s")]) == 0
+    assert "(truncated: range_inconsistent)" in capsys.readouterr().out
 
 
 def test_fetch_records_an_encoding_failure_instead_of_raising(monkeypatch):

@@ -179,15 +179,34 @@ def _request(value: str, *, accept: str, max_body: int) -> dict[str, Any]:
         connection.close()
 
 
-def _whole_representation(status: int, content_range: str | None, received: int) -> bool:
-    """False when a 206 answer shows, or cannot rule out, that part of the document is missing."""
+TRUNCATION_REASONS = ("body_limit", "partial_range", "range_inconsistent")
+
+
+def _truncation_reason(
+    status: int, content_range: str | None, received: int, max_body: int
+) -> str | None:
+    """Why a kept body is not proven to be the whole document, or None when it is.
+
+    ``body_limit``: the collector cut a body longer than ``max_body``.
+    ``partial_range``: a 206 answer whose range shows, or cannot rule out, a missing part.
+    ``range_inconsistent``: a 206 answer starting at byte 0 whose declared total is
+    smaller than, or whose range end disagrees with, the bytes received. Nothing
+    shows a part is missing, but the headers contradict the body, so wholeness
+    stays unproven.
+    """
+    if received > max_body:
+        return "body_limit"
     if status != 206:
-        return True
+        return None
     match = _CONTENT_RANGE.fullmatch((content_range or "").strip())
     if not match or match[3] == "*":
-        return False
+        return "partial_range"
     start, end, total = (int(group) for group in match.groups())
-    return start == 0 and end + 1 == total == received
+    if start == 0 and end + 1 == total == received:
+        return None
+    if start == 0 and total <= received:
+        return "range_inconsistent"
+    return "partial_range"
 
 
 def check_public_url(value: str) -> str:
@@ -210,7 +229,8 @@ def fetch_public_document(value: str, *, accept: str, max_body: int) -> dict[str
     """Fetch one public document with the probe's address and redirect checks.
 
     Unlike ``probe_public_url`` this keeps the body (at most ``max_body`` bytes,
-    with ``truncated`` set when more was sent), so it can be frozen as evidence.
+    with ``truncated`` set when wholeness is not proven and ``truncation_reason``
+    saying why), so it can be frozen as evidence.
     A failed exchange is reported, never raised: a timeout is an observation.
     """
     clean = check_public_url(value)
@@ -245,7 +265,7 @@ def fetch_public_document(value: str, *, accept: str, max_body: int) -> dict[str
     assert response is not None
     body = response["body"]
     content_range = response.get("content_range")
-    whole = _whole_representation(response["status_code"], content_range, len(body))
+    reason = _truncation_reason(response["status_code"], content_range, len(body), max_body)
     return {
         "source": clean,
         "observed_at": observed_at,
@@ -256,7 +276,8 @@ def fetch_public_document(value: str, *, accept: str, max_body: int) -> dict[str
         "content_range": content_range,
         "chain": chain,
         "body": body[:max_body],
-        "truncated": len(body) > max_body or not whole,
+        "truncated": reason is not None,
+        "truncation_reason": reason,
     }
 
 

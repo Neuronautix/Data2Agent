@@ -541,7 +541,7 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
     snapshot = collect(spec, args.output)
     for record in snapshot["records"]:
         size = "-" if record["body_bytes"] is None else f"{record['body_bytes']} B"
-        cut = " (truncated)" if record.get("truncated") else ""
+        cut = f" (truncated: {record['truncation_reason']})" if record.get("truncated") else ""
         print(f"{record['id']:<24} {record['result']:<14} {size}{cut}")
     print(f"snapshot   : {args.output} (sha256 {snapshot['snapshot_sha256']})")
     return 0
