@@ -41,6 +41,19 @@ data2agent snapshot spec.json -o snapshots/<dataset>    # a new directory
   declared `Content-Length` is a `network_error` (`IncompleteRead`), not a body.
   Reading a cut UTF-8 body serves its text up to the last complete character;
   the stored bytes and checksum are unchanged.
+- `truncated` stays fail-closed: it is `true` whenever wholeness is not proven.
+  `truncation_reason` says why, so a reader can tell a cut body from a server
+  that sent part of a document or headers that contradict the body:
+
+  | `truncation_reason` | Meaning |
+  |---|---|
+  | `body_limit` | the body went past 2 MB and the collector cut it |
+  | `partial_range` | a `206` whose `Content-Range` shows, or cannot rule out, a missing part: unparseable, unknown total (`*`), a start after byte 0, or a declared total larger than the bytes received |
+  | `range_inconsistent` | a `206` starting at byte 0 whose declared total is smaller than the bytes received, or whose range end disagrees with them. Nothing shows a part is missing, but the headers contradict the body, so wholeness is not proven |
+  | `null` | not truncated |
+
+  `body_limit` takes precedence when it applies. A `network_error` record has
+  no body, so it carries neither `truncated` nor `truncation_reason`.
 - A failed request stays in the snapshot as `network_error` (with its error
   type) or `not_reached` (with its status). It is an observation about that
   moment, never evidence that the resource does not exist. Each record keeps
@@ -58,10 +71,27 @@ snapshots/<dataset>/
 ```
 
 A record holds `id`, `url`, `accept`, `purpose`, `observed_at`, `result`,
-`status_code`, `final_url`, `content_type`, the redirect `chain`, `body_path`,
-`body_sha256`, `body_bytes` and `truncated`. The snapshot records a **run**: it
-carries timestamps and never enters `manifest.json` or the dataset identity.
-Freeze `snapshot.json`'s own SHA-256 with the rest of a benchmark package.
+`status_code`, `final_url`, `content_type`, `content_range`, the redirect
+`chain`, `body_path`, `body_sha256`, `body_bytes`, `truncated` and
+`truncation_reason`. The snapshot records a **run**: it carries timestamps and
+never enters `manifest.json` or the dataset identity. Freeze `snapshot.json`'s
+own SHA-256 with the rest of a benchmark package.
+
+### Format versions
+
+`snapshot_format_version` is `1.1` for new snapshots; `1.1` added
+`truncation_reason` and nothing else. `serve` still reads `1.0` snapshots
+exactly as they were collected, so a frozen snapshot keeps its SHA-256 and its
+package stays valid. A `1.0` record predates the reason: when it is
+`truncated`, it is served with `truncation_reason: "not_recorded"` (unknown,
+never `null`, which would read as "not truncated"); when it is not truncated,
+the reason is served as `null`. Recollect a snapshot to get real reasons.
+
+A snapshot fails closed on load, and is never written by `collect`, when a
+record's reason contradicts its flag: a `1.1` body record without a reason, a
+reason outside the list, a reason on a whole body, `null` on a truncated one, a
+reason on a failed request, or any stored reason in a `1.0` snapshot. Any other
+format version is refused.
 
 ## Serving
 
@@ -74,7 +104,7 @@ one, each mode's tool list is unchanged.
 
 | Tool | Returns |
 |---|---|
-| `list_snapshot_records()` | the snapshot's SHA-256, collection time, collector, and each record's metadata |
+| `list_snapshot_records()` | the snapshot's SHA-256, collection time, collector, and each record's metadata, `truncated` and `truncation_reason` included |
 | `read_snapshot_record(record_id, offset=0, limit=8192)` | a slice (at most 32,768 characters) of one UTF-8 body |
 
 Every body is re-hashed when the snapshot loads and again before each read. A

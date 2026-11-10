@@ -57,6 +57,7 @@ def _snapshot(tmp_path):
             "chain": [],
             "body": b"<html>frozen body text</html>",
             "truncated": False,
+            "truncation_reason": None,
         }
 
     spec = {
