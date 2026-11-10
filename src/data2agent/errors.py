@@ -39,3 +39,39 @@ class QueryLookupError(QueryValidationError, KeyError):
     def __str__(self) -> str:
         # KeyError.__str__ would repr() the message; clients need it readable.
         return BaseException.__str__(self)
+
+
+class LookupRejected(Data2AgentError, KeyError):
+    """A caller named something the dataset or server does not have.
+
+    An anticipated miss caused by the caller's own input (an unknown path, claim
+    id, metadata file, principle, rule or snapshot record), so the MCP binding
+    passes its message to the client instead of masking it as an internal crash.
+    Still a KeyError, so callers that caught the KeyError these lookups used to
+    raise keep working. The message names the caller's input (shortened by
+    ``echo``) and server-side names only, never file contents.
+    """
+
+    def __str__(self) -> str:
+        # KeyError.__str__ would repr() the message; clients need it readable.
+        return BaseException.__str__(self)
+
+
+ECHO_LIMIT = 120
+NAMES_LIMIT = 20
+
+
+def echo(value: object, limit: int = ECHO_LIMIT) -> str:
+    """Caller input made safe to repeat in an error: one line, at most ``limit`` chars."""
+    text = "".join(char if char.isprintable() else "?" for char in str(value))
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}... ({len(text)} chars)"
+
+
+def name_list(names: object, limit: int = NAMES_LIMIT) -> str:
+    """A bounded, comma-separated list of server-side names for an error message."""
+    items = [f"'{echo(name)}'" for name in names]  # type: ignore[attr-defined]
+    if len(items) <= limit:
+        return ", ".join(items)
+    return ", ".join(items[:limit]) + f", ... ({len(items) - limit} more)"

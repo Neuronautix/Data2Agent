@@ -20,10 +20,13 @@ from typing import Any
 from .. import query, relationships
 from ..build import build_identity
 from ..errors import (
+    LookupRejected,
     ModeError,
     OutputError,
     QueryLookupError,
     QueryValidationError,
+    echo,
+    name_list,
 )
 from ..evidence import EvidenceLedger
 from ..ingest.checksum import hash_file
@@ -457,8 +460,8 @@ class DatasetService:
             container = _container_error(path, tables, "inspect")
             if container is not None:
                 raise container
-            raise KeyError(
-                f"'{path}' was not profiled as a table; "
+            raise LookupRejected(
+                f"'{echo(path)}' was not profiled as a table; "
                 "call inspect_file for its format and preview"
             )
         integrity = self.verify_file(backing or path)
@@ -1394,8 +1397,8 @@ class DatasetService:
             }
         if status is not None:
             if status not in relationships.STATUSES:
-                raise ValueError(
-                    f"unknown relationship status {status!r}; "
+                raise QueryValidationError(
+                    f"unknown relationship status '{echo(status)}'; "
                     f"choose from {sorted(relationships.STATUSES)}"
                 )
             records = [record for record in records if record.get("status") == status]
@@ -1535,8 +1538,10 @@ class DatasetService:
                 "note": "call get_metadata(path=...) for a file's verbatim contents",
             }
         if path not in recognised:
-            known = ", ".join(sorted(recognised)) or "none recognised"
-            raise KeyError(f"'{path}' is not a recognised metadata file; recognised: {known}")
+            known = name_list(sorted(recognised)) or "none recognised"
+            raise LookupRejected(
+                f"'{echo(path)}' is not a recognised metadata file; recognised: {known}"
+            )
 
         entry = recognised[path]
         carrier = entry.get("file") or path
@@ -1607,7 +1612,7 @@ class DatasetService:
         if claim_id:
             record = self.ledger.get(claim_id)
             if record is None:
-                raise KeyError(f"no claim with id '{claim_id}'")
+                raise LookupRejected(f"no claim with id '{echo(claim_id)}'")
             return {"dataset_id": self.dataset_id, "claims": [record.as_dict()], "total": 1}
 
         matches = self.ledger.query(subject=subject, check=check, contains=contains)
@@ -1755,11 +1760,13 @@ class DatasetService:
         if principle_id is not None:
             get_principle(principle_id)
         if live and not publication_url:
-            raise ValueError("live FAIR assessment requires publication_url")
+            raise QueryValidationError("live FAIR assessment requires publication_url")
         if publication_url and not live:
-            raise ValueError("publication_url requires live=True; network checks are opt-in")
+            raise QueryValidationError(
+                "publication_url requires live=True; network checks are opt-in"
+            )
         if unpublished and (live or publication_url):
-            raise ValueError("an unpublished dataset cannot be probed as a publication")
+            raise QueryValidationError("an unpublished dataset cannot be probed as a publication")
         # run_fair_check verifies the entire source snapshot before any local
         # finding can be used to build a principle-level assessment.
         narrow = self.run_fair_check()
@@ -1959,7 +1966,7 @@ class DatasetService:
         # A URI outside the registry does not exist; one inside it may still be
         # withheld by the mode. The two are different answers and different errors.
         if uri not in ALL_RESOURCES and not uri.startswith("dataset://files/"):
-            raise KeyError(f"unknown resource uri: {uri}")
+            raise LookupRejected(f"unknown resource uri: {echo(uri)}")
         if not self.serves(uri):
             allowed = ", ".join(self.mode.resources) or "none"
             raise ModeError(f"mode '{self.mode.name}' does not serve {uri!r}; it serves: {allowed}")
@@ -2281,7 +2288,7 @@ class DatasetService:
     def _require_entry(self, path: str) -> dict[str, Any]:
         entry = self._by_path.get(path)
         if entry is None:
-            raise KeyError(f"'{path}' is not in the dataset manifest")
+            raise LookupRejected(f"'{echo(path)}' is not in the dataset manifest")
         return entry
 
     def _resolve(self, path: str) -> Path:
@@ -2966,24 +2973,28 @@ def _table_kind(profile: dict[str, Any]) -> str:
     return "worksheet" if profile.get("workbook") else "delimited"
 
 
-def _container_error(path: str, tables: dict[str, Any], verb: str) -> KeyError | None:
+def _container_error(path: str, tables: dict[str, Any], verb: str) -> LookupRejected | None:
     """The error for a key that names a file holding several tables, if it does."""
     inner = sorted(key for key in tables if key.startswith(f"{path}#"))
     if not inner:
         return None
+    shown = f"[{name_list(inner)}]"
     if all(isinstance(tables[key], dict) and tables[key].get("boris") for key in inner):
-        return KeyError(
-            f"'{path}' is a BORIS project holding {len(inner)} table(s); {verb} one of {inner}"
+        return LookupRejected(
+            f"'{echo(path)}' is a BORIS project holding {len(inner)} table(s); "
+            f"{verb} one of {shown}"
         )
     if all(
         isinstance(tables[key], dict) and isinstance(tables[key].get("block"), dict)
         for key in inner
     ):
-        return KeyError(
-            f"'{path}' was declared as {len(inner)} block(s), each its own table; "
-            f"{verb} one of {inner}"
+        return LookupRejected(
+            f"'{echo(path)}' was declared as {len(inner)} block(s), each its own table; "
+            f"{verb} one of {shown}"
         )
-    return KeyError(f"'{path}' is a workbook holding {len(inner)} sheet(s); {verb} one of {inner}")
+    return LookupRejected(
+        f"'{echo(path)}' is a workbook holding {len(inner)} sheet(s); {verb} one of {shown}"
+    )
 
 
 def _backing_file(profile: dict[str, Any], path: str) -> str:
