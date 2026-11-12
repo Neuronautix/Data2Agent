@@ -20,7 +20,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install
-        run: pip install -e '.[mcp,fair,dev]'
+        run: pip install -e '.[mcp,fair,dev,cedar]'
 
       - name: Lint
         run: |

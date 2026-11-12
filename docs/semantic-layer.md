@@ -153,3 +153,71 @@ consumes Data2Agent only through a pinned CLI. Digests at the time of writing:
   distinct values; otherwise the source fact itself is `unresolved`.
 - Nothing here has been evaluated on real data; see Data2AgentBench and the SSIC
   B3 protocol for the experimental design.
+
+## CEDAR and scheme-aware interoperability (draft)
+
+`data2agent.semantic.cedar.compile_profile(profile_bytes, source_root)` reads the
+HCM Recording Minimal v1 YAML and verifies each source path, version and raw
+SHA-256 before compiling a local candidate snapshot and policy. Install the
+optional `cedar` extra for PyYAML and RDF parsing. Its deterministic
+`d2a-cedar-conversion-1` report includes source raw and canonical hashes,
+snapshot and policy documents and canonical hashes, field targets and losses.
+This candidate policy checks only permitted SKOS concepts; it does not validate
+record structure, provenance, expert review, or scientific correctness. Use the
+independent profile checker for those duties. `export_profile` currently returns
+this blocked report and does not emit a CEDAR artifact: profile-level nonblank
+string semantics, dates, SKOS sources, structured QUDT and review rules require
+further conformance work. Do not publish from this report.
+
+`import_template(raw_bytes, snapshot, field_targets, expected_source=..., approval=...)`
+reads JSON only. The narrow candidate subset is explicit CEDAR ontology-class
+lists with single-valued cardinality and a verified object-property target.
+Expected source must bind `id`, `version`, `raw_sha256`, and per-ontology
+`ontologies` with a matching `version` and artifact `sha256` in the snapshot.
+Each field target must declare `entity` (known class), `property` (known OWL
+object property), and `datatype: iri`, and agree with the template context.
+The first exact report contains `binding_sha256`; after independent review,
+passing `approval={"binding_sha256": ..., "approved_by": ...}` returns the
+policy. Drift changes the binding. A blocked report never returns a runnable
+policy. No provider, mutable terminology URL, or template can grant validator or
+review privileges. This importer is deliberately conservative, and rejects
+branches, ontology-wide scopes, value sets, repetitions, defaults, unknown
+constraints, literals and structures; no YAML artifact import is provided.
+The official source fixture and its upstream license are in
+`tests/semantic/fixtures/cedar/`.
+
+Snapshot `d2a-ontology-snapshot-2` records `schemes` and each concept's
+`skos:inScheme` memberships; it keeps SKOS broader separate from class
+subclass relations. Build with `snapshot_schema_version` in the build spec;
+the default remains version 1 and its output is unchanged. Version 2 policies
+support `allowed.schemes` only with `term_kinds: [concept]`. Scheme membership
+is an intersection filter: when combined with explicit terms, ontology scopes,
+or branches, a candidate must be in a listed scheme and in the union of those
+other scopes. With schemes alone, any nondeprecated member is in scope. No
+SKOS concept is converted into an OWL class. Consumers must opt into the v2
+schemas and bind both snapshot and policy digests; v1 consumers do not acquire
+scheme semantics by accident.
+
+`export_class_policy` performs a deliberately narrow reverse: it returns the
+original, pinned CEDAR JSON object only when re-import proves that the reviewed
+policy, target binding and source are unchanged. It cannot synthesize a new
+CEDAR template. The import subset blocks required fields because the runtime
+does not independently check omitted field decisions. Template metadata and
+context schemas must match the shapes pinned from the upstream 1.6 fixture.
+The report JSON Schema is `schemas/d2a-cedar-conversion-1.schema.json`.
+
+| CEDAR/profile feature | Current handling |
+| --- | --- |
+| Explicit class list, optional single field, pinned source | Exact candidate import; unchanged approved source recovery only |
+| Required presence, repeated fields, min/max count | Blocked: runtime does not enforce omitted field decisions |
+| Whole ontology, branch, depth, exclusions, value sets | Blocked; no remote resolution or inferred closed set |
+| Literal datatype, text/numeric/date constraints and defaults | Blocked pending lexical and regex conformance |
+| Nested elements, QUDT quantity, SHACL rules | Blocked; independent structural validation required |
+| SKOS membership | Exact local candidate scope under v2; CEDAR export blocked without a verified source |
+| Evidence, review, unresolved status | External profile validation; never implied by candidate validity |
+
+The exact CEDAR import report binds entity and property identity in the reviewed
+`target_bindings` and approval digest. The mapping-policy runtime validates field
+values and cardinalities; it does not inspect a target RDF graph or prove that a
+caller wrote the value to that property. A trusted consumer must check the
+binding and use its independent RDF/SHACL and evidence validators.

@@ -53,6 +53,8 @@ from pathlib import Path
 from typing import Any
 
 SNAPSHOT_SCHEMA = "d2a-ontology-snapshot-1"
+SNAPSHOT_SCHEMA_2 = "d2a-ontology-snapshot-2"
+POLICY_SCHEMA_2 = "d2a-mapping-policy-2"
 POLICY_SCHEMA = "d2a-mapping-policy-1"
 CONSTRAINTS_CONTRACT = "d2a-mapping-constraints-1"
 VALIDATION_CONTRACT = "d2a-semantic-validation-1"
@@ -138,9 +140,13 @@ class OntologySnapshot:
     """A verified ``d2a-ontology-snapshot-1`` document."""
 
     def __init__(self, data: dict, *, expected_sha256: str | None = None):
-        if not isinstance(data, dict) or data.get("schema_version") != SNAPSHOT_SCHEMA:
+        if not isinstance(data, dict) or data.get("schema_version") not in (
+            SNAPSHOT_SCHEMA,
+            SNAPSHOT_SCHEMA_2,
+        ):
             raise SemanticError(f"ontology snapshot must declare schema_version {SNAPSHOT_SCHEMA}")
         self.data = data
+        self.schema_version = data["schema_version"]
         self.sha256 = sha256_of(data)
         if expected_sha256 is not None and expected_sha256 != self.sha256:
             raise VocabularyUnavailable(
@@ -157,6 +163,16 @@ class OntologySnapshot:
                 r"[0-9a-f]{64}", str(source.get("sha256"))
             ):
                 raise SemanticError("every snapshot source needs a sha256 of the pinned artifact")
+        if self.schema_version == SNAPSHOT_SCHEMA and (
+            "schemes" in data
+            or any("schemes" in t for t in data.get("terms", []) if isinstance(t, dict))
+        ):
+            raise SemanticError("scheme membership requires snapshot 2")
+        self.schemes = (
+            set(data.get("schemes", [])) if self.schema_version == SNAPSHOT_SCHEMA_2 else set()
+        )
+        if any(not isinstance(x, str) or not _IRI.match(x) for x in self.schemes):
+            raise SemanticError("scheme identities must be absolute IRIs")
         self.terms: dict[str, dict] = {}
         for term in data.get("terms") or []:
             iri = term.get("iri") if isinstance(term, dict) else None
@@ -170,6 +186,14 @@ class OntologySnapshot:
                 raise SemanticError(
                     f"term {iri} has kind {term.get('kind')!r}, not one of {TERM_KINDS}"
                 )
+            if self.schema_version == SNAPSHOT_SCHEMA_2:
+                memberships = term.get("schemes", [])
+                if not isinstance(memberships, list) or any(
+                    x not in self.schemes for x in memberships
+                ):
+                    raise SemanticError(f"term {iri} names an unknown scheme")
+                if memberships and term["kind"] != "concept":
+                    raise SemanticError(f"non-concept {iri} has SKOS scheme membership")
             self.terms[iri] = term
         if not self.terms:
             raise SemanticError("snapshot holds no terms")
@@ -177,6 +201,11 @@ class OntologySnapshot:
             for parent in term.get("parents") or []:
                 if parent not in self.terms:
                     raise SemanticError(f"term {iri} names parent {parent} outside the snapshot")
+                if (
+                    self.schema_version == SNAPSHOT_SCHEMA_2
+                    and self.terms[parent]["kind"] != term["kind"]
+                ):
+                    raise SemanticError(f"term {iri} has a parent of another kind")
         self._children: dict[str, list[str]] = {}
         for iri, term in sorted(self.terms.items()):
             for parent in term.get("parents") or []:
@@ -245,9 +274,15 @@ class MappingPolicy:
     """A verified ``d2a-mapping-policy-1`` document bound to one snapshot."""
 
     def __init__(self, data: dict, snapshot: OntologySnapshot):
-        if not isinstance(data, dict) or data.get("schema_version") != POLICY_SCHEMA:
+        if not isinstance(data, dict) or data.get("schema_version") not in (
+            POLICY_SCHEMA,
+            POLICY_SCHEMA_2,
+        ):
             raise SemanticError(f"mapping policy must declare schema_version {POLICY_SCHEMA}")
         self.data = data
+        self.schema_version = data["schema_version"]
+        if self.schema_version == POLICY_SCHEMA_2 and snapshot.schema_version != SNAPSHOT_SCHEMA_2:
+            raise SemanticError("policy 2 requires snapshot 2")
         self.sha256 = sha256_of(data)
         self.policy_id = _require_str(data, "policy_id", "policy")
         self.version = _require_str(data, "version", "policy")
@@ -270,7 +305,7 @@ class MappingPolicy:
             raise SemanticError("mapping policy needs at least one field")
         self.fields: dict[str, dict] = {}
         for field_id, spec in fields.items():
-            self.fields[field_id] = _check_field(field_id, spec, snapshot)
+            self.fields[field_id] = _check_field(field_id, spec, snapshot, self.schema_version)
 
     @classmethod
     def load(cls, path: Path, snapshot: OntologySnapshot) -> MappingPolicy:
@@ -287,7 +322,9 @@ def _require_str(data: dict, key: str, what: str) -> str:
     return value
 
 
-def _check_field(field_id: str, spec: Any, snapshot: OntologySnapshot) -> dict:
+def _check_field(
+    field_id: str, spec: Any, snapshot: OntologySnapshot, policy_schema: str = POLICY_SCHEMA
+) -> dict:
     if not isinstance(spec, dict):
         raise SemanticError(f"policy field {field_id} must be an object")
     allowed = spec.get("allowed") or {}
@@ -296,6 +333,7 @@ def _check_field(field_id: str, spec: Any, snapshot: OntologySnapshot) -> dict:
         "branches",
         "terms",
         "values",
+        *({"schemes"} if policy_schema == POLICY_SCHEMA_2 else set()),
     }:
         raise SemanticError(
             f"policy field {field_id}: allowed takes ontologies, branches, terms and values only"
@@ -316,6 +354,13 @@ def _check_field(field_id: str, spec: Any, snapshot: OntologySnapshot) -> dict:
             raise SemanticError(f"policy field {field_id}: allowed value {value!r} {problem}")
     if datatype != "iri" and set(allowed) - {"values"}:
         raise SemanticError(f"policy field {field_id}: a literal field admits values, not terms")
+    for scheme in allowed.get("schemes", []):
+        if scheme not in snapshot.schemes:
+            raise SemanticError(f"policy field {field_id}: unknown scheme {scheme!r}")
+    if allowed.get("schemes") and spec.get("term_kinds") != ["concept"]:
+        raise SemanticError(f"policy field {field_id}: scheme scope requires concept kind")
+    if allowed.get("schemes") and spec.get("allow_deprecated"):
+        raise SemanticError(f"policy field {field_id}: scheme scope cannot admit deprecated terms")
     for ontology in allowed.get("ontologies", []):
         if ontology not in snapshot.ontologies:
             raise SemanticError(
@@ -363,6 +408,11 @@ def _check_field(field_id: str, spec: Any, snapshot: OntologySnapshot) -> dict:
             "branches": resolved["branches"],
             "terms": resolved["terms"],
             "values": list(allowed.get("values", [])),
+            **(
+                {"schemes": list(allowed.get("schemes", []))}
+                if policy_schema == POLICY_SCHEMA_2
+                else {}
+            ),
         },
         "exclude": {"branches": resolved["exclude_branches"], "terms": resolved["exclude_terms"]},
         "allow_deprecated": bool(spec.get("allow_deprecated", False)),
@@ -409,8 +459,12 @@ class OntologyRuntime:
         if iri in field["exclude"]["terms"] or lineage & set(field["exclude"]["branches"]):
             return False, "excluded"
         allowed = field["allowed"]
+        schemes = allowed.get("schemes", [])
+        if schemes and not set(term.get("schemes", [])) & set(schemes):
+            return False, "outside_scope"
         if (
-            term["ontology"] in allowed["ontologies"]
+            (schemes and not any(allowed[k] for k in ("ontologies", "branches", "terms")))
+            or term["ontology"] in allowed["ontologies"]
             or iri in allowed["terms"]
             or lineage & set(allowed["branches"])
         ):

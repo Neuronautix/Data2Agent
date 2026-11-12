@@ -35,6 +35,7 @@ workbooks = ["python-calamine>=0.8"]
 # Compiling an ontology snapshot from RDF artifacts (build time only). The
 # optional semantic layer reads the compiled JSON with the standard library.
 semantic-build = ["rdflib>=7.0"]
+cedar = ["PyYAML>=6.0", "rdflib>=7.0"]
 dev = [
   "pytest>=8.0",
   "ruff>=0.5",
