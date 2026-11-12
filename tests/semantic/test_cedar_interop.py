@@ -91,6 +91,13 @@ def test_scheme_intersects_explicit_set_and_blocks_quantity(profile):
     assert result["fields"]["sampling_rate"]["codes"] == ["structured_quantity_unsupported"]
     assert result["status"] == "blocked" and result["artifact"] is None
     assert _compile(profile) == result
+    mixed = copy.deepcopy(result["policy"])
+    mixed["fields"]["modality"]["allowed"]["ontologies"] = ["modality"]
+    mixed_runtime = OntologyRuntime(snapshot, MappingPolicy(mixed, snapshot))
+    assert mixed_runtime.admissible_terms("modality") == (
+        "https://example.org/a",
+        "https://example.org/b",
+    )  # selectors are unioned, then scheme-filtered; c belongs to another scheme
     invalid_policy = copy.deepcopy(result["policy"])
     invalid_policy["fields"]["modality"]["allow_deprecated"] = True
     with pytest.raises(SemanticError, match="deprecated"):

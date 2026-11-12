@@ -215,3 +215,9 @@ The report JSON Schema is `schemas/d2a-cedar-conversion-1.schema.json`.
 | Nested elements, QUDT quantity, SHACL rules | Blocked; independent structural validation required |
 | SKOS membership | Exact local candidate scope under v2; CEDAR export blocked without a verified source |
 | Evidence, review, unresolved status | External profile validation; never implied by candidate validity |
+
+The exact CEDAR import report binds entity and property identity in the reviewed
+`target_bindings` and approval digest. The mapping-policy runtime validates field
+values and cardinalities; it does not inspect a target RDF graph or prove that a
+caller wrote the value to that property. A trusted consumer must check the
+binding and use its independent RDF/SHACL and evidence validators.
