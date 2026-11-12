@@ -236,7 +236,9 @@ The supported subset consists of single string and date fields with verified
 datatype-property targets, and the pinned sampling-rate QUDT structure as a
 nested element: numeric decimal editor and a link field for the unit. CEDAR
 records required-value flags and property bindings. Only 0..1 and 1..1 are
-accepted; unknown keys and other repetition are blocked per field. The decimal
+accepted; unknown keys and other repetition are blocked per field. Draft field
+identifiers must use lower snake case and may not start with reserved CEDAR or
+JSON-LD prefixes; invalid identifiers fail closed without renaming. The decimal
 editor is a narrower lexical subset than all numerical representations.
 
 This is a partial editing projection, not full profile validation. The

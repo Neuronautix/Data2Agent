@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from importlib.resources import files
 from pathlib import Path
 
@@ -230,8 +231,23 @@ def export_profile_draft(profile_bytes: bytes, source_root: Path) -> dict:
     The existing conversion-1 API is unchanged. This draft cannot be published or
     interpreted as validating the profile; omissions and external rules are explicit.
     """
-    compiled = compile_profile(profile_bytes, source_root)
     profile = _load_profile(profile_bytes)
+    profile_fields = profile.get("fields")
+    # CEDAR uses template property names as JSON-LD context keys. Restrict the
+    # local contract to its existing lower-snake-case identifiers and reject
+    # reserved CEDAR/JSON-LD prefixes before compilation or any dictionary writes.
+    # Never rename a source field to make it fit the artifact.
+    if not isinstance(profile_fields, dict) or not profile_fields:
+        raise SemanticError("profile has no fields")
+    reserved = ("schema", "xsd", "pav", "oslc", "rdfs", "skos")
+    if any(
+        not isinstance(key, str)
+        or not re.fullmatch(r"[a-z][a-z0-9_]{0,127}", key)
+        or key.startswith(reserved)
+        for key in profile_fields
+    ):
+        raise SemanticError("invalid or reserved CEDAR field identifier")
+    compiled = compile_profile(profile_bytes, source_root)
     baseline = json.loads(files(__package__).joinpath("cedar_baseline.json").read_text("utf-8"))
     template = baseline["template"]
 

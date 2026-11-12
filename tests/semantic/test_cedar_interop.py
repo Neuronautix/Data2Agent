@@ -396,3 +396,36 @@ def test_draft_against_official_metaschema_and_adversarial_inputs(profile):
         assert report["fields"][key]["status"] == "blocked"
         assert key not in report["artifact"]["properties"]
         assert key in report["enforcement"]["omitted_fields"]
+
+
+@pytest.mark.parametrize(
+    "field_id",
+    [
+        "@context",
+        "@type",
+        "@id",
+        "schema:name",
+        "pav:createdBy",
+        "",
+        "schema",
+        "schemafoo",
+        "xsd",
+        "rdfslabel",
+        "$schema",
+        "with.dot",
+        123,
+        None,
+    ],
+)
+def test_draft_rejects_reserved_or_invalid_field_identifiers(profile, field_id):
+    root, doc = profile
+    doc["fields"][field_id] = copy.deepcopy(doc["fields"]["sampling_rate"])
+    with pytest.raises(SemanticError, match="invalid or reserved CEDAR field identifier"):
+        export_profile_draft(yaml.safe_dump(doc, sort_keys=False).encode(), root)
+
+
+def test_draft_rejects_profile_identity_drift(profile):
+    root, doc = profile
+    doc["profile_id"] = "other-profile"
+    with pytest.raises(SemanticError, match="unsupported profile"):
+        export_profile_draft(yaml.safe_dump(doc).encode(), root)
