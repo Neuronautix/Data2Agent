@@ -18,7 +18,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .constraints import SNAPSHOT_SCHEMA, TERM_KINDS, OntologySnapshot, SemanticError
+from .constraints import (
+    SNAPSHOT_SCHEMA,
+    SNAPSHOT_SCHEMA_2,
+    TERM_KINDS,
+    OntologySnapshot,
+    SemanticError,
+)
 
 BUILD_SCHEMA = "d2a-snapshot-build-1"
 TERMS_JSON_FORMAT = "d2a-terms-json-1"
@@ -58,7 +64,9 @@ def _english(values: list) -> list[str]:
     return sorted({str(v) for v in (preferred or values)})
 
 
-def _terms_from_rdf(path: Path, fmt: str, ontology: str, include: Any) -> list[dict]:
+def _terms_from_rdf(
+    path: Path, fmt: str, ontology: str, include: Any, version: str = SNAPSHOT_SCHEMA
+) -> list[dict]:
     try:
         from rdflib import Graph, Literal, URIRef
     except ImportError as error:  # pragma: no cover - depends on the environment
@@ -114,15 +122,50 @@ def _terms_from_rdf(path: Path, fmt: str, ontology: str, include: Any) -> list[d
             str(o).lower() == "true" for o in graph.objects(subject, URIRef(_OWL + "deprecated"))
         )
         replaced = iris(REPLACED_BY)
+        property_types = [
+            name
+            for iri, name in (
+                (_OWL + "ObjectProperty", "object"),
+                (_OWL + "DatatypeProperty", "datatype"),
+                (_OWL + "AnnotationProperty", "annotation"),
+            )
+            if URIRef(iri) in graph.objects(subject, type_iri)
+        ]
         terms.append(
             {
                 "iri": str(subject),
                 "ontology": ontology,
                 "kind": kind,
+                **(
+                    {"property_type": property_types[0] if len(property_types) == 1 else "unknown"}
+                    if version == SNAPSHOT_SCHEMA_2 and kind == "property"
+                    else {}
+                ),
                 "label": labels[0] if labels else None,
                 "synonyms": sorted(set(_english(literals(SYNONYMS))) | set(labels[1:])),
                 "definition": definitions[0] if definitions else None,
-                "parents": [p for p in iris(PARENTS) if p != str(subject)],
+                "parents": [
+                    p
+                    for p in iris(
+                        (
+                            (_SKOS + "broader",)
+                            if kind == "concept"
+                            else (
+                                (_RDFS + "subClassOf",)
+                                if kind == "class"
+                                else (_RDFS + "subPropertyOf",)
+                            )
+                        )
+                        if version == SNAPSHOT_SCHEMA_2
+                        else PARENTS
+                    )
+                    if p != str(subject)
+                ],
+                **(
+                    {"schemes": iris((_SKOS + "inScheme",))}
+                    if version == SNAPSHOT_SCHEMA_2 and kind == "concept"
+                    else {}
+                ),
                 "domain": (iris((_RDFS + "domain",)) or [None])[0],
                 "range": (iris((_RDFS + "range",)) or [None])[0],
                 "deprecated": deprecated,
@@ -150,6 +193,9 @@ def build_snapshot(spec_path: Path) -> dict:
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
     if spec.get("schema_version") != BUILD_SCHEMA:
         raise SemanticError(f"build spec must declare schema_version {BUILD_SCHEMA}")
+    version = spec.get("snapshot_schema_version", SNAPSHOT_SCHEMA)
+    if version not in (SNAPSHOT_SCHEMA, SNAPSHOT_SCHEMA_2):
+        raise SemanticError("unknown snapshot schema version")
     base = spec_path.parent
     terms: dict[str, dict] = {}
     sources = []
@@ -168,7 +214,9 @@ def build_snapshot(spec_path: Path) -> dict:
                 source.get("include"),
             )
         elif fmt in RDF_FORMATS:
-            found = _terms_from_rdf(artifact, fmt, source["ontology"], source.get("include"))
+            found = _terms_from_rdf(
+                artifact, fmt, source["ontology"], source.get("include"), version
+            )
         else:
             raise SemanticError(f"unsupported artifact format {fmt!r}")
         for term in found:
@@ -198,7 +246,7 @@ def build_snapshot(spec_path: Path) -> dict:
         if external:
             term["external_parents"] = external
     snapshot = {
-        "schema_version": SNAPSHOT_SCHEMA,
+        "schema_version": version,
         "snapshot_id": spec["snapshot_id"],
         "description": spec.get("description"),
         "prefixes": spec.get("prefixes", {}),
@@ -206,6 +254,10 @@ def build_snapshot(spec_path: Path) -> dict:
         "sources": sources,
         "terms": [terms[iri] for iri in sorted(terms)],
     }
+    if version == SNAPSHOT_SCHEMA_2:
+        snapshot["schemes"] = sorted(
+            {scheme for term in terms.values() for scheme in term.get("schemes", [])}
+        )
     OntologySnapshot(snapshot)  # the compiled result must load
     return snapshot
 
