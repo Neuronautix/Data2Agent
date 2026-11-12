@@ -6,8 +6,10 @@ profile structure, evidence and review remain the caller's independent duties.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+from importlib.resources import files
 from pathlib import Path
 
 from .compile import _terms_from_rdf
@@ -220,6 +222,183 @@ def compile_profile(profile_bytes: bytes, source_root: Path) -> dict:
 def export_profile(profile_bytes: bytes, source_root: Path) -> dict:
     """Return the deterministic loss report; blocked fields are never exported."""
     return compile_profile(profile_bytes, source_root)
+
+
+def export_profile_draft(profile_bytes: bytes, source_root: Path) -> dict:
+    """Produce a partial, unpersisted CEDAR 1.6 draft and an enforcement manifest.
+
+    The existing conversion-1 API is unchanged. This draft cannot be published or
+    interpreted as validating the profile; omissions and external rules are explicit.
+    """
+    compiled = compile_profile(profile_bytes, source_root)
+    profile = _load_profile(profile_bytes)
+    baseline = json.loads(files(__package__).joinpath("cedar_baseline.json").read_text("utf-8"))
+    template = baseline["template"]
+
+    def clear_identity(item):
+        for name in (
+            "@id",
+            "pav:createdOn",
+            "pav:createdBy",
+            "pav:lastUpdatedOn",
+            "oslc:modifiedBy",
+        ):
+            item[name] = None
+
+    clear_identity(template)
+    template["schema:name"] = profile["profile_id"]
+    template["schema:description"] = "Partial local draft of the pinned HCM profile"
+    template["title"] = profile["profile_id"] + " template schema"
+    template["description"] = "Partial local draft; independent profile validation is required"
+    template["pav:version"] = "0.0.1"
+    template["bibo:status"] = "bibo:draft"
+    original = compiled["fields"]
+    snapshot = OntologySnapshot(compiled["snapshot"])
+    entries = {}
+    allowed_keys = {
+        "definition",
+        "entity",
+        "property",
+        "value_type",
+        "min_count",
+        "max_count",
+        "policy",
+        "evidence",
+        "review",
+        "datatype",
+    }
+    xsd = "http://www.w3.org/2001/XMLSchema#"
+    for key, field in sorted(profile["fields"].items()):
+        entry = copy.deepcopy(original[key])
+        entry["status"] = "blocked"
+        entry["artifact_field"] = None
+        codes = []
+        entity = snapshot.terms.get(field.get("entity"), {})
+        prop = snapshot.terms.get(field.get("property"), {})
+        kind = field.get("value_type")
+        policy = field.get("policy")
+        if set(field) - allowed_keys:
+            codes.append("unknown_field_constraint")
+        if (
+            not isinstance(field.get("min_count"), int)
+            or isinstance(field.get("min_count"), bool)
+            or field.get("min_count") not in (0, 1)
+            or field.get("max_count") != 1
+            or isinstance(field.get("max_count"), bool)
+        ):
+            codes.append("cardinality_not_supported")
+        expected_property_type = "object" if kind == "quantity" else "datatype"
+        if entity.get("kind") != "class" or prop.get("property_type") != expected_property_type:
+            codes.append("target_not_verified_property_type")
+        if not isinstance(field.get("definition"), str) or not field["definition"].strip():
+            codes.append("missing_definition")
+        if kind == "string" and field.get("datatype") == xsd + "string" and policy == {}:
+            example = "Text Field"
+        elif (
+            kind == "date"
+            and field.get("datatype") == xsd + "date"
+            and policy == {"lexical_subset": "YYYY-MM-DD without timezone, years 0001–9999"}
+        ):
+            example = "Datetime Field - Date (YYYY-MM-DD)"
+        elif (
+            kind == "quantity"
+            and field.get("datatype") is None
+            and policy
+            == {
+                "class": "http://qudt.org/schema/qudt/QuantityValue",
+                "numeric_property": "http://qudt.org/schema/qudt/numericValue",
+                "unit_property": "http://qudt.org/schema/qudt/hasUnit",
+                "allowed_units": ["http://qudt.org/vocab/unit/HZ"],
+                "minimum_exclusive": 0,
+            }
+        ):
+            example = "quantity"
+        else:
+            example = None
+            codes.append("value_constraint_not_supported")
+        if codes:
+            entry["codes"] = sorted(set(entry["codes"] + codes))
+            entries[key] = entry
+            continue
+        if example == "quantity":
+            cedar_field = copy.deepcopy(baseline["element"])
+            for child, exemplar, prop_iri in (
+                ("numeric_value", "Numeric - Basic", policy["numeric_property"]),
+                ("unit", "Link", policy["unit_property"]),
+            ):
+                subfield = copy.deepcopy(baseline["fields"][exemplar])
+                subfield["schema:name"] = child
+                clear_identity(subfield)
+                subfield["schema:description"] = prop_iri
+                subfield["title"] = child + " field schema"
+                subfield["description"] = prop_iri
+                subfield["_valueConstraints"]["requiredValue"] = True
+                cedar_field["properties"][child] = subfield
+                cedar_field["properties"]["@context"]["properties"][child] = {"enum": [prop_iri]}
+                cedar_field["properties"]["@context"]["required"].append(child)
+                cedar_field["required"].append(child)
+                cedar_field["_ui"]["order"].append(child)
+                cedar_field["_ui"]["propertyLabels"][child] = child
+                cedar_field["_ui"]["propertyDescriptions"][child] = ""
+        else:
+            cedar_field = copy.deepcopy(baseline["fields"][example])
+        clear_identity(cedar_field)
+        cedar_field["schema:name"] = key
+        cedar_field["schema:description"] = field["definition"]
+        cedar_field["title"] = key + " field schema"
+        cedar_field["description"] = field["definition"]
+        if example != "quantity":
+            cedar_field["_valueConstraints"]["requiredValue"] = bool(field["min_count"])
+        template["properties"][key] = cedar_field
+        template["properties"]["@context"]["properties"][key] = {"enum": [field["property"]]}
+        template["properties"]["@context"]["required"].append(key)
+        template["required"].append(key)
+        template["_ui"]["order"].append(key)
+        template["_ui"]["propertyLabels"][key] = key
+        template["_ui"]["propertyDescriptions"][key] = field["definition"]
+        entry["status"] = "partial"
+        entry["codes"] = ["independent_profile_validation_required"]
+        if example == "quantity":
+            entry["codes"] += [
+                "quantity_unit_and_positive_value_external",
+                "numeric_decimal_ui_subset",
+            ]
+        entry["artifact_field"] = key
+        entries[key] = entry
+    has_fields = any(entry["status"] == "partial" for entry in entries.values())
+    return {
+        "schema_version": "d2a-cedar-draft-export-1",
+        "status": "partial" if has_fields else "blocked",
+        "publication_status": "blocked",
+        "artifact": template if has_fields else None,
+        "artifact_sha256": sha256_of(template) if has_fields else None,
+        "fields": entries,
+        "compile_report": compiled,
+        "enforcement": {
+            "source_profile_sha256": compiled["source"]["raw_sha256"],
+            "required": [
+                "Validate the full pinned profile and SHACL independently, including absent, "
+                "null and nonblank values, per-entity cardinality, lexical subsets and QUDT. "
+                "Quantity units must equal the pinned allowed unit, numeric values must be "
+                "positive, and the CEDAR decimal editor does not cover all numeric lexicals.",
+                "Preserve raw literal values and independently validate annotation evidence "
+                "and review; candidate terms are not scientific validation.",
+                "Do not publish this incomplete draft; blocked fields are omitted from CEDAR.",
+            ],
+            "field_constraints": {
+                k: {
+                    "target": v["target"],
+                    "source_field": v["source_field"],
+                    "cedar_status": v["status"],
+                    "external_validation_required": True,
+                }
+                for k, v in entries.items()
+            },
+            "omitted_fields": sorted(k for k, v in entries.items() if v["status"] == "blocked"),
+            "source_mapping_record": profile.get("mapping_record"),
+            "source_missing_semantics": profile.get("missing_semantics"),
+        },
+    }
 
 
 def import_template(

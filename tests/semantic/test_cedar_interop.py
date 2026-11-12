@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from data2agent.semantic.cedar import compile_profile, export_class_policy, import_template
+from data2agent.semantic.cedar import (
+    compile_profile,
+    export_class_policy,
+    export_profile_draft,
+    import_template,
+)
 from data2agent.semantic.constraints import (
     MappingPolicy,
     OntologyRuntime,
@@ -288,3 +293,106 @@ def test_explicit_classes_need_bound_approval_and_refuse_drift(profile):
     assert (
         import_template(raw, snapshot, wrong_target, expected_source=source)["status"] == "blocked"
     )
+
+
+def test_draft_against_official_metaschema_and_adversarial_inputs(profile):
+    from jsonschema import Draft4Validator, Draft202012Validator
+
+    root, doc = profile
+    ontology = root / "ontology.ttl"
+    ontology.write_text(
+        ontology.read_text(encoding="utf-8")
+        + """
+        <https://example.org/Subject> a <http://www.w3.org/2002/07/owl#Class> .
+        <https://example.org/quantity> a <http://www.w3.org/2002/07/owl#ObjectProperty> .
+        """,
+        encoding="utf-8",
+    )
+    doc["sources"]["ontology"]["sha256"] = hashlib.sha256(ontology.read_bytes()).hexdigest()
+    common = {
+        "definition": "Reported source value.",
+        "entity": "https://example.org/Subject",
+        "property": "https://example.org/property",
+        "value_type": "string",
+        "datatype": "http://www.w3.org/2001/XMLSchema#string",
+        "policy": {},
+        "min_count": 1,
+        "max_count": 1,
+        "evidence": "none",
+        "review": "none",
+    }
+    doc["fields"]["species"] = common
+    doc["fields"]["sampling_rate"] = {
+        **common,
+        "property": "https://example.org/quantity",
+        "value_type": "quantity",
+        "datatype": None,
+        "min_count": 0,
+        "policy": {
+            "class": "http://qudt.org/schema/qudt/QuantityValue",
+            "numeric_property": "http://qudt.org/schema/qudt/numericValue",
+            "unit_property": "http://qudt.org/schema/qudt/hasUnit",
+            "allowed_units": ["http://qudt.org/vocab/unit/HZ"],
+            "minimum_exclusive": 0,
+        },
+    }
+
+    def generate():
+        return export_profile_draft(yaml.safe_dump(doc).encode(), root)
+
+    result = generate()
+    assert result == generate()
+    report_schema = Path("schemas/d2a-cedar-draft-export-1.schema.json")
+    Draft202012Validator(json.loads(report_schema.read_bytes())).validate(result)
+    assert result["publication_status"] == "blocked"
+    assert result["fields"]["species"]["status"] == "partial"
+    assert result["fields"]["sampling_rate"]["status"] == "partial"
+    artifact = result["artifact"]
+    meta = CEDAR.parent / "template-meta-schema.json"
+    assert hashlib.sha256(meta.read_bytes()).hexdigest() == (
+        "602d86e62f7a9662050550c98899ec131b0cd2770703de6564e421a6acd4604d"
+    )
+    Draft4Validator(json.loads(meta.read_bytes())).validate(artifact)
+    assert artifact["@id"] is None
+    assert artifact["properties"]["species"]["_valueConstraints"]["requiredValue"] is True
+    species_schema = Draft4Validator(artifact["properties"]["species"])
+    assert species_schema.is_valid({"@value": "Mus musculus"})
+    assert not species_schema.is_valid({"@id": "https://example.org/taxon"})
+    # These are admitted by CEDAR's instance schema and must be rejected by
+    # the external profile validator, not silently described as enforced here.
+    assert species_schema.is_valid({"@value": None})
+    assert species_schema.is_valid({"@value": ""})
+    assert "species" in artifact["properties"]["@context"]["required"]
+    assert artifact["properties"]["@context"]["properties"]["species"] == {
+        "enum": ["https://example.org/property"]
+    }
+    quantity = artifact["properties"]["sampling_rate"]
+    assert quantity["properties"]["@context"]["properties"]["unit"]["enum"] == [
+        "http://qudt.org/schema/qudt/hasUnit"
+    ]
+    assert (
+        quantity["properties"]["numeric_value"]["_valueConstraints"]["numberType"] == "xsd:decimal"
+    )
+    assert quantity["properties"]["unit"]["_ui"]["inputType"] == "link"
+    assert Draft4Validator(quantity["properties"]["unit"]).is_valid(
+        {"@id": "https://example.org/not-hertz"}
+    )
+    assert "quantity_unit_and_positive_value_external" in result["fields"]["sampling_rate"]["codes"]
+    assert "modality" in result["enforcement"]["omitted_fields"]
+    for mutation in ("unknown", "missing_min", "multiple", "datatype", "unit"):
+        bad = copy.deepcopy(doc)
+        if mutation == "unknown":
+            bad["fields"]["species"]["unknown_rule"] = True
+        elif mutation == "missing_min":
+            del bad["fields"]["species"]["min_count"]
+        elif mutation == "multiple":
+            bad["fields"]["species"]["max_count"] = 2
+        elif mutation == "datatype":
+            bad["fields"]["species"]["value_type"] = "mapping"
+        else:
+            bad["fields"]["sampling_rate"]["policy"]["allowed_units"] = ["https://example.org/unit"]
+        report = export_profile_draft(yaml.safe_dump(bad).encode(), root)
+        key = "sampling_rate" if mutation == "unit" else "species"
+        assert report["fields"][key]["status"] == "blocked"
+        assert key not in report["artifact"]["properties"]
+        assert key in report["enforcement"]["omitted_fields"]
