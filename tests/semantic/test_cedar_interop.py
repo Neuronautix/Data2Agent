@@ -91,6 +91,10 @@ def test_scheme_intersects_explicit_set_and_blocks_quantity(profile):
     assert result["fields"]["sampling_rate"]["codes"] == ["structured_quantity_unsupported"]
     assert result["status"] == "blocked" and result["artifact"] is None
     assert _compile(profile) == result
+    invalid_policy = copy.deepcopy(result["policy"])
+    invalid_policy["fields"]["modality"]["allow_deprecated"] = True
+    with pytest.raises(SemanticError, match="deprecated"):
+        MappingPolicy(invalid_policy, snapshot)
 
 
 def test_source_drift_and_wrong_scheme_fail_closed(profile):

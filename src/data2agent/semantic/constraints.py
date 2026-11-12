@@ -359,6 +359,8 @@ def _check_field(
             raise SemanticError(f"policy field {field_id}: unknown scheme {scheme!r}")
     if allowed.get("schemes") and spec.get("term_kinds") != ["concept"]:
         raise SemanticError(f"policy field {field_id}: scheme scope requires concept kind")
+    if allowed.get("schemes") and spec.get("allow_deprecated"):
+        raise SemanticError(f"policy field {field_id}: scheme scope cannot admit deprecated terms")
     for ontology in allowed.get("ontologies", []):
         if ontology not in snapshot.ontologies:
             raise SemanticError(
