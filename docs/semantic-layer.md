@@ -221,3 +221,37 @@ The exact CEDAR import report binds entity and property identity in the reviewed
 values and cardinalities; it does not inspect a target RDF graph or prove that a
 caller wrote the value to that property. A trusted consumer must check the
 binding and use its independent RDF/SHACL and evidence validators.
+
+### Local partial CEDAR draft export
+
+`export_profile_draft(profile_bytes, source_root)` is an opt-in library API.
+It returns `d2a-cedar-draft-export-1` (schema in `schemas/`) and does not
+change `export_profile` or the existing conversion-1 importer. The draft has
+null identities and provenance metadata, and is not an identified CEDAR
+artifact. `artifact_sha256` is the Data2Agent canonical JSON digest (`sha256_of`),
+not a hash of a particular serialization. Source bytes and pinned ontology
+sources are verified through `compile_profile` before export.
+
+The supported subset consists of single string and date fields with verified
+datatype-property targets, and the pinned sampling-rate QUDT structure as a
+nested element: numeric decimal editor and a link field for the unit. CEDAR
+records required-value flags and property bindings. Only 0..1 and 1..1 are
+accepted; unknown keys and other repetition are blocked per field. Draft field
+identifiers must use lower snake case and may not start with reserved CEDAR or
+JSON-LD prefixes; invalid identifiers fail closed without renaming. The decimal
+editor is a narrower lexical subset than all numerical representations.
+
+This is a partial editing projection, not full profile validation. The
+machine-readable `enforcement.field_constraints` retains each original field
+contract; `omitted_fields` lists blocked fields. In particular, independent
+validation must check per-entity counts, absent/null/nonblank values, datatype,
+calendar/date restrictions, the QuantityValue class, positive number, exact HZ
+unit, and all source evidence/review requirements. CEDAR's instance JSON Schema
+can admit inputs that violate these rules. Raw species, sex, strain and sensor
+technology remain literals; normalized candidate annotations remain separate.
+The SKOS concept sets are available only in the pinned local candidate policy:
+they are not recast as CEDAR ontology classes. Time, duration, SKOS and unpinned
+taxon annotation fields are omitted. `publication_status` is always `blocked`;
+model/schema acceptance is neither permission to publish nor scientific review.
+The Draft 4 CEDAR template meta-schema test is offline and uses the separately
+pinned upstream fixture documented under `tests/semantic/fixtures/cedar/`.

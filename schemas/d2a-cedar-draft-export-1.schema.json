@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Data2Agent local CEDAR partial draft export 1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "publication_status", "artifact", "artifact_sha256", "fields", "compile_report", "enforcement"],
+  "properties": {
+    "schema_version": {"const": "d2a-cedar-draft-export-1"},
+    "status": {"enum": ["partial", "blocked"]},
+    "publication_status": {"const": "blocked"},
+    "artifact": {"type": ["object", "null"]},
+    "artifact_sha256": {"anyOf": [{"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"type": "null"}]},
+    "fields": {"type": "object", "additionalProperties": {"type": "object", "required": ["status", "codes", "target", "source_field", "artifact_field"], "properties": {"status": {"enum": ["partial", "blocked"]}, "codes": {"type": "array", "items": {"type": "string"}}, "artifact_field": {"type": ["string", "null"]}}}},
+    "compile_report": {"type": "object"},
+    "enforcement": {"type": "object", "additionalProperties": false, "required": ["source_profile_sha256", "required", "field_constraints", "omitted_fields", "source_mapping_record", "source_missing_semantics"], "properties": {"source_profile_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "required": {"type": "array", "items": {"type": "string"}}, "field_constraints": {"type": "object"}, "omitted_fields": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}, "source_mapping_record": {"type": ["object", "null"]}, "source_missing_semantics": {"type": ["string", "null"]}}}
+  }
+}

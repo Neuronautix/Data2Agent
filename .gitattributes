@@ -1,1 +1,2 @@
 tests/semantic/fixtures/cedar/SimpleTemplate.json -text
+tests/semantic/fixtures/cedar/template-meta-schema.json -text
