@@ -36,6 +36,8 @@ workbooks = ["python-calamine>=0.8"]
 # optional semantic layer reads the compiled JSON with the standard library.
 semantic-build = ["rdflib>=7.0"]
 cedar = ["PyYAML>=6.0", "rdflib>=7.0"]
+# Validating RDF captured by `data2agent snapshot` (spec 1.1 `validations`).
+rdf-validation = ["rdflib>=7.0"]
 dev = [
   "pytest>=8.0",
   "ruff>=0.5",

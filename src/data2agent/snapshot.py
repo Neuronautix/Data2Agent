@@ -26,12 +26,17 @@ from .build import build_version
 from .errors import Data2AgentError, LookupRejected, QueryValidationError, echo, name_list
 from .ingest.checksum import hash_bytes, hash_file
 
-SPEC_VERSION = "1.0"
-FORMAT_VERSION = "1.1"
+# Spec 1.1 adds optional ``validations``: offline checks of captured RDF.
+SPEC_VERSIONS = ("1.0", "1.1")
+FORMAT_VERSION = "1.2"
 # 1.0 snapshots stay readable as collected: their records predate
 # ``truncation_reason``, so a truncated one is served with the reason
-# ``not_recorded`` -- unknown, never "not truncated".
-READABLE_FORMAT_VERSIONS = ("1.0", FORMAT_VERSION)
+# ``not_recorded`` -- unknown, never "not truncated". 1.2 adds validation
+# records (``kind: rdf_validation``), computed from other records' bodies.
+READABLE_FORMAT_VERSIONS = ("1.0", "1.1", FORMAT_VERSION)
+VALIDATION_KIND = "rdf_validation"
+MAX_VALIDATIONS = 8
+MAX_VOCABULARIES = 8
 TRUNCATION_REASONS = ("body_limit", "partial_range", "range_inconsistent")
 UNRECORDED_REASON = "not_recorded"
 SNAPSHOT_FILENAME = "snapshot.json"
@@ -41,8 +46,10 @@ MAX_BODY_BYTES = 2_000_000
 MAX_READ_CHARS = 32_768
 
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
-_SPEC_FIELDS = {"snapshot_spec_version", "dataset_label", "dataset_id", "requests"}
+_SPEC_FIELDS = {"snapshot_spec_version", "dataset_label", "dataset_id", "requests", "validations"}
 _REQUEST_FIELDS = {"id", "url", "accept", "purpose"}
+_VALIDATION_FIELDS = {"id", "record", "format", "purpose", "vocabularies"}
+_VOCABULARY_FIELDS = {"record", "format", "namespace"}
 _EXTENSIONS = (
     ("json", ".json"),
     ("html", ".html"),
@@ -69,8 +76,11 @@ def validate_spec(spec: Any) -> dict[str, Any]:
 
     if not isinstance(spec, dict) or not set(spec) <= _SPEC_FIELDS:
         raise SnapshotError(f"a snapshot spec is an object with fields {sorted(_SPEC_FIELDS)}")
-    if spec.get("snapshot_spec_version") != SPEC_VERSION:
-        raise SnapshotError(f"snapshot_spec_version must be {SPEC_VERSION!r}")
+    version = spec.get("snapshot_spec_version")
+    if version not in SPEC_VERSIONS:
+        raise SnapshotError(f"snapshot_spec_version must be one of {list(SPEC_VERSIONS)}")
+    if "validations" in spec and version == "1.0":
+        raise SnapshotError("validations need snapshot_spec_version '1.1'")
     _text(spec.get("dataset_label"), "dataset_label", limit=128)
     if spec.get("dataset_id") is not None:
         _text(spec["dataset_id"], "dataset_id", limit=128)
@@ -92,7 +102,55 @@ def validate_spec(spec: Any) -> dict[str, Any]:
             check_public_url(_text(item["url"], f"{item['id']}.url", limit=2048))
         except PublicURLRequired as error:
             raise SnapshotError(f"{item['id']}: {error}") from None
+    if "validations" in spec:
+        _validate_validations(spec["validations"], seen)
     return spec
+
+
+def _validate_validations(validations: Any, request_ids: set[str]) -> None:
+    """Check validation entries against the requests, and that rdflib is present.
+
+    Runs before any network access, so a spec that could not be validated
+    never starts a collection.
+    """
+    from .rdf_validation import FORMATS, RDFValidationUnavailable, require_rdflib
+
+    if not isinstance(validations, list) or not 0 < len(validations) <= MAX_VALIDATIONS:
+        raise SnapshotError(f"validations must list 1 to {MAX_VALIDATIONS} entries")
+    ids = set(request_ids)
+    for item in validations:
+        if not isinstance(item, dict) or set(item) != _VALIDATION_FIELDS:
+            raise SnapshotError(
+                f"each validation has exactly the fields {sorted(_VALIDATION_FIELDS)}"
+            )
+        if not isinstance(item["id"], str) or not _ID.fullmatch(item["id"]):
+            raise SnapshotError(f"validation id {item['id']!r} must match {_ID.pattern}")
+        if item["id"] in ids:
+            raise SnapshotError(f"duplicate record id {item['id']!r}")
+        ids.add(item["id"])
+        _text(item["purpose"], f"{item['id']}.purpose", limit=512)
+        targets = [(item["record"], item["format"])]
+        vocabularies = item["vocabularies"]
+        if not isinstance(vocabularies, list) or len(vocabularies) > MAX_VOCABULARIES:
+            raise SnapshotError(f"{item['id']}.vocabularies must list at most {MAX_VOCABULARIES}")
+        for vocabulary in vocabularies:
+            if not isinstance(vocabulary, dict) or set(vocabulary) != _VOCABULARY_FIELDS:
+                raise SnapshotError(
+                    f"each vocabulary has exactly the fields {sorted(_VOCABULARY_FIELDS)}"
+                )
+            namespace = _text(vocabulary["namespace"], f"{item['id']}.namespace", limit=512)
+            if not namespace.startswith(("http://", "https://")):
+                raise SnapshotError(f"{item['id']}: namespace must be an http(s) IRI")
+            targets.append((vocabulary["record"], vocabulary["format"]))
+        for record_id, fmt in targets:
+            if record_id not in request_ids:
+                raise SnapshotError(f"{item['id']}: {record_id!r} is not a request of this spec")
+            if fmt not in FORMATS:
+                raise SnapshotError(f"{item['id']}: format must be one of {sorted(FORMATS)}")
+    try:
+        require_rdflib()
+    except RDFValidationUnavailable as error:
+        raise SnapshotError(str(error)) from None
 
 
 def _extension(content_type: str | None) -> str:
@@ -125,6 +183,7 @@ def _collect_into(spec: dict[str, Any], output_dir: Path, fetch: Any) -> dict[st
     fetch = fetch or fetch_public_document
     started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     records = []
+    bodies: dict[str, bytes] = {}
     for item in spec["requests"]:
         observation = fetch(item["url"], accept=item["accept"], max_body=MAX_BODY_BYTES)
         body = observation.pop("body", None)
@@ -136,24 +195,64 @@ def _collect_into(spec: dict[str, Any], output_dir: Path, fetch: Any) -> dict[st
             relative = f"{BODIES_DIRNAME}/{item['id']}{_extension(observation.get('content_type'))}"
             (output_dir / relative).write_bytes(body)
             record.update(body_path=relative, body_sha256=hash_bytes(body), body_bytes=len(body))
+            bodies[item["id"]] = body
         # Never write a record the loader would refuse.
         _served_record(record, FORMAT_VERSION, output_dir / SNAPSHOT_FILENAME)
         records.append(record)
+    collector = {
+        "tool": "data2agent",
+        "version": build_version(),
+        "method": "bounded-public-http-get-document",
+        "max_body_bytes": MAX_BODY_BYTES,
+    }
+    if spec.get("validations"):
+        collector["validation"] = _validate_captured(spec, records, bodies, output_dir)
     snapshot = {
         "snapshot_format_version": FORMAT_VERSION,
         "spec": spec,
-        "collector": {
-            "tool": "data2agent",
-            "version": build_version(),
-            "method": "bounded-public-http-get-document",
-            "max_body_bytes": MAX_BODY_BYTES,
-        },
+        "collector": collector,
         "collected_at": started,
         "records": records,
     }
     path = output_dir / SNAPSHOT_FILENAME
     path.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return {**snapshot, "snapshot_sha256": hash_file(path)}
+
+
+def _validate_captured(
+    spec: dict[str, Any], records: list[dict[str, Any]], bodies: dict[str, bytes], output_dir: Path
+) -> dict[str, Any]:
+    """Append one validation record per spec entry, computed offline from frozen bodies."""
+    from .rdf_validation import METHOD, require_rdflib, validate
+
+    version = require_rdflib()
+    by_id = {record["id"]: record for record in records}
+    for item in spec["validations"]:
+        report = validate(
+            (by_id.get(item["record"]), bodies.get(item["record"]), item["format"]),
+            [
+                (by_id.get(v["record"]), bodies.get(v["record"]), v["format"], v["namespace"])
+                for v in item["vocabularies"]
+            ],
+            rdflib_version=version,
+        )
+        body = (json.dumps(report, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        relative = f"{BODIES_DIRNAME}/{item['id']}.json"
+        (output_dir / relative).write_bytes(body)
+        records.append(
+            {
+                "id": item["id"],
+                "kind": VALIDATION_KIND,
+                "validates": item["record"],
+                "purpose": item["purpose"],
+                "result": report["result"],
+                "content_type": "application/json",
+                "body_path": relative,
+                "body_sha256": hash_bytes(body),
+                "body_bytes": len(body),
+            }
+        )
+    return {"method": METHOD, "tool": "rdflib", "version": version}
 
 
 def _utf8_text(body: bytes, *, cut: bool) -> str | None:
@@ -178,6 +277,11 @@ def _served_record(record: dict[str, Any], version: str, path: Path) -> dict[str
     A stored reason must agree with ``truncated``; a disagreement refuses the
     snapshot rather than serving a reason that contradicts the flag.
     """
+    kind = record.get("kind")
+    if kind is not None:
+        if kind != VALIDATION_KIND or version != FORMAT_VERSION or "truncated" in record:
+            raise SnapshotError(f"record {record.get('id')!r} in {path}: unknown record kind")
+        return record
     if "truncated" not in record:  # a failed request: no body, nothing to qualify
         if "truncation_reason" in record:
             raise SnapshotError(f"record {record.get('id')!r} in {path}: reason without a body")
@@ -259,7 +363,9 @@ class Snapshot:
             ],
             "note": (
                 "Observations frozen at collection time, not live checks. A network_error "
-                "or not_reached record is not evidence that the resource is absent."
+                "or not_reached record is not evidence that the resource is absent. A record "
+                "of kind rdf_validation is a report computed offline at collection from other "
+                "records of this snapshot; not_validated there is never a finding."
             ),
         }
 
