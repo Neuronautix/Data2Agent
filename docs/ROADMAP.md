@@ -4,6 +4,9 @@ One rule governs the ordering: **do not debug ingestion, MCP, FAIR logic and
 multi-agent orchestration at the same time.** Each version stabilises one layer
 before the next is allowed to depend on it.
 
+The `v0.x` labels below are roadmap milestones, not package versions: see
+[CHANGELOG.md](../CHANGELOG.md). Package 0.3.0 did not deliver the `v0.3` milestone.
+
 ```text
 v0.1  deterministic core ····································· shipped
       dataset → deterministic ingest → Data2MCP → one agent

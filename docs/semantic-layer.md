@@ -255,3 +255,58 @@ taxon annotation fields are omitted. `publication_status` is always `blocked`;
 model/schema acceptance is neither permission to publish nor scientific review.
 The Draft 4 CEDAR template meta-schema test is offline and uses the separately
 pinned upstream fixture documented under `tests/semantic/fixtures/cedar/`.
+
+## Format versions and compatibility policy
+
+Each optional format is identified by a string ending in an integer:
+`d2a-ontology-snapshot-1` and `-2`, `d2a-mapping-policy-1` and `-2`,
+`d2a-cedar-conversion-1`, `d2a-cedar-draft-export-1`, and the other `d2a-*-1`
+documents above. The integer is that format's **major version**. It is
+independent of the package version, and of the evidence snapshot's
+`snapshot_format_version` (which uses `major.minor`; see
+[evidence-snapshot.md](evidence-snapshot.md)). This policy applies from package
+release 0.3.0; it states what a reader of these formats may rely on, and what a
+change to them costs.
+
+**Within one identifier (for example `d2a-cedar-draft-export-1`), a package
+patch or minor release will not:**
+
+- change the bytes of the output for identical input, or the canonical digest
+  computed over it;
+- add, remove or rename a required field, or change the type, meaning or
+  allowed values of an existing field;
+- loosen what a consumer may assume: `publication_status` of a draft export
+  stays `blocked`, a blocked field stays blocked and a candidate policy stays
+  formal-validity-only;
+- change which identifier a producer writes by default. Snapshot version 1 stays
+  the default; version 2 is selected explicitly (`snapshot_schema_version`).
+
+A fix that does change the output of an identifier is allowed only when the
+previous output violated the published schema or this document. It is listed
+under "Fixed" in the changelog, with the schemas and tests that pin it.
+
+**A new identifier (the next integer) is required for any change that would
+break a consumer of the old one**: a new required field, a field removed or
+renamed, a changed enum or meaning, a changed digest rule, additional properties
+in a schema that sets `additionalProperties: false` (as
+`d2a-cedar-draft-export-1` does), or lifting a blocked state such as
+`publication_status`. The old identifier keeps its documented behaviour. Readers
+must refuse an identifier they do not know rather than guess; consumers must opt
+into a new one, and bind both a snapshot and its policy by digest.
+
+**By release type:**
+
+| Release | May do | May not do |
+| --- | --- | --- |
+| patch (`0.3.x`) | fix defects; add tests and documentation; tighten refusal of invalid input | add an identifier; change the output of an existing one except as described above |
+| minor (`0.x.0`) | add a new identifier and its schema; add optional extras, APIs and flags that are off by default; add new `codes` to a blocked field report (a consumer must treat an unknown code as blocked) | silently change or remove an existing identifier; change a default |
+| a release that removes support for an identifier | only after the previous release has announced it in the changelog | remove one in a patch release |
+
+Until package `1.0`, a minor release is the only place a breaking change may be
+made, and it is always listed in the changelog under "Changed" or "Removed".
+
+**What is not promised.** The Python functions of `data2agent.semantic` are
+experimental and may change in a minor release even when the document formats do
+not. These formats record what a local, pinned computation did; a stable format
+is not a claim that its content is scientifically correct or fit for
+publication.

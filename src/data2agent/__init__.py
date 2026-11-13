@@ -14,7 +14,7 @@ Nothing in the core knows about FAIR, about agents, or about a particular
 coding-agent host. Those sit on top.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 MANIFEST_VERSION = "0.9.0"
 EVIDENCE_VERSION = "0.4.0"
