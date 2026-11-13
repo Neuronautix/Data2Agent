@@ -194,6 +194,48 @@ def test_an_unusable_owlxml_vocabulary_is_not_validated(tmp_path, body):
     assert report["result"] == "not_validated"
 
 
+RELATIVE_VOCAB_RDFXML = b"""<?xml version="1.0"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:owl="http://www.w3.org/2002/07/owl#">
+  <owl:Class rdf:about="#Study"/>
+  <owl:Class rdf:about="#Assay"/>
+  <owl:ObjectProperty rdf:about="#hasPart"/>
+  <owl:DatatypeProperty rdf:about="#title"/>
+</rdf:RDF>
+"""
+
+
+def test_relative_iris_resolve_against_the_url_the_body_was_served_from(tmp_path):
+    vocab = {
+        **_observed(VOCAB, RELATIVE_VOCAB_RDFXML, content_type="application/rdf+xml"),
+        "final_url": NS.rstrip("#"),  # e.g. after a redirect to the ontology IRI
+    }
+    spec = _spec(vocab_format="rdfxml")
+    _, _, report = _collect(tmp_path, _observed(DATA, GOOD_TTL), vocab, spec=spec)
+    assert report["result"] == "conforms"
+    assert report["vocabularies"][0]["terms_defined"] == 4
+    assert report["base_iri"] == DATA
+
+
+@pytest.mark.parametrize(
+    "role, status, body",
+    [
+        ("data", 404, b"<html>Not found</html>"),
+        ("data", 503, b""),  # an empty error body would parse as empty Turtle
+        ("vocab", 404, b"<html>Not found</html>"),
+    ],
+)
+def test_an_http_error_response_is_never_validated_as_the_document(tmp_path, role, status, body):
+    url = DATA if role == "data" else VOCAB
+    error_page = {**_observed(url, body, content_type="text/html"), "result": "not_reached"}
+    error_page["status_code"] = status
+    data = error_page if role == "data" else _observed(DATA, GOOD_TTL)
+    vocab = error_page if role == "vocab" else None
+    _, _, report = _collect(tmp_path, data, vocab)
+    assert report["result"] == "not_validated"
+    assert any("not reached" in reason for reason in report["reasons"])
+
+
 def test_owlxml_is_accepted_for_vocabularies_only():
     spec = _spec(data_format="owlxml")
     with pytest.raises(SnapshotError, match="format must be one of"):
