@@ -28,12 +28,15 @@ from .ingest.checksum import hash_bytes, hash_file
 
 # Spec 1.1 adds optional ``validations``: offline checks of captured RDF.
 SPEC_VERSIONS = ("1.0", "1.1")
-FORMAT_VERSION = "1.2"
+FORMAT_VERSION = "1.1"
+# Written only when a spec asks for validations: 1.2 adds validation records
+# (``kind: rdf_validation``), computed from other records' bodies. A snapshot
+# without validations stays 1.1, readable by earlier versions.
+VALIDATION_FORMAT_VERSION = "1.2"
 # 1.0 snapshots stay readable as collected: their records predate
 # ``truncation_reason``, so a truncated one is served with the reason
-# ``not_recorded`` -- unknown, never "not truncated". 1.2 adds validation
-# records (``kind: rdf_validation``), computed from other records' bodies.
-READABLE_FORMAT_VERSIONS = ("1.0", "1.1", FORMAT_VERSION)
+# ``not_recorded`` -- unknown, never "not truncated".
+READABLE_FORMAT_VERSIONS = ("1.0", FORMAT_VERSION, VALIDATION_FORMAT_VERSION)
 VALIDATION_KIND = "rdf_validation"
 MAX_VALIDATIONS = 8
 MAX_VOCABULARIES = 8
@@ -208,7 +211,9 @@ def _collect_into(spec: dict[str, Any], output_dir: Path, fetch: Any) -> dict[st
     if spec.get("validations"):
         collector["validation"] = _validate_captured(spec, records, bodies, output_dir)
     snapshot = {
-        "snapshot_format_version": FORMAT_VERSION,
+        "snapshot_format_version": (
+            VALIDATION_FORMAT_VERSION if spec.get("validations") else FORMAT_VERSION
+        ),
         "spec": spec,
         "collector": collector,
         "collected_at": started,
@@ -279,7 +284,7 @@ def _served_record(record: dict[str, Any], version: str, path: Path) -> dict[str
     """
     kind = record.get("kind")
     if kind is not None:
-        if kind != VALIDATION_KIND or version != FORMAT_VERSION or "truncated" in record:
+        if kind != VALIDATION_KIND or version != VALIDATION_FORMAT_VERSION or "truncated" in record:
             raise SnapshotError(f"record {record.get('id')!r} in {path}: unknown record kind")
         return record
     if "truncated" not in record:  # a failed request: no body, nothing to qualify

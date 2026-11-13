@@ -79,8 +79,8 @@ own SHA-256 with the rest of a benchmark package.
 
 ### Format versions
 
-`snapshot_format_version` is `1.2` for new snapshots; `1.1` added
-`truncation_reason` and nothing else. `serve` still reads `1.0` snapshots
+`snapshot_format_version` is `1.1` for new snapshots, or `1.2` when the spec
+asks for validations; `1.1` added `truncation_reason` and nothing else. `serve` still reads `1.0` snapshots
 exactly as they were collected, so a frozen snapshot keeps its SHA-256 and its
 package stays valid. A `1.0` record predates the reason: when it is
 `truncated`, it is served with `truncation_reason: "not_recorded"` (unknown,
@@ -93,8 +93,9 @@ reason, a reason outside the list, a reason on a whole body, `null` on a
 truncated one, a reason on a failed request, or any stored reason in a `1.0`
 snapshot. Any other format version is refused.
 
-`1.2` adds validation records (below) and nothing else; `1.0` and `1.1`
-snapshots stay readable unchanged. A record carrying a `kind` is refused in a
+`1.2` adds validation records (below) and nothing else, and is written only
+when a spec asks for validations; `1.0` and `1.1` snapshots stay readable
+unchanged. A record carrying a `kind` is refused in a
 `1.0` or `1.1` snapshot, and any `kind` other than `rdf_validation` is refused.
 
 ## Validating captured RDF
