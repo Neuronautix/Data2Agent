@@ -603,7 +603,10 @@ def build_server(service: DatasetService, *, name: str = "data2agent") -> Any:
         why: body_limit (cut by the collector), partial_range (the server sent
         part of the document), range_inconsistent (the server's range header
         contradicts the body it sent; nothing shows a part is missing), or
-        not_recorded (collected before reasons were recorded).
+        not_recorded (collected before reasons were recorded). A record of kind
+        rdf_validation has no URL: it is a report computed offline at
+        collection from other records (RDF syntax, and terms checked against a
+        captured vocabulary); its result not_validated is never a finding.
         """
         return service.list_snapshot_records()
 

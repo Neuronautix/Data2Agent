@@ -79,8 +79,8 @@ own SHA-256 with the rest of a benchmark package.
 
 ### Format versions
 
-`snapshot_format_version` is `1.1` for new snapshots; `1.1` added
-`truncation_reason` and nothing else. `serve` still reads `1.0` snapshots
+`snapshot_format_version` is `1.1` for new snapshots, or `1.2` when the spec
+asks for validations; `1.1` added `truncation_reason` and nothing else. `serve` still reads `1.0` snapshots
 exactly as they were collected, so a frozen snapshot keeps its SHA-256 and its
 package stays valid. A `1.0` record predates the reason: when it is
 `truncated`, it is served with `truncation_reason: "not_recorded"` (unknown,
@@ -88,10 +88,66 @@ never `null`, which would read as "not truncated"); when it is not truncated,
 the reason is served as `null`. Recollect a snapshot to get real reasons.
 
 A snapshot fails closed on load, and is never written by `collect`, when a
-record's reason contradicts its flag: a `1.1` body record without a reason, a
-reason outside the list, a reason on a whole body, `null` on a truncated one, a
-reason on a failed request, or any stored reason in a `1.0` snapshot. Any other
-format version is refused.
+record's reason contradicts its flag: a `1.1` or `1.2` body record without a
+reason, a reason outside the list, a reason on a whole body, `null` on a
+truncated one, a reason on a failed request, or any stored reason in a `1.0`
+snapshot. Any other format version is refused.
+
+`1.2` adds validation records (below) and nothing else, and is written only
+when a spec asks for validations; `1.0` and `1.1` snapshots stay readable
+unchanged. A record carrying a `kind` is refused in a
+`1.0` or `1.1` snapshot, and any `kind` other than `rdf_validation` is refused.
+
+## Validating captured RDF
+
+A FAIR I1 check asks whether a formal representation was validated. For RDF the
+collector has itself captured, spec version `1.1` can ask for a validation,
+computed **offline** right after the fetches from the frozen bodies; nothing
+more is fetched:
+
+```json
+{
+  "snapshot_spec_version": "1.1",
+  "dataset_label": "example-published",
+  "requests": [
+    {"id": "study-rdf", "url": "https://repository.example/studies/1.rdf",
+     "accept": "application/rdf+xml", "purpose": "I1/1-I1/2 representation"},
+    {"id": "vocab", "url": "https://vocabulary.example/ontology.owl",
+     "accept": "application/rdf+xml", "purpose": "I1/3 vocabulary the data declares"}
+  ],
+  "validations": [
+    {"id": "study-rdf-validation", "record": "study-rdf", "format": "rdfxml",
+     "purpose": "I1/3 validation of the representation",
+     "vocabularies": [{"record": "vocab", "format": "rdfxml",
+                       "namespace": "https://vocabulary.example/ontology#"}]}
+  ]
+}
+```
+
+- Formats are `turtle`, `rdfxml` and `ntriples`. A vocabulary may also be
+  `owlxml` (the OWL 2 XML syntax, which some ontologies are published in only);
+  only its `<Declaration>` elements are read, with the standard library. JSON-LD
+  is refused, because parsing it can fetch remote contexts. RDF/XML or OWL/XML
+  that declares entities is not parsed.
+- Every `record` must be a request of the same spec; validation ids share the
+  request id space. At most 8 validations, each with at most 8 vocabularies.
+- It needs `rdflib` (`pip install data2agent[rdf-validation]`). Without it the
+  spec is refused before any network access.
+
+Each validation becomes one more record, `kind: "rdf_validation"`, with no URL:
+`validates` names the checked record, `result` gives the outcome, and the body
+(`bodies/<id>.json`, hashed like any other) is the full report:
+
+| `result` | Meaning |
+|---|---|
+| `conforms` | the document parses, and every term it takes from a declared namespace (predicates, and classes given with `rdf:type`) is declared in that vocabulary (`owl:Class`, `owl:ObjectProperty`, `owl:DatatypeProperty`, `owl:AnnotationProperty`, `owl:NamedIndividual`, `rdf:Property`, `rdfs:Class` or `rdfs:Datatype`; in OWL/XML, the matching `<Declaration>` entities) |
+| `does_not_conform` | the document does not parse, or uses terms its declared vocabulary does not declare (listed, at most 200) |
+| `not_validated` | the document or a vocabulary has no body, is truncated, or a vocabulary does not parse. Never a finding against the data |
+
+The report names the validator (`rdflib` and its version, method
+`d2a-rdf-validation-1`), the checked body's SHA-256, the triple count and, per
+vocabulary, the terms defined, used and undefined. It states what was checked;
+it never decides a FAIR label.
 
 ## Serving
 
