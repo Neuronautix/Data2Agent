@@ -71,6 +71,7 @@ and [`docs/BACKLOG.md`](docs/BACKLOG.md).
 ```bash
 pip install -e '.[mcp,fair,dev]'
 # outside dev: add the 'xlsx' extra for XLSX, 'workbooks' for legacy XLS, XLSB and ODS
+# optional: 'cedar' (offline CEDAR conversion APIs), 'semantic-build' (compile ontology snapshots from RDF)
 
 # 1. Ingest — deterministic, read-only over the dataset
 data2agent ingest examples/preclinical-minimal -o ./preclinical-agent
@@ -391,7 +392,8 @@ Output directory: <OUTPUT_DIR>
 | [`docs/benchmark-contract.md`](docs/benchmark-contract.md) | modes, comparability rules, metrics |
 | [`docs/offline.md`](docs/offline.md) | every network path (one, opt-in) and how the suite enforces offline operation |
 | [`docs/fair-profile-contract.md`](docs/fair-profile-contract.md) | the canonical FAIR rule format, the 12 rules, the projections |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | v0.1 → v0.6 |
+| [`CHANGELOG.md`](CHANGELOG.md) | what each package release contains, and what it does not |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | milestones v0.1 → v0.6 (not package versions) |
 | [`docs/BACKLOG.md`](docs/BACKLOG.md) | numbered work items with acceptance criteria |
 
 ## Development
