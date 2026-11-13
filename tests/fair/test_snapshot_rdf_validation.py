@@ -149,6 +149,57 @@ def test_rdfxml_data_against_a_turtle_vocabulary(tmp_path):
     assert report["result"] == "conforms" and report["syntax"]["triples"] == 2
 
 
+OWLXML_BASE = NS.rstrip("#")
+VOCAB_OWLXML = f"""<?xml version="1.0"?>
+<Ontology xmlns="http://www.w3.org/2002/07/owl#" xml:base="{OWLXML_BASE}"
+          ontologyIRI="{OWLXML_BASE}">
+  <Prefix name="ex" IRI="{NS}"/>
+  <Declaration><Class IRI="#Study"/></Declaration>
+  <Declaration><Class abbreviatedIRI="ex:Assay"/></Declaration>
+  <Declaration><ObjectProperty IRI="{NS}hasPart"/></Declaration>
+  <Declaration><DataProperty IRI="#title"/></Declaration>
+  <SubClassOf><Class IRI="#Assay"/><Class IRI="#Thing"/></SubClassOf>
+</Ontology>
+""".encode()
+
+
+def test_an_owlxml_vocabulary_is_read_from_its_declarations(tmp_path):
+    spec = _spec(vocab_format="owlxml")
+    vocab = _observed(VOCAB, VOCAB_OWLXML, content_type="application/xml")
+    _, _, report = _collect(tmp_path, _observed(DATA, GOOD_TTL), vocab, spec=spec)
+    assert report["result"] == "conforms"
+    assert report["vocabularies"][0]["terms_defined"] == 4
+
+
+def test_an_owlxml_vocabulary_lists_what_it_does_not_declare(tmp_path):
+    spec = _spec(vocab_format="owlxml")
+    vocab = _observed(VOCAB, VOCAB_OWLXML, content_type="application/xml")
+    _, _, report = _collect(tmp_path, _observed(DATA, UNDEFINED_TTL), vocab, spec=spec)
+    assert report["result"] == "does_not_conform"
+    assert report["vocabularies"][0]["undefined_terms"] == [NS + "Gadget", NS + "hasWidget"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'<?xml version="1.0"?><!DOCTYPE o [<!ENTITY a "a">]><Ontology/>',
+        b"<rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'/>",  # not OWL/XML
+        b"<Ontology",  # broken XML
+    ],
+)
+def test_an_unusable_owlxml_vocabulary_is_not_validated(tmp_path, body):
+    spec = _spec(vocab_format="owlxml")
+    vocab = _observed(VOCAB, body, content_type="application/xml")
+    _, _, report = _collect(tmp_path, _observed(DATA, GOOD_TTL), vocab, spec=spec)
+    assert report["result"] == "not_validated"
+
+
+def test_owlxml_is_accepted_for_vocabularies_only():
+    spec = _spec(data_format="owlxml")
+    with pytest.raises(SnapshotError, match="format must be one of"):
+        validate_spec(spec)
+
+
 @pytest.mark.parametrize(
     "data, vocab",
     [

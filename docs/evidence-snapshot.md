@@ -124,9 +124,11 @@ more is fetched:
 }
 ```
 
-- Formats are `turtle`, `rdfxml` and `ntriples`. JSON-LD is refused, because
-  parsing it can fetch remote contexts. RDF/XML that declares entities is not
-  parsed.
+- Formats are `turtle`, `rdfxml` and `ntriples`. A vocabulary may also be
+  `owlxml` (the OWL 2 XML syntax, which some ontologies are published in only);
+  only its `<Declaration>` elements are read, with the standard library. JSON-LD
+  is refused, because parsing it can fetch remote contexts. RDF/XML or OWL/XML
+  that declares entities is not parsed.
 - Every `record` must be a request of the same spec; validation ids share the
   request id space. At most 8 validations, each with at most 8 vocabularies.
 - It needs `rdflib` (`pip install data2agent[rdf-validation]`). Without it the
@@ -138,7 +140,7 @@ Each validation becomes one more record, `kind: "rdf_validation"`, with no URL:
 
 | `result` | Meaning |
 |---|---|
-| `conforms` | the document parses, and every term it takes from a declared namespace (predicates, and classes given with `rdf:type`) is declared in that vocabulary (`owl:Class`, `owl:ObjectProperty`, `owl:DatatypeProperty`, `owl:AnnotationProperty`, `owl:NamedIndividual`, `rdf:Property`, `rdfs:Class` or `rdfs:Datatype`) |
+| `conforms` | the document parses, and every term it takes from a declared namespace (predicates, and classes given with `rdf:type`) is declared in that vocabulary (`owl:Class`, `owl:ObjectProperty`, `owl:DatatypeProperty`, `owl:AnnotationProperty`, `owl:NamedIndividual`, `rdf:Property`, `rdfs:Class` or `rdfs:Datatype`; in OWL/XML, the matching `<Declaration>` entities) |
 | `does_not_conform` | the document does not parse, or uses terms its declared vocabulary does not declare (listed, at most 200) |
 | `not_validated` | the document or a vocabulary has no body, is truncated, or a vocabulary does not parse. Never a finding against the data |
 

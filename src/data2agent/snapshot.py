@@ -116,7 +116,12 @@ def _validate_validations(validations: Any, request_ids: set[str]) -> None:
     Runs before any network access, so a spec that could not be validated
     never starts a collection.
     """
-    from .rdf_validation import FORMATS, RDFValidationUnavailable, require_rdflib
+    from .rdf_validation import (
+        FORMATS,
+        VOCABULARY_FORMATS,
+        RDFValidationUnavailable,
+        require_rdflib,
+    )
 
     if not isinstance(validations, list) or not 0 < len(validations) <= MAX_VALIDATIONS:
         raise SnapshotError(f"validations must list 1 to {MAX_VALIDATIONS} entries")
@@ -132,7 +137,7 @@ def _validate_validations(validations: Any, request_ids: set[str]) -> None:
             raise SnapshotError(f"duplicate record id {item['id']!r}")
         ids.add(item["id"])
         _text(item["purpose"], f"{item['id']}.purpose", limit=512)
-        targets = [(item["record"], item["format"])]
+        targets = [(item["record"], item["format"], FORMATS)]
         vocabularies = item["vocabularies"]
         if not isinstance(vocabularies, list) or len(vocabularies) > MAX_VOCABULARIES:
             raise SnapshotError(f"{item['id']}.vocabularies must list at most {MAX_VOCABULARIES}")
@@ -144,12 +149,12 @@ def _validate_validations(validations: Any, request_ids: set[str]) -> None:
             namespace = _text(vocabulary["namespace"], f"{item['id']}.namespace", limit=512)
             if not namespace.startswith(("http://", "https://")):
                 raise SnapshotError(f"{item['id']}: namespace must be an http(s) IRI")
-            targets.append((vocabulary["record"], vocabulary["format"]))
-        for record_id, fmt in targets:
+            targets.append((vocabulary["record"], vocabulary["format"], VOCABULARY_FORMATS))
+        for record_id, fmt, allowed in targets:
             if record_id not in request_ids:
                 raise SnapshotError(f"{item['id']}: {record_id!r} is not a request of this spec")
-            if fmt not in FORMATS:
-                raise SnapshotError(f"{item['id']}: format must be one of {sorted(FORMATS)}")
+            if fmt not in allowed:
+                raise SnapshotError(f"{item['id']}: format must be one of {sorted(allowed)}")
     try:
         require_rdflib()
     except RDFValidationUnavailable as error:

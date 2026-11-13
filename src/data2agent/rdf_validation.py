@@ -20,8 +20,22 @@ from __future__ import annotations
 from typing import Any
 
 METHOD = "d2a-rdf-validation-1"
+# Formats a validated document may use (parsed by rdflib).
 FORMATS = {"turtle": "turtle", "rdfxml": "xml", "ntriples": "nt"}
+# A vocabulary may also be OWL/XML, a W3C OWL 2 syntax that is not RDF: some
+# ontologies are published only that way. Only its declarations are read.
+VOCABULARY_FORMATS = (*FORMATS, "owlxml")
 MAX_LISTED_TERMS = 200
+_OWL = "{http://www.w3.org/2002/07/owl#}"
+_XML_BASE = "{http://www.w3.org/XML/1998/namespace}base"
+_OWLXML_ENTITIES = (
+    "Class",
+    "ObjectProperty",
+    "DataProperty",
+    "AnnotationProperty",
+    "NamedIndividual",
+    "Datatype",
+)
 
 _RDF_TYPE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
 # A vocabulary defines a term by declaring it with one of these types.
@@ -79,6 +93,49 @@ def _defined_terms(graph: Any, namespace: str) -> set[str]:
         for subject, kind in graph.subject_objects(rdf_type)
         if str(kind) in _DECLARATION_TYPES and str(subject).startswith(namespace)
     }
+
+
+def _owlxml_declared_terms(body: bytes, namespace: str) -> tuple[set[str] | None, str | None]:
+    """Terms declared in an OWL/XML document (``<Declaration>`` elements), standard library only."""
+    import xml.etree.ElementTree as ElementTree
+    from urllib.parse import urljoin
+
+    if b"<!ENTITY" in body:
+        return None, ENTITIES_REFUSED
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError as error:
+        return None, f"ParseError: {str(error)[:300]}"
+    if root.tag != f"{_OWL}Ontology":
+        return None, "not an OWL/XML document (its root is not owl:Ontology)"
+    base = root.get(_XML_BASE) or root.get("ontologyIRI") or ""
+    prefixes = {
+        element.get("name", ""): element.get("IRI", "") for element in root.iter(f"{_OWL}Prefix")
+    }
+    declared = set()
+    for declaration in root.iter(f"{_OWL}Declaration"):
+        for entity in declaration:
+            if entity.tag.removeprefix(_OWL) not in _OWLXML_ENTITIES:
+                continue
+            if entity.get("IRI") is not None:
+                iri = urljoin(base, entity.get("IRI"))
+            elif entity.get("abbreviatedIRI") and ":" in entity.get("abbreviatedIRI"):
+                prefix, local = entity.get("abbreviatedIRI").split(":", 1)
+                if prefix not in prefixes:
+                    continue
+                iri = prefixes[prefix] + local
+            else:
+                continue
+            if iri.startswith(namespace):
+                declared.add(iri)
+    return declared, None
+
+
+def _vocabulary_terms(body: bytes, fmt: str, namespace: str) -> tuple[set[str] | None, str | None]:
+    if fmt == "owlxml":
+        return _owlxml_declared_terms(body, namespace)
+    graph, error = _parse(body, fmt)
+    return (None, error) if graph is None else (_defined_terms(graph, namespace), None)
 
 
 def _used_terms(graph: Any, namespace: str) -> set[str]:
@@ -153,14 +210,15 @@ def validate(
             "namespace": namespace,
         }
         problem = _input_problem(vocab_record, vocab_body, f"vocabulary {entry['record']!r}")
-        vocab_graph, vocab_error = (None, problem) if problem else _parse(vocab_body, vocab_fmt)
-        if vocab_graph is None:
+        defined, vocab_error = (
+            (None, problem) if problem else _vocabulary_terms(vocab_body, vocab_fmt, namespace)
+        )
+        if defined is None:
             entry.update(checked=False, error=vocab_error)
             report["reasons"].append(f"vocabulary {entry['record']!r} unusable: {vocab_error}")
             unusable = True
             report["vocabularies"].append(entry)
             continue
-        defined = _defined_terms(vocab_graph, namespace)
         used = _used_terms(graph, namespace)
         undefined = sorted(used - defined)
         undefined_total += len(undefined)
