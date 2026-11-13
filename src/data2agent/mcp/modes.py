@@ -103,7 +103,7 @@ MODES: dict[str, Mode] = {
         resources=_STRUCTURED_RESOURCES,
         description=(
             "structured + FAIR guidance as prose, generated from the same canonical "
-            "rules. Planned for v0.3."
+            "rules. Planned (not yet implemented)."
         ),
     ),
     "fair-rules": Mode(
@@ -138,7 +138,7 @@ MODES: dict[str, Mode] = {
             "validate_shacl",
         ),
         resources=_STRUCTURED_RESOURCES,
-        description="fair-deterministic + vocabularies and SHACL. Planned for v0.4.",
+        description="fair-deterministic + vocabularies and SHACL. Planned (not yet implemented).",
     ),
 }
 

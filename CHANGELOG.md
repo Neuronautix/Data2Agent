@@ -101,6 +101,10 @@ with this release and with `v0.2.0` produces byte-identical `manifest.json` and
   argument is now a `QueryValidationError`, still a `ValueError`. Messages echo
   caller input shortened to 120 characters and name at most 20 server-side
   identifiers; they never carry file contents. Unexpected exceptions stay masked.
+- The descriptions of the not-yet-implemented `fair-skill` and `fair-semantic` modes now
+  read "Planned (not yet implemented)" instead of naming a roadmap version, so that package
+  `0.3.0` does not suggest those features have shipped. Wording only: no mode, tool list
+  or behaviour changes.
 
 ### Not supported
 
